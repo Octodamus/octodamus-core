@@ -1,7 +1,6 @@
-﻿.env
-*.log
-logs/
+.env
 __pycache__/
 *.pyc
+logs/
 octo_post_queue.json
 octo_posted_log.json
