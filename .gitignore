@@ -1,0 +1,7 @@
+﻿.env
+*.log
+logs/
+__pycache__/
+*.pyc
+octo_post_queue.json
+octo_posted_log.json
