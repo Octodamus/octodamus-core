@@ -62,3 +62,5 @@ __pycache__/
 
 # Windows
 Thumbs.db
+data/api_keys.json
+data/
