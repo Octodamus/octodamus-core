@@ -1,0 +1,50 @@
+{
+  "type": "sentiment_scores",
+  "timestamp": "2026-03-06T02:12:00.880276",
+  "symbols": {
+    "NVDA": {
+      "score": 5,
+      "label": "NEUTRAL",
+      "confidence": "LOW",
+      "summary": "Generic stock price and news headlines with no substantive content."
+    },
+    "TSLA": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "LOW",
+      "summary": "Generic financial portal headlines without specific news content."
+    },
+    "AAPL": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "No sentiment indicators present in generic news aggregation headlines."
+    },
+    "BTC": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "News aggregation headlines contain no sentiment indicators."
+    },
+    "ETH": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "Headlines are generic price tracking content without sentiment."
+    },
+    "SOL": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "Generic price and news headlines provide no sentiment direction."
+    }
+  },
+  "news_sources": {
+    "NVDA": 5,
+    "TSLA": 5,
+    "AAPL": 5,
+    "BTC": 5,
+    "ETH": 5,
+    "SOL": 5
+  }
+}

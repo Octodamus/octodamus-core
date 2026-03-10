@@ -1,0 +1,30 @@
+{
+  "type": "price_snapshot",
+  "timestamp": "2026-03-06T02:11:42.142639",
+  "data": {
+    "BTC": {
+      "price": 71261,
+      "change_24h": -2.137766149994318
+    },
+    "ETH": {
+      "price": 2087.93,
+      "change_24h": -2.0105929715389776
+    },
+    "SOL": {
+      "price": 89.06,
+      "change_24h": -1.3738992223315458
+    },
+    "NVDA": {
+      "price": 183.34,
+      "change_24h": null
+    },
+    "TSLA": {
+      "price": 405.55,
+      "change_24h": null
+    },
+    "AAPL": {
+      "price": 260.29,
+      "change_24h": null
+    }
+  }
+}

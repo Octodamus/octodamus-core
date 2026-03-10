@@ -1,6 +1,64 @@
+# Secrets and session files
 .env
-__pycache__/
-*.pyc
-logs/
+*.env
+bitwarden_session*
+bw_session*
+
+# Logs and queue files
+*.log
 octo_post_queue.json
 octo_posted_log.json
+octo_alert_log.json
+octo_alert_dedup.json
+octo_journal*.json
+BRAIN.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backups created by patch scripts
+*.bak*
+*.bak_*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+EOF# Step 3 — Create .gitignore so secrets and logs never get committed
+cat > .gitignore << 'EOF'
+# Secrets and session files
+.env
+*.env
+bitwarden_session*
+bw_session*
+
+# Logs and queue files
+*.log
+octo_post_queue.json
+octo_posted_log.json
+octo_alert_log.json
+octo_alert_dedup.json
+octo_journal*.json
+BRAIN.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backups created by patch scripts
+*.bak*
+*.bak_*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

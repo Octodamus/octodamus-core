@@ -1,0 +1,75 @@
+{
+  "type": "market_briefing",
+  "timestamp": "2026-03-06T02:12:05.158249",
+  "briefing": {
+    "market_mood": "RISK_OFF",
+    "top_opportunity": "SOL",
+    "top_risk": "BTC",
+    "overnight_thesis": "Broad crypto selloff with BTC -2.1% and ETH -2.0% signals risk-off pressure across digital assets, while equities show neutral sentiment with limited catalysts. SOL's shallower decline (-1.4%) suggests relative strength and potential mean-reversion opportunity, but BTC remains the key risk barometer if selling accelerates through the $70K support level.",
+    "timestamp": "2026-03-06T02:12:05.158077"
+  },
+  "prices": {
+    "BTC": {
+      "price": 71261,
+      "change_24h": -2.137766149994318
+    },
+    "ETH": {
+      "price": 2087.93,
+      "change_24h": -2.0105929715389776
+    },
+    "SOL": {
+      "price": 89.06,
+      "change_24h": -1.3738992223315458
+    },
+    "NVDA": {
+      "price": 183.34,
+      "change_24h": null
+    },
+    "TSLA": {
+      "price": 405.55,
+      "change_24h": null
+    },
+    "AAPL": {
+      "price": 260.29,
+      "change_24h": null
+    }
+  },
+  "sentiment": {
+    "NVDA": {
+      "score": 5,
+      "label": "NEUTRAL",
+      "confidence": "LOW",
+      "summary": "Generic stock price and news headlines with no substantive content."
+    },
+    "TSLA": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "LOW",
+      "summary": "Generic financial portal headlines without specific news content."
+    },
+    "AAPL": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "No sentiment indicators present in generic news aggregation headlines."
+    },
+    "BTC": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "News aggregation headlines contain no sentiment indicators."
+    },
+    "ETH": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "Headlines are generic price tracking content without sentiment."
+    },
+    "SOL": {
+      "score": 0,
+      "label": "NEUTRAL",
+      "confidence": "HIGH",
+      "summary": "Generic price and news headlines provide no sentiment direction."
+    }
+  }
+}
