@@ -64,3 +64,5 @@ __pycache__/
 Thumbs.db
 data/api_keys.json
 data/
+data/api_keys.json
+data/
