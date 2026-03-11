@@ -1,12 +1,12 @@
-"""
+﻿"""
 octo_x_queue.py
-Octodamus — X Posting Queue via OpenTweet
+Octodamus â€” X Posting Queue via OpenTweet
 No X developer account needed. Just an OPENTWEET_API_KEY.
 
 Setup:
     1. Sign up at opentweet.io (7-day free trial, then $5.99/mo)
     2. Connect @octodamusai via one-click OAuth in their onboarding
-    3. Settings > API > Generate New Key  →  starts with ot_
+    3. Settings > API > Generate New Key  â†’  starts with ot_
     4. Add to .env: OPENTWEET_API_KEY=ot_your_key_here
     5. pip install httpx python-dotenv
 
@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Keys injected into os.environ by bitwarden.load_all_secrets() at startup
-# IMPORTANT: Never read os.environ at module level — Bitwarden hasn't loaded keys yet at import time.
+# IMPORTANT: Never read os.environ at module level â€” Bitwarden hasn't loaded keys yet at import time.
 # Always call _headers() at request time.
 
 BASE_URL = "https://opentweet.io/api/v1"
@@ -38,9 +38,9 @@ QUEUE_FILE = Path("octo_post_queue.json")
 POSTED_LOG  = Path("octo_posted_log.json")
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # OPENTWEET API
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def check_connection() -> dict:
     """Verify key + check daily posting limits."""
@@ -64,7 +64,7 @@ def _publish_now(post_id: str) -> dict:
 def post_single_now(text: str) -> dict:
     """Create and immediately publish one post."""
     result = _api_post({"text": text})
-    post_id = result.get("id") or result.get("post", {}).get("id")
+    post_id = result.get("id") or result.get("post", {}).get("id") or (result.get("posts") or [{}])[0].get("id")
     if post_id:
         _publish_now(post_id)
     return result
@@ -81,7 +81,7 @@ def post_thread_now(posts: list) -> dict:
         "thread_tweets": posts[1:]
     }
     result = _api_post(payload)
-    post_id = result.get("id") or result.get("post", {}).get("id")
+    post_id = result.get("id") or result.get("post", {}).get("id") or (result.get("posts") or [{}])[0].get("id")
     if post_id:
         _publish_now(post_id)
     return result
@@ -97,9 +97,9 @@ def bulk_schedule(posts: list) -> dict:
     return _api_post({"posts": posts})
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # LOCAL QUEUE
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _load_queue() -> list:
     if QUEUE_FILE.exists():
@@ -120,7 +120,11 @@ def _save_log(log: dict):
 def _hash(text: str) -> str:
     return hashlib.md5(text.strip().lower().encode()).hexdigest()
 
+FORCE_POST = False
+
 def _posting_hours() -> bool:
+    if FORCE_POST:
+        return True
     now = datetime.now()
     h = now.hour
     return (7 <= h <= 21) if now.weekday() < 5 else (9 <= h <= 18)
@@ -132,7 +136,7 @@ def queue_post(text: str, post_type: str = "signal", metadata: dict = None, prio
     log = _load_log()
     cid = _hash(text)
     if cid in log:
-        print(f"[OctoQueue] Duplicate — skipping: {text[:60]}...")
+        print(f"[OctoQueue] Duplicate â€” skipping: {text[:60]}...")
         return None
     queue.append({
         "id": cid, "text": text, "type": post_type, "is_thread": False,
@@ -146,12 +150,12 @@ def queue_post(text: str, post_type: str = "signal", metadata: dict = None, prio
 
 
 def queue_thread(posts: list, post_type: str = "deep_dive", metadata: dict = None):
-    """Queue a thread as a single entry — OpenTweet handles threading natively."""
+    """Queue a thread as a single entry â€” OpenTweet handles threading natively."""
     queue = _load_queue()
     log = _load_log()
     cid = _hash(posts[0])
     if cid in log:
-        print("[OctoQueue] Thread duplicate — skipping.")
+        print("[OctoQueue] Thread duplicate â€” skipping.")
         return None
     queue.append({
         "id": cid, "text": posts[0], "thread_posts": posts, "type": post_type,
@@ -165,7 +169,7 @@ def queue_thread(posts: list, post_type: str = "deep_dive", metadata: dict = Non
 
 
 def process_queue(max_posts: int = 5) -> int:
-    """Drain up to max_posts from queue → post via OpenTweet. Call every 30 min."""
+    """Drain up to max_posts from queue â†’ post via OpenTweet. Call every 30 min."""
     if not _posting_hours():
         print("[OctoQueue] Outside posting hours. The oracle rests.")
         return 0
@@ -179,7 +183,7 @@ def process_queue(max_posts: int = 5) -> int:
     # Check limits before posting
     try:
         status = check_connection()
-        remaining = status.get("remaining_posts_today", 0)
+        remaining = status.get("limits", {}).get("remaining_posts_today", 0)
         if remaining <= 0:
             print("[OctoQueue] Daily OpenTweet limit reached.")
             return 0
@@ -195,10 +199,10 @@ def process_queue(max_posts: int = 5) -> int:
         try:
             if entry.get("is_thread"):
                 result = post_thread_now(entry["thread_posts"])
-                print(f"[OctoQueue] ✓ Thread ({len(entry['thread_posts'])} posts): {entry['text'][:60]}...")
+                print(f"[OctoQueue] âœ“ Thread ({len(entry['thread_posts'])} posts): {entry['text'][:60]}...")
             else:
                 result = post_single_now(entry["text"])
-                print(f"[OctoQueue] ✓ Posted [{entry['type']}]: {entry['text'][:60]}...")
+                print(f"[OctoQueue] âœ“ Posted [{entry['type']}]: {entry['text'][:60]}...")
 
             log[entry["id"]] = {
                 "result": result, "text": entry["text"], "type": entry["type"],
@@ -227,7 +231,7 @@ def process_queue(max_posts: int = 5) -> int:
             print(f"[OctoQueue] Error: {e}")
             break
 
-    # Trim — keep last 500 posted for deduplication
+    # Trim â€” keep last 500 posted for deduplication
     _save_queue(
         [e for e in queue if e["status"] == "queued"] +
         [e for e in queue if e["status"] == "failed"] +
@@ -249,7 +253,7 @@ def queue_status():
     except:
         limit = "  Daily remaining: (OpenTweet unreachable)"
 
-    print("\n🐙 OCTODAMUS X QUEUE STATUS")
+    print("\nðŸ™ OCTODAMUS X QUEUE STATUS")
     print(limit)
     print(f"  Queued:        {len(queued)} posts waiting")
     print(f"  Posted today:  {len(posted_today)}")
@@ -260,3 +264,7 @@ def queue_status():
             label = "[thread]" if e.get("is_thread") else f"[{e['type']}]"
             print(f"    {label} {e['text'][:70]}...")
     print()
+
+
+
+
