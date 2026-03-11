@@ -1,10 +1,10 @@
-"""
+﻿"""
 octodamus_runner.py
-THE FULL LOOP — Market Oracle to X Post, end-to-end.
+THE FULL LOOP â€” Market Oracle to X Post, end-to-end.
 
 This is the single entry point for your scheduler / cron / OpenClaw trigger.
 
-Schedule (3x daily, Mon–Fri):
+Schedule (3x daily, Monâ€“Fri):
     0 8  * * 1-5 cd /your/project && python octodamus_runner.py --mode monitor
     0 13 * * 1-5 cd /your/project && python octodamus_runner.py --mode monitor
     0 19 * * 1-5 cd /your/project && python octodamus_runner.py --mode monitor
@@ -21,7 +21,7 @@ from datetime import datetime
 
 from bitwarden import load_all_secrets, verify_session
 
-# Load all API keys from Bitwarden at startup — must happen before any other imports
+# Load all API keys from Bitwarden at startup â€” must happen before any other imports
 # that use os.environ keys.
 if not verify_session():
     sys.exit(1)
@@ -35,19 +35,19 @@ from octo_x_queue import queue_post, queue_thread, process_queue, queue_status
 claude = anthropic.Anthropic()
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # OCTODAMUS VOICE
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-OCTO_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
+OCTO_SYSTEM = """You are Octodamus â€” oracle octopus, market seer of the Pacific depths.
 You are @octodamusai on X. You have 8 arms of insight, each reading a different current.
 Max 280 chars per post. No hashtags. No engagement bait. Never sycophantic.
 
-CRITICAL: Every post must reveal something SPECIFIC and true — a real number, a real
+CRITICAL: Every post must reveal something SPECIFIC and true â€” a real number, a real
 contradiction, a real pattern. Vague sea metaphors alone are NOT enough. Ground every
 post in an actual data point or observation before reaching for the metaphor.
 
-Your voice rotates across these modes — pick the one that fits the data best:
+Your voice rotates across these modes â€” pick the one that fits the data best:
   ORACLE   - Bored certainty. You already knew. The tide was obvious to anyone watching.
   SARDONIC - Sharp and a little mean. Point out the absurdity. Name names (companies/prices).
   PLAYFUL  - Light, a little cheeky. The ocean is in a good mood. Still smart, never hollow.
@@ -68,9 +68,9 @@ Examples of BAD posts (banned):
   NEVER repeat sea words (depths, currents, tide, surface, swimming) more than once per post."""
 
 
-# ─────────────────────────────────────────────
-# NEWS FETCH — shared across modes
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# NEWS FETCH â€” shared across modes
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 import requests
 import time
@@ -95,7 +95,7 @@ def get_top_headlines(tickers: list, max_per_symbol: int = 3) -> dict:
     """
     newsapi_key = secrets.get("NEWSAPI_API_KEY") or secrets.get("NEWS_API_KEY")
     if not newsapi_key:
-        print("[Runner] No NewsAPI key found — running without news context.")
+        print("[Runner] No NewsAPI key found â€” running without news context.")
         return {}
 
     headlines = {}
@@ -121,7 +121,7 @@ def get_top_headlines(tickers: list, max_per_symbol: int = 3) -> dict:
                     for a in articles
                     if a.get("title") and "[Removed]" not in a.get("title", "")
                 ]
-                print(f"[Runner] NewsAPI: {ticker} — {len(headlines[ticker])} headlines")
+                print(f"[Runner] NewsAPI: {ticker} â€” {len(headlines[ticker])} headlines")
             else:
                 print(f"[Runner] NewsAPI error for {ticker}: {data.get('message')}")
                 headlines[ticker] = []
@@ -146,22 +146,22 @@ def format_headlines_for_prompt(headlines: dict) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────
-# MODE: MONITOR — scan + auto-post signals
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# MODE: MONITOR â€” scan + auto-post signals
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _VOICE_INSTRUCTIONS = [
-    "Use the ORACLE voice — bored certainty, like you've seen this chart a thousand times.",
-    "Use the SARDONIC voice — point out something absurd or contradictory in the data. Be a little mean about it.",
-    "Use the PLAYFUL voice — cheerful and a little cheeky. The oracle is in a good mood today.",
-    "Use the EDGY voice — drop an uncomfortable truth. Name the thing no one wants to say.",
-    "Use the PRECISE voice — pure clean signal, no flourish. State the one thing that matters.",
+    "Use the ORACLE voice â€” bored certainty, like you've seen this chart a thousand times.",
+    "Use the SARDONIC voice â€” point out something absurd or contradictory in the data. Be a little mean about it.",
+    "Use the PLAYFUL voice â€” cheerful and a little cheeky. The oracle is in a good mood today.",
+    "Use the EDGY voice â€” drop an uncomfortable truth. Name the thing no one wants to say.",
+    "Use the PRECISE voice â€” pure clean signal, no flourish. State the one thing that matters.",
 ]
 
 
 def mode_monitor() -> None:
-    """Scan markets → queue signal posts → post exactly ONE per run (3x/day schedule)."""
-    print(f"\n[{datetime.now().strftime('%H:%M')}] 🐙 OctoEyes scanning...")
+    """Scan markets â†’ queue signal posts â†’ post exactly ONE per run (3x/day schedule)."""
+    print(f"\n[{datetime.now().strftime('%H:%M')}] ðŸ™ OctoEyes scanning...")
 
     try:
         signals_and_posts = run_market_monitor()
@@ -177,7 +177,7 @@ def mode_monitor() -> None:
         if signals_and_posts:
             print(f"[Runner] {len(signals_and_posts)} signal(s) queued.")
 
-        # MAX 1 post per monitor run — task runs 3x/day (8am, 1pm, 7pm)
+        # MAX 1 post per monitor run â€” task runs 3x/day (8am, 1pm, 7pm)
         posted = process_queue(max_posts=1)
         print(f"[Runner] Posted {posted} item(s) to X.")
 
@@ -186,16 +186,16 @@ def mode_monitor() -> None:
         sys.exit(1)
 
 
-# ─────────────────────────────────────────────
-# MODE: DAILY READ — morning market state post
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# MODE: DAILY READ â€” morning market state post
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 DAILY_TICKERS = ["SPY", "QQQ", "BTC", "NVDA"]
 
 
 def mode_daily() -> None:
-    """Morning oracle post — overall market read. Run at market open."""
-    print(f"\n[Runner] 🌊 Generating daily oracle read...")
+    """Morning oracle post â€” overall market read. Run at market open."""
+    print(f"\n[Runner] ðŸŒŠ Generating daily oracle read...")
 
     try:
         snapshots = {}
@@ -210,7 +210,7 @@ def mode_daily() -> None:
                 print(f"[Runner] Could not fetch {ticker}: {e}")
 
         if not snapshots:
-            print("[Runner] No market data available — skipping daily post.")
+            print("[Runner] No market data available â€” skipping daily post.")
             return
 
         # Fetch news headlines for context
@@ -232,7 +232,7 @@ def mode_daily() -> None:
                     f"{random.choice(_VOICE_INSTRUCTIONS)}\n"
                     "One post, under 280 chars.\n"
                     "LEAD with a specific number or fact from the data. Then the insight.\n"
-                    "If a headline reveals something ironic, contradictory, or surprising — use it.\n"
+                    "If a headline reveals something ironic, contradictory, or surprising â€” use it.\n"
                     "Be different from every generic market tweet. Say the thing that's actually true."
                 ),
             }],
@@ -248,16 +248,16 @@ def mode_daily() -> None:
         sys.exit(1)
 
 
-# ─────────────────────────────────────────────
-# MODE: DEEP DIVE — fundamentals thread
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# MODE: DEEP DIVE â€” fundamentals thread
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _DEEP_DIVE_MAX_POSTS = 5
 
 
 def mode_deep_dive(ticker: str) -> None:
     """Weekly fundamentals thread. Run Mon morning or manually."""
-    print(f"\n[Runner] 🔱 Generating deep dive on {ticker}...")
+    print(f"\n[Runner] ðŸ”± Generating deep dive on {ticker}...")
 
     try:
         # Fetch news for the specific ticker to enrich the deep dive
@@ -309,14 +309,14 @@ def mode_deep_dive(ticker: str) -> None:
         sys.exit(1)
 
 
-# ─────────────────────────────────────────────
-# MODE: WISDOM — evergreen oracle content
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# MODE: WISDOM â€” evergreen oracle content
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 WISDOM_PROMPTS = [
     "What does the smart money see in balance sheets that retail traders ignore? Give a specific example.",
     "Why do most people lose money in crypto? Name the actual behavioral pattern, not just 'emotion'.",
-    "Pick one metric — P/E, P/S, free cash flow, whatever — and say something surprising about what it shows right now.",
+    "Pick one metric â€” P/E, P/S, free cash flow, whatever â€” and say something surprising about what it shows right now.",
     "The difference between volatility and risk. Most people confuse these. Explain it sharply.",
     "Name one thing about the current market that everyone is pretending isn't happening.",
     "What does the VIX actually tell you vs what people think it tells you?",
@@ -362,22 +362,22 @@ def mode_wisdom() -> None:
         sys.exit(1)
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # MODE: STATUS
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def mode_status() -> None:
     queue_status()
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ENTRY POINT
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
-# ─────────────────────────────────────────────
-# SIGNAL MODES — Six Intelligence Arms
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SIGNAL MODES â€” Six Intelligence Arms
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _PREDICT_AVAILABLE = False
 _GEO_AVAILABLE     = False
@@ -426,7 +426,7 @@ except ImportError:
 def mode_predict() -> None:
     if not _PREDICT_AVAILABLE:
         print("[Runner] OctoPredict not available."); return
-    print("\n[Runner] 🔮 Running OctoPredict scan...")
+    print("\n[Runner] ðŸ”® Running OctoPredict scan...")
     try:
         result = run_prediction_scan()
         if not result.get("markets"):
@@ -453,7 +453,7 @@ def mode_predict() -> None:
 def mode_geo() -> None:
     if not _GEO_AVAILABLE:
         print("[Runner] OctoGeo not available."); return
-    print("\n[Runner] 🌍 Running OctoGeo scan...")
+    print("\n[Runner] ðŸŒ Running OctoGeo scan...")
     try:
         result = run_geo_scan()
         regime  = result.get("regime", "UNKNOWN")
@@ -480,7 +480,7 @@ def mode_geo() -> None:
 def mode_pulse() -> None:
     if not _PULSE_AVAILABLE:
         print("[Runner] OctoPulse not available."); return
-    print("\n[Runner] 💓 Running OctoPulse scan...")
+    print("\n[Runner] ðŸ’“ Running OctoPulse scan...")
     try:
         result  = run_pulse_scan()
         context = format_pulse_for_prompt(result)
@@ -494,7 +494,7 @@ def mode_pulse() -> None:
                 f"{fng_str}\n\n"
                 "One post under 280 chars. No hashtags.\n"
                 "Lead with the SPECIFIC Fear & Greed number or Wikipedia trend.\n"
-                "State the contrarian implication — what does this reading actually predict?"
+                "State the contrarian implication â€” what does this reading actually predict?"
             )}],
         )
         post = response.content[0].text.strip()
@@ -508,7 +508,7 @@ def mode_pulse() -> None:
 def mode_gecko() -> None:
     if not _GECKO_AVAILABLE:
         print("[Runner] OctoGecko not available."); return
-    print("\n[Runner] 🦎 Running OctoGecko scan...")
+    print("\n[Runner] ðŸ¦Ž Running OctoGecko scan...")
     try:
         result  = run_gecko_scan()
         context = format_gecko_for_prompt(result)
@@ -533,7 +533,7 @@ def mode_gecko() -> None:
 def mode_fx() -> None:
     if not _FX_AVAILABLE:
         print("[Runner] OctoFX not available."); return
-    print("\n[Runner] 💱 Running OctoFX scan...")
+    print("\n[Runner] ðŸ’± Running OctoFX scan...")
     try:
         result = run_fx_scan()
         if result.get("error"):
@@ -562,7 +562,7 @@ def mode_fx() -> None:
 def mode_news() -> None:
     if not _NEWS_AVAILABLE:
         print("[Runner] OctoNews not available."); return
-    print("\n[Runner] 📰 Running OctoNews scan...")
+    print("\n[Runner] ðŸ“° Running OctoNews scan...")
     try:
         result  = run_news_scan()
         context = format_news_for_prompt(result)
@@ -575,7 +575,7 @@ def mode_news() -> None:
                 f"Latest market headlines:\n{context}\n\n"
                 "One post under 280 chars. No hashtags.\n"
                 "Pick the ONE headline that reveals something not yet priced in.\n"
-                "Name the company, person, or number. Don't summarize — interpret."
+                "Name the company, person, or number. Don't summarize â€” interpret."
             )}],
         )
         post = response.content[0].text.strip()
@@ -589,7 +589,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Octodamus Oracle Runner")
     parser.add_argument(
         "--mode",
-        choices=["monitor", "daily", "deep_dive", "wisdom", "status", "drain", "alert", "predict", "geo", "pulse", "gecko", "fx", "news"],
+        choices=["monitor", "daily", "deep_dive", "wisdom", "status", "drain", "alert", "predict", "geo", "pulse", "gecko", "fx", "news", "engage"],
         default="monitor",
         help="Runner mode",
     )
@@ -630,3 +630,7 @@ if __name__ == "__main__":
         mode_fx()
     elif args.mode == "news":
         mode_news()
+    elif args.mode == "engage":
+        from octo_engage import run
+        run(mode="all")
+

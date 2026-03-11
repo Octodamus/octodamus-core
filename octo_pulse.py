@@ -114,7 +114,7 @@ def run_pulse_scan(articles: list | None = None) -> dict:
     # Fear & Greed first
     fng = _get_fear_greed()
     if fng:
-        delta_str = f" Δ{fng['delta']:+d}" if "delta" in fng else ""
+        delta_str = f" d{fng['delta']:+d}" if "delta" in fng else ""
         print(f"  Fear & Greed: {fng['value']} — {fng['label']}{delta_str}")
     time.sleep(0.3)
 
@@ -168,7 +168,7 @@ def format_pulse_for_prompt(result: dict) -> str:
     lines = []
     fng = result.get("fear_greed")
     if fng:
-        delta_str = f" Δ{fng['delta']:+d} from yesterday" if "delta" in fng else ""
+        delta_str = f" d{fng['delta']:+d} from yesterday" if "delta" in fng else ""
         lines.append(f"Fear & Greed Index (OctoPulse): {fng['value']} — {fng['label']}{delta_str}")
 
     spikes = result.get("attention_spikes", [])

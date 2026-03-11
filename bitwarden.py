@@ -1,6 +1,6 @@
-"""
+﻿"""
 bitwarden.py
-Octodamus — Bitwarden Secrets Manager
+Octodamus â€” Bitwarden Secrets Manager
 All API keys are stored in Bitwarden. This module fetches them at runtime.
 
 Requirements:
@@ -41,7 +41,7 @@ import sys
 # Always read it at call time inside _bw() so the value is always fresh.
 
 
-# Full path to bw CLI — required because Python subprocess can't find .cmd files on PATH
+# Full path to bw CLI â€” required because Python subprocess can't find .cmd files on PATH
 import sys as _sys
 BW_CMD = "/home/walli/.local/bin/bw" if _sys.platform == "linux" else r"C:\Users\walli\AppData\Roaming\npm\bw.cmd"
 
@@ -97,14 +97,14 @@ def get_custom_field(item_name: str, field_name: str) -> str:
     raise ValueError(f"[Bitwarden] Field '{field_name}' not found in item '{item_name}'")
 
 
-# ─────────────────────────────────────────────
-# OCTODAMUS SECRETS — fetch all at startup
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# OCTODAMUS SECRETS â€” fetch all at startup
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# Bitwarden item name → env var name mapping
+# Bitwarden item name â†’ env var name mapping
 # Names match exactly what's stored in the Octodamus Bitwarden vault
 OCTODAMUS_SECRETS = {
-    # ── Core infrastructure ───────────────────
+    # â”€â”€ Core infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "AGENT - Octodamus - Brain - Anthropic":             "ANTHROPIC_API_KEY",
     "AGENT - Octodamus - Financial Datasets API":        "FINANCIAL_DATASETS_API_KEY",
     "AGENT - Octodamus - Social - OpenTweet":            "OPENTWEET_API_KEY",
@@ -115,22 +115,51 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Payments - Stripe - Products":  "STRIPE_PRODUCTS_API_KEY",
     "AGENT - Octodamus - Payments - Stripe - Readonly":  "STRIPE_READONLY_API_KEY",
     "AGENT - Octodamus - Social - Moltbook":             "MOLTBOOK_API_KEY",
-    # ── Data & content ────────────────────────
+    # â”€â”€ Data & content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "AGENT - Octodamus - Data - NewsAPI":                "NEWSAPI_API_KEY",
     "AGENT - Octodamus - OpenRouter":                    "OPENROUTER_API_KEY",
     "AGENT - Octodamus - OctoData Admin Key":            "OCTODATA_ADMIN_KEY",
-    # ── Four New Minds ────────────────────────
+    # â”€â”€ Four New Minds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "AGENT - Octodamus - FRED API":                      "FRED_API_KEY",
     "AGENT - Octodamus - Open Exchange Rates":           "OPENEXCHANGERATES_API_KEY",
     "AGENT - Octodamus - Etherscan API":                 "ETHERSCAN_API_KEY",
 }
 
-# Optional secrets — only loaded if the item exists in Bitwarden
+# Optional secrets â€” only loaded if the item exists in Bitwarden
 OCTODAMUS_OPTIONAL_SECRETS = {
     "me: AGENT - Octodamus - Finance - Bankr - Wallet":  "BANKR_API_KEY",
 }
 
-# Critical secrets — hard exit if any are missing
+
+def load_twitter_secrets() -> None:
+    """Load Twitter API credentials from Bitwarden notes field."""
+    try:
+        raw = _bw(["get", "item", "AGENT - Octodamus - Social - Twitter API"])
+        item = json.loads(raw)
+        login = item.get("login", {})
+        os.environ["TWITTER_API_KEY"] = login.get("username", "")
+        os.environ["TWITTER_API_SECRET"] = login.get("password", "")
+        notes = item.get("notes", "") or ""
+        for line in notes.splitlines():
+            if ":" in line:
+                key, _, val = line.partition(":")
+                val = val.strip()
+                k = key.strip().upper().replace(" ", "_")
+                if k == "BEARER_TOKEN":
+                    os.environ["TWITTER_BEARER_TOKEN"] = val
+                elif k == "ACCESS_TOKEN" and "SECRET" not in k.upper():
+                    os.environ["TWITTER_ACCESS_TOKEN"] = val
+                elif k == "ACCESS_TOKEN_SECRET":
+                    os.environ["TWITTER_ACCESS_TOKEN_SECRET"] = val
+                elif k == "CLIENT_ID":
+                    os.environ["TWITTER_CLIENT_ID"] = val
+                elif k == "CLIENT_SECRET":
+                    os.environ["TWITTER_CLIENT_SECRET"] = val
+        print("[Bitwarden] ✓ Loaded: AGENT - Octodamus - Social - Twitter API")
+    except Exception as e:
+        print(f"[Bitwarden] ⚠ Twitter API secrets not loaded: {e}")
+
+# Critical secrets â€” hard exit if any are missing
 OCTODAMUS_CRITICAL_KEYS = {
     "ANTHROPIC_API_KEY",
     "TELEGRAM_BOT_TOKEN",
@@ -159,13 +188,13 @@ def load_all_secrets(verbose: bool = False) -> dict:
             os.environ[env_var] = value
             loaded[env_var] = value
             if verbose:
-                print(f"[Bitwarden] ✓ Loaded: {item_name}")
+                print(f"[Bitwarden] âœ“ Loaded: {item_name}")
         except Exception as e:
             if env_var in OCTODAMUS_CRITICAL_KEYS:
-                print(f"[Bitwarden] ✗ CRITICAL secret missing: {item_name}\n  → {e}")
+                print(f"[Bitwarden] âœ— CRITICAL secret missing: {item_name}\n  â†’ {e}")
                 missing_critical.append(env_var)
             else:
-                print(f"[Bitwarden] ⚠ Non-critical secret missing: {item_name}\n  → {e}")
+                print(f"[Bitwarden] âš  Non-critical secret missing: {item_name}\n  â†’ {e}")
 
     # Optional secrets
     for item_name, env_var in OCTODAMUS_OPTIONAL_SECRETS.items():
@@ -174,10 +203,12 @@ def load_all_secrets(verbose: bool = False) -> dict:
             os.environ[env_var] = value
             loaded[env_var] = value
             if verbose:
-                print(f"[Bitwarden] ✓ Loaded (optional): {item_name}")
+                print(f"[Bitwarden] âœ“ Loaded (optional): {item_name}")
         except Exception:
             if verbose:
-                print(f"[Bitwarden] – Skipped (not found): {item_name}")
+                print(f"[Bitwarden] â€“ Skipped (not found): {item_name}")
+
+    load_twitter_secrets()
 
     # Hard exit if any critical secrets are missing
     if missing_critical:
@@ -190,8 +221,8 @@ def load_all_secrets(verbose: bool = False) -> dict:
     if "BW_SESSION" in os.environ:
         del os.environ["BW_SESSION"]
     if verbose:
-        print("[Bitwarden] ✅ BW_SESSION cleared. Vault session token removed from environment.")
-        print(f"[Bitwarden] ✅ {len(loaded)} secrets loaded into environment.")
+        print("[Bitwarden] âœ… BW_SESSION cleared. Vault session token removed from environment.")
+        print(f"[Bitwarden] âœ… {len(loaded)} secrets loaded into environment.")
 
     return loaded
 
@@ -208,3 +239,4 @@ def verify_session() -> bool:
         print(f"[Bitwarden] Session invalid: {e}")
         print("Run: $env:BW_SESSION = (bw unlock --raw)")
         return False
+

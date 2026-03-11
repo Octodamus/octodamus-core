@@ -213,6 +213,66 @@ def get_full(date: Optional[str] = None, key=Depends(require_key)):
     }
 
 
+
+
+# ── ACP Resource endpoints (public, no auth) ──────────────────────────────────
+# These are listed as free Resources on Virtuals ACP marketplace.
+# Buyers preview live data before purchasing a paid job.
+
+@app.get("/api/fear-greed", tags=["ACP Resources"])
+def acp_fear_greed():
+    """
+    Live crypto Fear & Greed index.
+    Free ACP resource endpoint — no API key required.
+    """
+    try:
+        from octo_pulse import run_pulse_scan
+        result = run_pulse_scan()
+        fng = result.get("fear_greed")
+        if not fng:
+            return {"error": "Fear & Greed data unavailable", "timestamp": datetime.utcnow().isoformat()}
+        return {
+            "value": fng.get("value"),
+            "label": fng.get("label"),
+            "previous_close": fng.get("previous_close"),
+            "timestamp": datetime.utcnow().isoformat(),
+            "source": "alternative.me",
+            "powered_by": "Octodamus (@octodamusai)",
+        }
+    except Exception as e:
+        return {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/btc-dominance", tags=["ACP Resources"])
+def acp_btc_dominance():
+    """
+    Live BTC dominance percentage and top trending coins.
+    Free ACP resource endpoint — no API key required.
+    """
+    try:
+        from octo_gecko import run_gecko_scan
+        result = run_gecko_scan()
+        g = result.get("global") or {}
+        return {
+            "btc_dominance": g.get("btc_dominance"),
+            "total_market_cap_usd": g.get("total_market_cap_usd"),
+            "market_cap_change_24h": g.get("market_cap_change_24h"),
+            "trending": [c.get("symbol") for c in result.get("trending", [])],
+            "top_gainers": [
+                {"symbol": c.get("symbol"), "chg_24h": c.get("chg_24h")}
+                for c in result.get("gainers", [])
+            ],
+            "top_losers": [
+                {"symbol": c.get("symbol"), "chg_24h": c.get("chg_24h")}
+                for c in result.get("losers", [])
+            ],
+            "timestamp": datetime.utcnow().isoformat(),
+            "source": "CoinGecko",
+            "powered_by": "Octodamus (@octodamusai)",
+        }
+    except Exception as e:
+        return {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+
 # ── admin key management (protected by ADMIN_SECRET env var) ─────────────────
 ADMIN_SECRET = os.environ.get("OCTODATA_ADMIN_SECRET", "change-me-in-bitwarden")
 
