@@ -40,6 +40,9 @@ from octo_eyes_market import run_market_monitor, generate_deep_dive_post
 from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
+from octo_scorecard import (
+    extract_and_log_from_signal, resolve_predictions, generate_scorecard_post, get_stats_summary
+)
 
 claude = anthropic.Anthropic()
 
@@ -157,6 +160,8 @@ def mode_monitor() -> None:
                 metadata=item["signal"],
                 priority=2,
             )
+            # Log prediction to scorecard
+            extract_and_log_from_signal(item["signal"], item["post"])
         if signals_and_posts:
             print(f"[Runner] {len(signals_and_posts)} signal(s) queued.")
 
@@ -343,6 +348,34 @@ def mode_journal() -> None:
 # ENTRY POINT
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+# MODE: SCORECARD — resolve + post weekly receipts
+# ─────────────────────────────────────────────
+
+def mode_scorecard() -> None:
+    print(f"\n[Runner] 📊 Running scorecard resolution...")
+    try:
+        # Resolve open predictions
+        summary = resolve_predictions()
+        print(f"[Runner] Resolved {summary['resolved']} predictions: {summary['hits']} hits, {summary['misses']} misses")
+
+        # Generate and post weekly scorecard on Sundays
+        from datetime import datetime
+        if datetime.now().weekday() == 6:  # Sunday
+            post = generate_scorecard_post()
+            if post:
+                queue_post(post, post_type="scorecard", priority=1)
+                posted = process_queue(max_posts=1)
+                print(f"[Runner] Scorecard posted to X.")
+            else:
+                print("[Runner] No scorecard data to post yet.")
+        else:
+            print(f"[Runner] Predictions resolved. Scorecard posts on Sundays.")
+    except Exception as e:
+        print(f"[Runner] mode_scorecard failed: {e}")
+        discord_alert(f"scorecard mode failed: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Octodamus Runner")
     parser.add_argument(
@@ -371,6 +404,8 @@ if __name__ == "__main__":
         mode_deep_dive(args.ticker)
     elif args.mode == "wisdom":
         mode_wisdom()
+    elif args.mode == "scorecard":
+        mode_scorecard()
     elif args.mode == "journal":
         mode_journal()
     elif args.mode == "status":
