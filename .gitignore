@@ -68,3 +68,9 @@ data/api_keys.json
 data/
 
 .octo_secrets
+
+fix_*.py
+wire_*.py
+octo_predictions.json
+octo_twitter_user_id.txt
+octodamus_memory.json
