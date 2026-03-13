@@ -40,6 +40,7 @@ from octo_eyes_market import run_market_monitor, generate_deep_dive_post
 from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
+from octo_signal_card import build_signal_card
 from octo_scorecard import (
     extract_and_log_from_signal, resolve_predictions, generate_scorecard_post, get_stats_summary
 )
@@ -247,6 +248,13 @@ def mode_daily() -> None:
         )
 
         post = response.content[0].text.strip()
+        # Wrap in Oracle Signal Card
+        try:
+            card = build_signal_card(post)
+            if len(card) <= 280:
+                post = card
+        except Exception as e:
+            print(f"[Runner] Signal card failed, using plain post: {e}")
         queue_post(post, post_type="daily_read", priority=1)
         posted = process_queue(max_posts=1)
         print(f"[Runner] Daily read {'posted' if posted else 'queued'}:\n  {post}")
@@ -348,6 +356,13 @@ def mode_wisdom() -> None:
         )
 
         post = response.content[0].text.strip()
+        # Wrap in Oracle Signal Card
+        try:
+            card = build_signal_card(post)
+            if len(card) <= 280:
+                post = card
+        except Exception as e:
+            print(f"[Runner] Signal card failed, using plain post: {e}")
         queue_post(post, post_type="wisdom", priority=8)
         posted = process_queue(max_posts=1)
         print(f"[Runner] Wisdom post {'posted' if posted else 'queued'}:\n  {post}")
