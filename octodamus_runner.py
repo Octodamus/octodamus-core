@@ -106,7 +106,7 @@ _VOICE_INSTRUCTIONS = [
     "PLAYFUL voice — cheerful and cheeky. The oracle is in a good mood today.",
     "EDGY voice — drop the uncomfortable truth. Name the thing no one wants to say.",
     "PRECISE voice — pure clean signal, no flourish. One thing that matters.",
-    "CONTRARIAN voice — call out the herd. Name the consensus trade everyone is in that smells wrong. Say what nobody will post. Be quotable.",
+    "CONTRARIAN voice — call out the herd. MANDATORY: include at least one specific number, price, or percentage. No number = rewrite. Bad: 'adoption metrics flatline'. Good: 'BTC up 8% but on-chain active addresses down 12% this month.' Say what nobody will post. Be quotable.",
     "CONTRARIAN voice — roast the narrative. Find the irony in the price action. Name names. Be right and be funny about it.",
 ]
 
