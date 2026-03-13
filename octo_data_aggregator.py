@@ -61,10 +61,20 @@ def load_secrets() -> dict:
 
 # ── price snapshot ────────────────────────────────────────────────────────────
 def get_price_snapshot() -> dict:
-    """Pull spot prices — CoinGecko for crypto, yfinance for stocks."""
-    prices = {}
+    """Pull spot prices using existing free sources (CoinGecko + Yahoo Finance)."""
+    try:
+        import octo_spot_prices
+        prices = octo_spot_prices.get_all_prices()
+        log.info(f"Price snapshot: {list(prices.keys())}")
+        return prices
+    except Exception as e:
+        log.warning(f"octo_spot_prices failed ({e}), falling back to direct fetch")
+        return _fallback_prices()
 
-    # crypto via CoinGecko
+
+def _fallback_prices() -> dict:
+    """Direct CoinGecko + yfinance fallback."""
+    prices = {}
     ids = ",".join(COINGECKO_IDS.values())
     try:
         r = requests.get(
@@ -79,26 +89,20 @@ def get_price_snapshot() -> dict:
                     "price": data[cg_id].get("usd"),
                     "change_24h": data[cg_id].get("usd_24h_change"),
                 }
-        log.info(f"CoinGecko prices: {list(COINGECKO_IDS.keys())}")
     except Exception as e:
-        log.warning(f"CoinGecko error: {e}")
+        log.warning(f"CoinGecko fallback error: {e}")
 
-    # stocks via yfinance
     try:
         import yfinance as yf
         for sym in STOCK_WATCHLIST:
-            try:
-                t = yf.Ticker(sym)
-                info = t.fast_info
-                prices[sym] = {
-                    "price": round(info.last_price, 2),
-                    "change_24h": None,
-                }
-            except Exception as e:
-                log.warning(f"yfinance error for {sym}: {e}")
-        log.info(f"yfinance prices: {STOCK_WATCHLIST}")
-    except ImportError:
-        log.warning("yfinance not installed — run: pip install yfinance --break-system-packages")
+            t = yf.Ticker(sym)
+            info = t.fast_info
+            prices[sym] = {
+                "price": round(info.last_price, 2),
+                "change_24h": None,
+            }
+    except Exception as e:
+        log.warning(f"yfinance fallback error: {e}")
 
     return prices
 
@@ -130,7 +134,7 @@ def get_news_digest(tavily_api_key: str) -> dict:
                 for a in results
             ]
             log.info(f"  News: {sym} — {len(results)} articles")
-            time.sleep(0.5)
+            time.sleep(0.5)  # polite rate limiting
         except Exception as e:
             log.warning(f"  News fetch failed for {sym}: {e}")
             digests[sym] = []
@@ -159,6 +163,15 @@ def score_sentiment(client: anthropic.Anthropic, symbol: str, headlines: list) -
         f"- {h['title']}" for h in headlines[:5] if h.get("title")
     )
 
+    def score_sentiment(client: anthropic.Anthropic, symbol: str, headlines: list) -> dict:
+    """Use Haiku to score sentiment from headlines. Cheap, fast."""
+    if not headlines:
+        return {"score": 0, "label": "NEUTRAL", "confidence": "LOW", "summary": "No recent news found."}
+
+    headline_text = "\n".join(
+        f"- {h['title']}" for h in headlines[:5] if h.get("title")
+    )
+
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -169,7 +182,7 @@ def score_sentiment(client: anthropic.Anthropic, symbol: str, headlines: list) -
             ],
         )
         raw = response.content[0].text.strip()
-        # strip markdown fences if model wrapped the JSON
+        # strip markdown fences
         if "```" in raw:
             raw = raw.replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
@@ -194,7 +207,7 @@ Output ONLY valid JSON:
 
 
 def generate_briefing(client: anthropic.Anthropic, sentiment_map: dict, prices: dict) -> dict:
-    """Generate a single market briefing from aggregated data."""
+    """Generate a single market briefing from aggregated data. Sonnet-level quality."""
     summary_lines = []
     for sym, s in sentiment_map.items():
         price_info = prices.get(sym, {})
@@ -210,14 +223,17 @@ def generate_briefing(client: anthropic.Anthropic, sentiment_map: dict, prices: 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=500,
+            max_tokens=400,
             system=BRIEFING_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
-        if "```" in raw:
-            raw = raw.replace("```json", "").replace("```", "").strip()
-        briefing = json.loads(raw)
+        # strip markdown fences if Haiku wrapped the JSON
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw.strip())
         briefing["timestamp"] = datetime.utcnow().isoformat()
         return briefing
     except Exception as e:
@@ -239,7 +255,7 @@ def write_snapshot(run_type: str, payload: dict) -> Path:
 
 # ── run modes ─────────────────────────────────────────────────────────────────
 def run_prices():
-    """1am job — price snapshot only (no AI cost)"""
+    """1am job — price snapshot only (cheapest, no AI)"""
     log.info("=== OctoData: prices run ===")
     prices = get_price_snapshot()
     payload = {
@@ -278,6 +294,7 @@ def run_briefing(secrets: dict):
     log.info("=== OctoData: briefing run ===")
     client = anthropic.Anthropic(api_key=secrets.get("ANTHROPIC_API_KEY"))
 
+    # load today's earlier snapshots if available
     today_dir = DATA_DIR / str(date.today())
     prices, sentiment_map = {}, {}
 
@@ -289,6 +306,7 @@ def run_briefing(secrets: dict):
     if sentiment_file.exists():
         sentiment_map = json.loads(sentiment_file.read_text()).get("symbols", {})
 
+    # fall back to live if snapshots missing
     if not prices:
         prices = get_price_snapshot()
     if not sentiment_map:
