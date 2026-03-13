@@ -546,14 +546,23 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import asyncio
     user_id = update.effective_user.id
     user_msg = update.message.text
     history = get_user_history(user_id)
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    async def keep_typing():
+        while True:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(keep_typing())
     try:
         reply = await ask_claude(user_msg, history)
     except Exception as e:
         reply = f"Error: {e}"
+    finally:
+        typing_task.cancel()
     await update.message.reply_text(reply)
     append_user_history(user_id, user_msg, reply)
 
