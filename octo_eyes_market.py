@@ -1,9 +1,9 @@
-"""
+﻿"""
 octo_eyes_market.py
-OctoEyes — Market Signal Monitor
+OctoEyes â€” Market Signal Monitor
 
 Stock prices:  Financial Datasets API (free tier: NVDA, TSLA, AAPL, MSFT, SPY, QQQ)
-Crypto prices: CoinGecko free API (no key required — BTC, ETH, SOL)
+Crypto prices: CoinGecko free API (no key required â€” BTC, ETH, SOL)
 
 Removed: META (402 on free Financial Datasets tier)
 Fixed:   Crypto was calling /crypto/prices/snapshot/ which returns 400 on free tier
@@ -25,12 +25,12 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # WATCHLIST
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Free tier Financial Datasets API tickers (META and snapshot endpoint not available)
-STOCK_WATCHLIST = ["NVDA", "TSLA", "AAPL", "MSFT", "SPY", "QQQ"]
+STOCK_WATCHLIST = ["NVDA", "TSLA", "AAPL", "MSFT"]
 
 # Crypto via CoinGecko (free, no key needed)
 CRYPTO_WATCHLIST = ["bitcoin", "ethereum", "solana"]
@@ -41,15 +41,15 @@ CRYPTO_DISPLAY = {
     "solana":   "SOL",
 }
 
-# Alert threshold — % move to trigger a signal post
+# Alert threshold â€” % move to trigger a signal post
 MOVE_THRESHOLD_PCT = 3.0
 
 _TICKER_FETCH_DELAY = 0.25
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # CRYPTO PRICE via COINGECKO
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _get_crypto_prices() -> dict:
     """
@@ -75,9 +75,9 @@ def _get_crypto_prices() -> dict:
         return {}
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SIGNAL DETECTION
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def check_for_signals() -> list[dict]:
     """
@@ -126,11 +126,11 @@ def check_for_signals() -> list[dict]:
     return signals
 
 
-# ─────────────────────────────────────────────
-# SIGNAL → POST
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SIGNAL â†’ POST
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-OCTO_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
+OCTO_SYSTEM = """You are Octodamus â€” oracle octopus, market seer of the Pacific depths.
 You are @octodamusai on X. Max 280 chars. No hashtags. No engagement bait.
 Speak with bored certainty. You already knew this was coming.
 Lead with the specific number. Then the insight. One ocean metaphor max."""
@@ -154,7 +154,7 @@ def generate_oracle_post(signal: dict) -> str:
         pass
 
     prompt = (
-        f"Market signal: {ticker} {direction} {change_pct:+.2f}% — now ${price}\n"
+        f"Market signal: {ticker} {direction} {change_pct:+.2f}% â€” now ${price}\n"
         f"Recent headlines: {json.dumps(news_headlines)}\n\n"
         "Generate ONE oracle post for @octodamusai. Under 280 chars.\n"
         "Lead with the specific number and ticker. Sound like you already knew.\n"
@@ -171,9 +171,9 @@ def generate_oracle_post(signal: dict) -> str:
     return response.content[0].text.strip()
 
 
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # MAIN MONITOR
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_market_monitor() -> list[dict]:
     """
@@ -200,11 +200,11 @@ def run_market_monitor() -> list[dict]:
     return posts
 
 
-# ─────────────────────────────────────────────
-# DEEP DIVE — weekly fundamentals thread
-# ─────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# DEEP DIVE â€” weekly fundamentals thread
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-DEEP_DIVE_SYSTEM = """You are Octodamus — oracle octopus, market seer.
+DEEP_DIVE_SYSTEM = """You are Octodamus â€” oracle octopus, market seer.
 You have examined the depths of a company's fundamentals.
 Speak with bored certainty. Use ocean metaphors sparingly. Be brief and devastating.
 You are selling wisdom, not hype."""
@@ -235,4 +235,5 @@ def generate_deep_dive_post(ticker: str) -> str:
 if __name__ == "__main__":
     posts = run_market_monitor()
     for p in posts:
-        print(f"\n🐙 ORACLE POST:\n{p['post']}")
+        print(f"\nðŸ™ ORACLE POST:\n{p['post']}")
+
