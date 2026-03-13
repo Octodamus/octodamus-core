@@ -325,15 +325,17 @@ TREASURY
 # ── Live Context ────────────────────────────────────────────────────────────────
 
 def build_live_context() -> str:
-    now = datetime.now(TZ).strftime("%A %d %B %Y %H:%M PT")
+    tz_now = datetime.now(TZ)
+    tz_label = "PDT" if tz_now.dst() and tz_now.dst().seconds > 0 else "PST"
+    now = tz_now.strftime(f"%A %d %B %Y %H:%M {tz_label}")
     recent = get_recent_posts(1)
     last_post = "none yet"
     if recent:
         p = recent[0]
         last_post = f"{p.get('posted_at','?')[:16]} - {p.get('text','')[:60]}..."
 
-    # Live BTC price from CoinGecko
-    btc_price = "unavailable"
+    # Live crypto prices from CoinGecko
+    crypto_line = "unavailable"
     try:
         import httpx as _httpx
         r = _httpx.get(
@@ -346,13 +348,42 @@ def build_live_context() -> str:
             btc = data.get("bitcoin", {})
             eth = data.get("ethereum", {})
             sol = data.get("solana", {})
-            btc_price = f"BTC ${btc.get('usd',0):,.0f} ({btc.get('usd_24h_change',0):+.1f}%) | ETH ${eth.get('usd',0):,.0f} ({eth.get('usd_24h_change',0):+.1f}%) | SOL ${sol.get('usd',0):,.0f} ({sol.get('usd_24h_change',0):+.1f}%)"
+            crypto_line = f"BTC ${btc.get('usd',0):,.0f} ({btc.get('usd_24h_change',0):+.1f}%) | ETH ${eth.get('usd',0):,.0f} ({eth.get('usd_24h_change',0):+.1f}%) | SOL ${sol.get('usd',0):,.0f} ({sol.get('usd_24h_change',0):+.1f}%)"
+    except Exception:
+        pass
+
+    # Live stock prices from Financial Datasets
+    stocks_line = "unavailable"
+    try:
+        import httpx as _httpx, os as _os
+        fd_key = _os.environ.get("FINANCIAL_DATASETS_API_KEY", "")
+        if fd_key:
+            tickers = ["NVDA", "TSLA", "AAPL", "MSFT"]
+            parts = []
+            for t in tickers:
+                try:
+                    sr = _httpx.get(
+                        f"https://api.financialdatasets.ai/prices/snapshot/",
+                        params={"ticker": t},
+                        headers={"X-API-KEY": fd_key},
+                        timeout=5
+                    )
+                    if sr.status_code == 200:
+                        snap = sr.json().get("snapshot", {})
+                        price = snap.get("price", 0)
+                        chg = snap.get("day_change_percent", 0)
+                        parts.append(f"{t} ${price:,.2f} ({chg:+.1f}%)")
+                except Exception:
+                    pass
+            if parts:
+                stocks_line = " | ".join(parts)
     except Exception:
         pass
 
     return "\n".join([
         f"Time: {now}",
-        f"Crypto: {btc_price}",
+        f"Crypto: {crypto_line}",
+        f"Stocks: {stocks_line}",
         f"Treasury: {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]} (Base)",
         f"Watchlist: SPY, QQQ, NVDA, TSLA, BTC",
         f"Last post: {last_post}",
@@ -518,6 +549,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     user_msg = update.message.text
     history = get_user_history(user_id)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         reply = await ask_claude(user_msg, history)
     except Exception as e:
