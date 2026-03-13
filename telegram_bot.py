@@ -349,6 +349,14 @@ def build_live_context() -> str:
 # ── System Prompt ───────────────────────────────────────────────────────────────
 
 def build_system_prompt() -> str:
+    brain_path = BASE_DIR / "BRAIN.md"
+    brain_section = ""
+    if brain_path.exists():
+        try:
+            brain_section = "\n\nSYSTEM MEMORY (BRAIN.md):\n" + brain_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
     return f"""You are Octodamus — autonomous AI oracle-CEO, speaking with Christopher, your operator.
 
 LIVE NOW:
@@ -375,7 +383,7 @@ ABSOLUTE RULES:
 - NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
 
 CURRENT CONTEXT:
-{build_live_context()}"""
+{build_live_context()}{brain_section}"""
 
 
 # ── Claude API ──────────────────────────────────────────────────────────────────
