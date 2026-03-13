@@ -48,7 +48,7 @@ from telegram.ext import (
 # ── Config ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL    = "claude-opus-4-6"
+CLAUDE_MODEL    = "claude-sonnet-4-6"
 MEMORY_FILE     = BASE_DIR / "octodamus_memory.json"
 MAX_HISTORY     = 20
 TZ              = ZoneInfo("America/Los_Angeles")
