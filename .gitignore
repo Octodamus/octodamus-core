@@ -66,3 +66,5 @@ data/api_keys.json
 data/
 data/api_keys.json
 data/
+
+.octo_secrets

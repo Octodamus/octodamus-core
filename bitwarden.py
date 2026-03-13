@@ -1,242 +1,308 @@
 ﻿"""
 bitwarden.py
-Octodamus â€” Bitwarden Secrets Manager
-All API keys are stored in Bitwarden. This module fetches them at runtime.
+Octodamus â€” Secrets Manager
 
-Requirements:
-    - Bitwarden CLI installed: https://bitwarden.com/help/cli/
-    - Logged in: bw login
-    - BW_SESSION env var set (from: bw unlock --raw)
+Two modes:
+  Interactive  BW_SESSION is set â†’ fetch from Bitwarden vault, save to cache
+  Background   No BW_SESSION    â†’ load from .octo_secrets cache file
 
-Setup (one time per session):
+Setup (run once after each reboot):
+    powershell -File octo_unlock.ps1
+    â€” OR manually â€”
     $env:BW_SESSION = (bw unlock --raw)
+    C:\\Python314\\python.exe octodamus_runner.py --mode monitor
 
-Bitwarden item names (Octodamus vault):
-    "AGENT - Octodamus - Brain - Anthropic"
-    "AGENT - Octodamus - Financial Datasets API"
-    "AGENT - Octodamus - Social - OpenTweet"
-    "AGENT - Octodamus - Control - Telegram"
-    "AGENT - Octodamus - Search - Tavily"
-    "AGENT - Octodamus - Deploy - Vercel"
-    "AGENT - Octodamus - Domain - Cloudflare"
-    "AGENT - Octodamus - Payments - Stripe - Products"
-    "AGENT - Octodamus - Payments - Stripe - Readonly"
-    "AGENT - Octodamus - Social - Moltbook"
-    "AGENT - Octodamus - Data - NewsAPI"
-    "AGENT - Octodamus - OpenRouter"
-    "AGENT - Octodamus - OctoData Admin Key"
-    "me: AGENT - Octodamus - Finance - Bankr - Wallet"
-    "AGENT - Octodamus - FRED API"         (free: fred.stlouisfed.org)
-    "AGENT - Octodamus - Etherscan API"    (free: etherscan.io/apis)
+Bitwarden item names:
+    AGENT - Octodamus - Brain - Anthropic
+    AGENT - Octodamus - Financial Datasets API
+    AGENT - Octodamus - Control - Telegram
+    AGENT - Octodamus - Search - Tavily
+    AGENT - Octodamus - Deploy - Vercel
+    AGENT - Octodamus - Domain - Cloudflare
+    AGENT - Octodamus - Payments - Stripe - Products
+    AGENT - Octodamus - Payments - Stripe - Readonly
+    AGENT - Octodamus - Social - Moltbook
+    AGENT - Octodamus - Data - NewsAPI
+    AGENT - Octodamus - OpenRouter
+    AGENT - Octodamus - OctoData Admin Key
+    AGENT - Octodamus - FRED API
+    AGENT - Octodamus - Open Exchange Rates
+    AGENT - Octodamus - Etherscan API
+    AGENT - Octodamus - Social - Twitter API   (username=API Key, password=API Secret, notes=rest)
+    AGENT - Octodamus - Social - Discord       (password=webhook URL)
+    me: AGENT - Octodamus - Finance - Bankr - Wallet   (optional)
 """
 
-import subprocess
 import json
 import os
+import subprocess
 import sys
-
-
-# FIX: Do NOT read BW_SESSION at module load time.
-# os.environ["BW_SESSION"] may not be set yet when this module is imported.
-# Always read it at call time inside _bw() so the value is always fresh.
-
-
-# Full path to bw CLI â€” required because Python subprocess can't find .cmd files on PATH
-import sys as _sys
-BW_CMD = "/home/walli/.local/bin/bw" if _sys.platform == "linux" else r"C:\Users\walli\AppData\Roaming\npm\bw.cmd"
-
-
-def _bw(args: list) -> str:
-    """Run a Bitwarden CLI command and return stdout."""
-    bw_session = os.environ.get("BW_SESSION")
-    if not bw_session:
-        raise EnvironmentError(
-            "[Bitwarden] BW_SESSION not set.\n"
-            "Run: $env:BW_SESSION = (bw unlock --raw)\n"
-            "Then restart your agent."
-        )
-    result = subprocess.run(
-        [BW_CMD] + args + ["--session", bw_session],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"[Bitwarden] CLI error: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def get_secret(item_name: str) -> str:
-    """
-    Retrieve the password field from a Bitwarden item by name.
-    This is where API keys are stored.
-    """
-    raw = _bw(["get", "item", item_name])
-    item = json.loads(raw)
-    password = item.get("login", {}).get("password")
-    if not password:
-        raise ValueError(f"[Bitwarden] No password found for item: '{item_name}'")
-    return password
-
-
-def get_note(item_name: str) -> str:
-    """Retrieve a secure note from Bitwarden (for multi-field secrets)."""
-    raw = _bw(["get", "item", item_name])
-    item = json.loads(raw)
-    return item.get("notes", "")
-
-
-def get_custom_field(item_name: str, field_name: str) -> str:
-    """Retrieve a specific custom field from a Bitwarden item."""
-    raw = _bw(["get", "item", item_name])
-    item = json.loads(raw)
-    fields = item.get("fields", [])
-    for field in fields:
-        if field.get("name", "").lower() == field_name.lower():
-            return field.get("value", "")
-    raise ValueError(f"[Bitwarden] Field '{field_name}' not found in item '{item_name}'")
-
+from datetime import datetime, timezone
+from pathlib import Path
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# OCTODAMUS SECRETS â€” fetch all at startup
+# CONSTANTS
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# Bitwarden item name â†’ env var name mapping
-# Names match exactly what's stored in the Octodamus Bitwarden vault
+BW_CMD       = r"C:\Users\walli\AppData\Roaming\npm\bw.cmd"
+CACHE_FILE   = Path(__file__).parent / ".octo_secrets"
+CACHE_MAX_AGE_HOURS = 23  # warn if cache older than this
+
+# Bitwarden item name â†’ env var mapping
 OCTODAMUS_SECRETS = {
-    # â”€â”€ Core infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    "AGENT - Octodamus - Brain - Anthropic":             "ANTHROPIC_API_KEY",
-    "AGENT - Octodamus - Financial Datasets API":        "FINANCIAL_DATASETS_API_KEY",
+    "AGENT - Octodamus - Brain - Anthropic":            "ANTHROPIC_API_KEY",
+    "AGENT - Octodamus - Financial Datasets API":       "FINANCIAL_DATASETS_API_KEY",
     "AGENT - Octodamus - Social - OpenTweet":            "OPENTWEET_API_KEY",
-    "AGENT - Octodamus - Control - Telegram":            "TELEGRAM_BOT_TOKEN",
-    "AGENT - Octodamus - Search - Tavily":               "TAVILY_API_KEY",
-    "AGENT - Octodamus - Deploy - Vercel":               "VERCEL_API_KEY",
-    "AGENT - Octodamus - Domain - Cloudflare":           "CLOUDFLARE_API_KEY",
-    "AGENT - Octodamus - Payments - Stripe - Products":  "STRIPE_PRODUCTS_API_KEY",
-    "AGENT - Octodamus - Payments - Stripe - Readonly":  "STRIPE_READONLY_API_KEY",
-    "AGENT - Octodamus - Social - Moltbook":             "MOLTBOOK_API_KEY",
-    # â”€â”€ Data & content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    "AGENT - Octodamus - Data - NewsAPI":                "NEWSAPI_API_KEY",
-    "AGENT - Octodamus - OpenRouter":                    "OPENROUTER_API_KEY",
-    "AGENT - Octodamus - OctoData Admin Key":            "OCTODATA_ADMIN_KEY",
-    # â”€â”€ Four New Minds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    "AGENT - Octodamus - FRED API":                      "FRED_API_KEY",
-    "AGENT - Octodamus - Open Exchange Rates":           "OPENEXCHANGERATES_API_KEY",
-    "AGENT - Octodamus - Etherscan API":                 "ETHERSCAN_API_KEY",
+    "AGENT - Octodamus - Control - Telegram":           "TELEGRAM_BOT_TOKEN",
+    "AGENT - Octodamus - Search - Tavily":              "TAVILY_API_KEY",
+    "AGENT - Octodamus - Deploy - Vercel":              "VERCEL_API_KEY",
+    "AGENT - Octodamus - Domain - Cloudflare":          "CLOUDFLARE_API_KEY",
+    "AGENT - Octodamus - Payments - Stripe - Products": "STRIPE_PRODUCTS_API_KEY",
+    "AGENT - Octodamus - Payments - Stripe - Readonly": "STRIPE_READONLY_API_KEY",
+    "AGENT - Octodamus - Social - Moltbook":            "MOLTBOOK_API_KEY",
+    "AGENT - Octodamus - Data - NewsAPI":               "NEWSAPI_API_KEY",
+    "AGENT - Octodamus - OpenRouter":                   "OPENROUTER_API_KEY",
+    "AGENT - Octodamus - OctoData Admin Key":           "OCTODATA_ADMIN_KEY",
+    "AGENT - Octodamus - FRED API":                     "FRED_API_KEY",
+    "AGENT - Octodamus - Open Exchange Rates":          "OPEN_EXCHANGE_RATES_API_KEY",
+    "AGENT - Octodamus - Etherscan API":                "ETHERSCAN_API_KEY",
+    "AGENT - Octodamus - Social - Discord":             "DISCORD_WEBHOOK_URL",
 }
 
-# Optional secrets â€” only loaded if the item exists in Bitwarden
 OCTODAMUS_OPTIONAL_SECRETS = {
-    "me: AGENT - Octodamus - Finance - Bankr - Wallet":  "BANKR_API_KEY",
+    "me: AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",
 }
 
-
-def load_twitter_secrets() -> None:
-    """Load Twitter API credentials from Bitwarden notes field."""
-    try:
-        raw = _bw(["get", "item", "AGENT - Octodamus - Social - Twitter API"])
-        item = json.loads(raw)
-        login = item.get("login", {})
-        os.environ["TWITTER_API_KEY"] = login.get("username", "")
-        os.environ["TWITTER_API_SECRET"] = login.get("password", "")
-        notes = item.get("notes", "") or ""
-        for line in notes.splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                val = val.strip()
-                k = key.strip().upper().replace(" ", "_")
-                if k == "BEARER_TOKEN":
-                    os.environ["TWITTER_BEARER_TOKEN"] = val
-                elif k == "ACCESS_TOKEN" and "SECRET" not in k.upper():
-                    os.environ["TWITTER_ACCESS_TOKEN"] = val
-                elif k == "ACCESS_TOKEN_SECRET":
-                    os.environ["TWITTER_ACCESS_TOKEN_SECRET"] = val
-                elif k == "CLIENT_ID":
-                    os.environ["TWITTER_CLIENT_ID"] = val
-                elif k == "CLIENT_SECRET":
-                    os.environ["TWITTER_CLIENT_SECRET"] = val
-        print("[Bitwarden] ✓ Loaded: AGENT - Octodamus - Social - Twitter API")
-    except Exception as e:
-        print(f"[Bitwarden] ⚠ Twitter API secrets not loaded: {e}")
-
-# Critical secrets â€” hard exit if any are missing
 OCTODAMUS_CRITICAL_KEYS = {
     "ANTHROPIC_API_KEY",
     "TELEGRAM_BOT_TOKEN",
-    "OPENTWEET_API_KEY",
-    "STRIPE_PRODUCTS_API_KEY",
 }
 
 
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# BITWARDEN CLI
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _bw(args: list) -> str:
+    bw_session = os.environ.get("BW_SESSION")
+    if not bw_session:
+        raise EnvironmentError("BW_SESSION not set")
+    result = subprocess.run(
+        [BW_CMD] + args + ["--session", bw_session],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"BW CLI error: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _get_item(item_name: str) -> dict:
+    raw = _bw(["get", "item", item_name])
+    return json.loads(raw)
+
+
+def _get_password(item_name: str) -> str:
+    item = _get_item(item_name)
+    pw = item.get("login", {}).get("password", "")
+    if not pw:
+        raise ValueError(f"No password in '{item_name}'")
+    return pw
+
+
+def _get_username(item_name: str) -> str:
+    item = _get_item(item_name)
+    return item.get("login", {}).get("username", "")
+
+
+def _get_notes(item_name: str) -> str:
+    item = _get_item(item_name)
+    return item.get("notes", "") or ""
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# TWITTER SECRETS (multi-field item)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _load_twitter_from_bw() -> dict:
+    """
+    Twitter item layout:
+      username â†’ API Key (Consumer Key)
+      password â†’ API Secret (Consumer Secret)
+      notes    â†’ key: value pairs, one per line
+    """
+    item_name = "AGENT - Octodamus - Social - Twitter API"
+    secrets = {}
+    try:
+        item = _get_item(item_name)
+        login = item.get("login", {})
+        secrets["TWITTER_API_KEY"]    = login.get("username", "")
+        secrets["TWITTER_API_SECRET"] = login.get("password", "")
+
+        notes = item.get("notes", "") or ""
+        for line in notes.splitlines():
+            line = line.strip()
+            if ":" in line:
+                key, _, val = line.partition(":")
+                key = key.strip().upper().replace(" ", "_")
+                val = val.strip()
+                if "BEARER" in key:
+                    secrets["TWITTER_BEARER_TOKEN"] = val
+                elif "ACCESS_TOKEN_SECRET" in key or ("ACCESS" in key and "SECRET" in key):
+                    secrets["TWITTER_ACCESS_TOKEN_SECRET"] = val
+                elif "ACCESS_TOKEN" in key or ("ACCESS" in key and "TOKEN" in key):
+                    secrets["TWITTER_ACCESS_TOKEN"] = val
+                elif "CLIENT_SECRET" in key:
+                    secrets["TWITTER_CLIENT_SECRET"] = val
+                elif "CLIENT_ID" in key:
+                    secrets["TWITTER_CLIENT_ID"] = val
+    except Exception as e:
+        print(f"[Bitwarden] âš  Twitter secrets failed: {e}")
+    return secrets
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SECRETS CACHE
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _save_cache(secrets: dict) -> None:
+    """Write secrets to local cache file for background tasks."""
+    cache = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "secrets": secrets,
+    }
+    CACHE_FILE.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    print(f"[Bitwarden] âœ… Secrets cached to {CACHE_FILE.name}")
+
+
+def _load_cache() -> dict | None:
+    """Load secrets from cache. Returns None if missing or too old."""
+    if not CACHE_FILE.exists():
+        return None
+    try:
+        cache = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        saved_at = datetime.fromisoformat(cache["saved_at"])
+        age_hours = (datetime.now(timezone.utc) - saved_at).total_seconds() / 3600
+        if age_hours > CACHE_MAX_AGE_HOURS:
+            print(f"[Bitwarden] âš  Cache is {age_hours:.0f}h old. Run octo_unlock.ps1 to refresh.")
+        return cache.get("secrets", {})
+    except Exception as e:
+        print(f"[Bitwarden] Cache read error: {e}")
+        return None
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# MAIN: LOAD ALL SECRETS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 def load_all_secrets(verbose: bool = False) -> dict:
     """
-    Fetch all Octodamus secrets from Bitwarden and inject into os.environ.
-    Call this once at the top of any Octodamus entry point.
+    Load all Octodamus secrets into os.environ.
 
-    Hard exits on missing critical secrets.
-    Warns (no exit) on missing non-critical secrets.
-
-    Returns dict of {env_var: value} for all loaded secrets.
+    Priority:
+      1. Bitwarden vault (if BW_SESSION is set) â†’ also saves cache
+      2. .octo_secrets cache file (background tasks)
+      3. Existing os.environ values (already loaded)
     """
+    has_session = bool(os.environ.get("BW_SESSION"))
+
+    if has_session:
+        return _load_from_bitwarden(verbose=verbose)
+    else:
+        return _load_from_cache(verbose=verbose)
+
+
+def _load_from_bitwarden(verbose: bool = False) -> dict:
+    """Fetch secrets from Bitwarden vault, save cache, inject into env."""
     loaded = {}
     missing_critical = []
 
-    # Required secrets
+    # Standard secrets (password field)
     for item_name, env_var in OCTODAMUS_SECRETS.items():
         try:
-            value = get_secret(item_name)
+            value = _get_password(item_name)
             os.environ[env_var] = value
             loaded[env_var] = value
             if verbose:
-                print(f"[Bitwarden] âœ“ Loaded: {item_name}")
+                print(f"[Bitwarden] âœ“ {item_name}")
         except Exception as e:
             if env_var in OCTODAMUS_CRITICAL_KEYS:
-                print(f"[Bitwarden] âœ— CRITICAL secret missing: {item_name}\n  â†’ {e}")
+                print(f"[Bitwarden] âœ— CRITICAL missing: {item_name}")
                 missing_critical.append(env_var)
             else:
-                print(f"[Bitwarden] âš  Non-critical secret missing: {item_name}\n  â†’ {e}")
+                if verbose:
+                    print(f"[Bitwarden] âš  Optional missing: {item_name}")
 
     # Optional secrets
     for item_name, env_var in OCTODAMUS_OPTIONAL_SECRETS.items():
         try:
-            value = get_secret(item_name)
+            value = _get_password(item_name)
             os.environ[env_var] = value
             loaded[env_var] = value
             if verbose:
-                print(f"[Bitwarden] âœ“ Loaded (optional): {item_name}")
+                print(f"[Bitwarden] âœ“ {item_name} (optional)")
         except Exception:
-            if verbose:
-                print(f"[Bitwarden] â€“ Skipped (not found): {item_name}")
+            pass
 
-    load_twitter_secrets()
+    # Twitter multi-field item
+    twitter = _load_twitter_from_bw()
+    for env_var, value in twitter.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if twitter and verbose:
+        print(f"[Bitwarden] âœ“ AGENT - Octodamus - Social - Twitter API")
 
-    # Hard exit if any critical secrets are missing
     if missing_critical:
-        print(f"\n[Bitwarden] FATAL: Missing critical secrets: {missing_critical}")
-        print("Check your Bitwarden vault entries and retry.")
+        print(f"[Bitwarden] FATAL: Missing critical secrets: {missing_critical}")
         sys.exit(1)
 
-    # SECURITY: Unset BW_SESSION immediately after loading all credentials.
-    # Keys are now in os.environ. The vault session token is no longer needed.
+    # Clear session token + save cache
     if "BW_SESSION" in os.environ:
         del os.environ["BW_SESSION"]
     if verbose:
-        print("[Bitwarden] âœ… BW_SESSION cleared. Vault session token removed from environment.")
-        print(f"[Bitwarden] âœ… {len(loaded)} secrets loaded into environment.")
+        print(f"[Bitwarden] âœ… {len(loaded)} secrets loaded from vault")
+
+    _save_cache(loaded)
+    return loaded
+
+
+def _load_from_cache(verbose: bool = False) -> dict:
+    """Load secrets from .octo_secrets cache (background task mode)."""
+    cached = _load_cache()
+    if not cached:
+        print("[Bitwarden] âœ— No cache found. Run: powershell -File octo_unlock.ps1")
+        sys.exit(1)
+
+    loaded = {}
+    for env_var, value in cached.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+
+    # Check critical keys
+    for key in OCTODAMUS_CRITICAL_KEYS:
+        if key not in loaded:
+            print(f"[Bitwarden] âœ— CRITICAL key missing from cache: {key}")
+            sys.exit(1)
+
+    if verbose:
+        print(f"[Bitwarden] âœ… {len(loaded)} secrets loaded from cache")
 
     return loaded
 
 
 def verify_session() -> bool:
-    """Check that BW_SESSION is valid before starting."""
+    """Check BW_SESSION is valid. Returns True if interactive mode available."""
+    bw_session = os.environ.get("BW_SESSION")
+    if not bw_session:
+        # Check if cache exists as fallback
+        if CACHE_FILE.exists():
+            return True
+        print("[Bitwarden] No BW_SESSION and no cache. Run: powershell -File octo_unlock.ps1")
+        return False
     try:
         _bw(["status"])
         return True
-    except EnvironmentError as e:
-        print(f"[Bitwarden] {e}")
-        return False
     except Exception as e:
         print(f"[Bitwarden] Session invalid: {e}")
-        print("Run: $env:BW_SESSION = (bw unlock --raw)")
         return False
-

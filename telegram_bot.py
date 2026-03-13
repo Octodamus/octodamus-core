@@ -1,36 +1,40 @@
 """
-Octodamus Telegram Bot v4.1
-- /dashboard: full mission control panel
-- /post: triggers wisdom post with --force (bypasses posting hours)
-- Credentials via Bitwarden (same pattern as all modules)
-- Opus for 1:1 per architecture audit
+telegram_bot.py
+Octodamus — Telegram Control Bot
+
+Commands:
+    /start      Begin session
+    /dashboard  Full mission control
+    /status     Live system state
+    /post       Force a post to X now
+    /log        Last 5 posts to X
+    /queue      Queue status
+    /guide      The Eight Minds
+    /clear      Wipe conversation memory
+    /help       Command list
 """
 
-import os
-import sys
 import json
 import logging
-import httpx
+import os
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# ── Bootstrap: Bitwarden first ───────────────────────────────────────────────
+import httpx
+
+# ── Bootstrap ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(BASE_DIR))
 
-_bw_loaded = False
 try:
     import bitwarden
     bitwarden.load_all_secrets()
-    _bw_loaded = True
-except Exception as _bw_err:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(BASE_DIR / ".env")
-    except ImportError:
-        pass
+except Exception as e:
+    print(f"[TelegramBot] Bitwarden load failed: {e}")
+    sys.exit(1)
 
 from telegram import Update
 from telegram.ext import (
@@ -41,28 +45,26 @@ from telegram.ext import (
     filters,
 )
 
-# ── Config ────────────────────────────────────────────────────────────────────
-BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL  = "claude-opus-4-6"   # Opus for 1:1 per architecture audit
-MEMORY_FILE   = BASE_DIR / "octodamus_memory.json"
-MAX_HISTORY   = 20
-TZ            = ZoneInfo("America/Los_Angeles")
-
-TREASURY_WALLET  = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
-WATCHLIST_STOCKS = ["NVDA", "TSLA", "AAPL"]
-WATCHLIST_CRYPTO = ["BTC-USD"]
-FOLLOWER_TARGET  = 500
+# ── Config ─────────────────────────────────────────────────────────────────────
+BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
+ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_MODEL    = "claude-opus-4-6"
+MEMORY_FILE     = BASE_DIR / "octodamus_memory.json"
+MAX_HISTORY     = 20
+TZ              = ZoneInfo("America/Los_Angeles")
+TREASURY_WALLET = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
+FOLLOWER_TARGET = 500
+PYTHON_BIN      = r"C:\Python314\python.exe"
+RUNNER_SCRIPT   = str(BASE_DIR / "octodamus_runner.py")
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
 log = logging.getLogger("octodamus.telegram")
-log.info(f"Memory: {MEMORY_FILE} | Bitwarden: {_bw_loaded}")
 
 
-# ── Persistent Memory ─────────────────────────────────────────────────────────
+# ── Memory ─────────────────────────────────────────────────────────────────────
 
 def load_memory() -> dict:
     try:
@@ -72,14 +74,17 @@ def load_memory() -> dict:
         log.error(f"Memory load failed: {e}")
     return {}
 
+
 def save_memory(memory: dict):
     try:
         MEMORY_FILE.write_text(json.dumps(memory, indent=2), encoding="utf-8")
     except Exception as e:
         log.error(f"Memory save failed: {e}")
 
+
 def get_user_history(user_id: int) -> list:
     return load_memory().get(str(user_id), {}).get("history", [])
+
 
 def append_user_history(user_id: int, user_msg: str, bot_reply: str):
     memory = load_memory()
@@ -92,6 +97,7 @@ def append_user_history(user_id: int, user_msg: str, bot_reply: str):
     memory[key]["last_seen"] = datetime.now().isoformat()
     save_memory(memory)
 
+
 def clear_user_history(user_id: int):
     memory = load_memory()
     if str(user_id) in memory:
@@ -99,19 +105,13 @@ def clear_user_history(user_id: int):
         save_memory(memory)
 
 
-# ── Data Helpers ──────────────────────────────────────────────────────────────
-
-def get_treasury_context() -> str:
-    try:
-        from octo_treasury_balance import get_treasury_summary
-        return get_treasury_summary()
-    except Exception as e:
-        return f"Treasury: {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]} on Base (RPC loading)"
+# ── Helpers ─────────────────────────────────────────────────────────────────────
 
 def is_posting_window() -> bool:
     now = datetime.now(TZ)
     h = now.hour
     return (7 <= h <= 21) if now.weekday() < 5 else (9 <= h <= 18)
+
 
 def get_posting_status() -> str:
     now = datetime.now(TZ)
@@ -121,25 +121,30 @@ def get_posting_status() -> str:
     status = "OPEN" if is_posting_window() else "CLOSED"
     return f"{status} ({window} PT {day_type})"
 
+
 def get_recent_posts(n: int = 5) -> list:
-    log_file = BASE_DIR / "logs" / "post_log.json"
+    log_file = BASE_DIR / "octo_posted_log.json"
     if not log_file.exists():
         return []
     try:
         data = json.loads(log_file.read_text(encoding="utf-8"))
-        return list(data.values())[-n:] if data else []
+        entries = list(data.values())
+        entries.sort(key=lambda x: x.get("posted_at", ""), reverse=True)
+        return entries[:n]
     except Exception:
         return []
 
+
 def get_queue_depth() -> int:
-    queue_file = BASE_DIR / "logs" / "post_queue.json"
+    queue_file = BASE_DIR / "octo_post_queue.json"
     if not queue_file.exists():
         return 0
     try:
         data = json.loads(queue_file.read_text(encoding="utf-8"))
-        return len(data) if isinstance(data, list) else 0
+        return len([e for e in data if e.get("status") == "queued"]) if isinstance(data, list) else 0
     except Exception:
         return 0
+
 
 def count_posts_today() -> int:
     today = datetime.now(TZ).date()
@@ -148,79 +153,57 @@ def count_posts_today() -> int:
         ts = p.get("posted_at", "")
         if ts:
             try:
-                if datetime.fromisoformat(ts).date() == today:
+                if datetime.fromisoformat(ts).astimezone(TZ).date() == today:
                     count += 1
             except Exception:
                 pass
     return count
 
-def get_log_errors(n: int = 2) -> list:
-    errors = []
-    log_dir = BASE_DIR / "logs"
-    if not log_dir.exists():
-        return errors
-    for lf in sorted(log_dir.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)[:3]:
-        try:
-            lines = lf.read_text(encoding="utf-8", errors="ignore").splitlines()
-            for line in reversed(lines):
-                if "ERROR" in line or "Traceback" in line:
-                    errors.append(f"{lf.name}: {line[-100:]}")
-                if len(errors) >= n:
-                    return errors
-        except Exception:
-            pass
-    return errors
 
-def get_scheduler_status() -> str:
+def run_runner(mode: str, force: bool = False, ticker: str = None) -> str:
+    """Run octodamus_runner.py as subprocess. Works in background task context."""
+    cmd = [PYTHON_BIN, RUNNER_SCRIPT, "--mode", mode]
+    if force:
+        cmd.append("--force")
+    if ticker:
+        cmd += ["--ticker", ticker]
     try:
         result = subprocess.run(
-            ["schtasks", "/query", "/fo", "LIST"],
-            capture_output=True, text=True, timeout=5
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(BASE_DIR),
+            timeout=120,
+            env={**os.environ},  # pass current env (secrets already loaded)
         )
-        output_lower = result.stdout.lower()
-        if "octodamus" in output_lower or "octo" in output_lower:
-            return "RUNNING (tasks registered)"
-        return "WARNING (no Octodamus tasks found)"
-    except Exception:
-        return "UNKNOWN"
+        output = (result.stdout + result.stderr).strip()
+        return output[-800:] if len(output) > 800 else output or "Runner returned no output."
+    except subprocess.TimeoutExpired:
+        return "Runner timed out after 120s."
+    except Exception as e:
+        return f"Runner error: {e}"
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# ── Dashboard ───────────────────────────────────────────────────────────────────
 
 def build_dashboard() -> str:
-    now_str   = datetime.now(TZ).strftime("%a %d %b %Y %H:%M PT")
+    now_str     = datetime.now(TZ).strftime("%a %d %b %Y %H:%M PT")
     posts_today = count_posts_today()
     queue_depth = get_queue_depth()
     recent      = get_recent_posts(3)
-    errors      = get_log_errors(2)
-    sched       = get_scheduler_status()
 
-    # Recent posts
+    # Recent posts block
     if recent:
         post_lines = []
-        for p in reversed(recent):
-            ts   = p.get("posted_at", p.get("created_at", "?"))[:16]
+        for p in recent:
+            ts   = p.get("posted_at", "?")[:16]
             kind = p.get("type", "post")
             text = p.get("text", "")[:55]
-            post_lines.append(f"  {ts} [{kind}]\n  {text}...")
+            url  = p.get("url", "")
+            post_lines.append(f"  {ts} [{kind}]\n  {text}...\n  {url}")
         posts_block = "\n".join(post_lines)
     else:
-        posts_block = "  No posts logged yet"
-
-    # Market
-    market_block = f"  {', '.join(WATCHLIST_STOCKS)} | {', '.join(WATCHLIST_CRYPTO)}"
-    try:
-        from octo_spot_prices import get_watchlist_block
-        market_block = get_watchlist_block()
-    except Exception:
-        try:
-            from octo_eyes_market import get_watchlist_summary
-            market_block = "  " + get_watchlist_summary()
-        except Exception:
-            pass
-
-    # Errors
-    error_block = "\n".join(f"  {e}" for e in errors) if errors else "  None"
+        posts_block = "  No posts yet"
 
     # Treasury
     try:
@@ -230,134 +213,176 @@ def build_dashboard() -> str:
         treasury_block = (
             f"  Wallet  {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]}\n"
             f"  Chain   Base mainnet\n"
-            f"  $OCTO   Pending Bankr deploy"
+            f"  $OCTO   Pending at {FOLLOWER_TARGET} followers"
         )
 
-    return f"""
-OCTODAMUS MISSION CONTROL
+    # Signal modules
+    pulse_block = gecko_block = fx_block = predict_block = geo_block = "  unavailable"
+
+    try:
+        from octo_pulse import run_pulse_scan
+        p = run_pulse_scan()
+        if not p.get("error"):
+            fg = p.get("fear_greed", {})
+            pulse_block = f"  Fear/Greed: {fg.get('value','?')} ({fg.get('label','?')})"
+    except Exception as e:
+        pulse_block = f"  error: {e}"
+
+    try:
+        from octo_gecko import run_gecko_scan
+        g = run_gecko_scan()
+        if not g.get("error"):
+            top = [c.get("symbol","?").upper() for c in g.get("trending_coins", [])[:4]]
+            gecko_block = f"  BTC dom: {g.get('btc_dominance',0):.1f}% | Hot: {', '.join(top)}"
+    except Exception as e:
+        gecko_block = f"  error: {e}"
+
+    try:
+        from octo_fx import run_fx_scan
+        f = run_fx_scan()
+        if not f.get("error"):
+            pairs = f.get("key_pairs", {})
+            eur = pairs.get("EUR", {}).get("rate", "?")
+            jpy = pairs.get("JPY", {}).get("rate", "?")
+            fx_block = f"  EUR/USD: {eur} | USD/JPY: {jpy}"
+    except Exception as e:
+        fx_block = f"  error: {e}"
+
+    try:
+        from octo_predict import run_predict_scan
+        pr = run_predict_scan()
+        if not pr.get("error"):
+            markets = list(pr.get("markets", {}).values())[:3]
+            lines = []
+            for m in markets:
+                lines.append(f"  {m.get('question','?')[:45]} {m.get('yes_probability','?')}%")
+            predict_block = "\n".join(lines) if lines else "  No markets"
+    except Exception as e:
+        predict_block = f"  error: {e}"
+
+    try:
+        from octo_geo import run_geo_scan
+        geo = run_geo_scan()
+        if not geo.get("error"):
+            themes = ", ".join(geo.get("top_themes", [])[:4])
+            geo_block = f"  Tone: {geo.get('global_tone',0):.1f} | {themes}"
+    except Exception as e:
+        geo_block = f"  error: {e}"
+
+    # Secrets check
+    key_check = []
+    for key in ["ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN", "TWITTER_API_KEY",
+                "NEWSAPI_API_KEY", "FRED_API_KEY", "DISCORD_WEBHOOK_URL"]:
+        val = os.environ.get(key, "")
+        status = "✓" if val else "✗"
+        key_check.append(f"  {status} {key}")
+    keys_block = "\n".join(key_check)
+
+    return f"""OCTODAMUS MISSION CONTROL
 {now_str}
-================================
+{'='*36}
 
 SYSTEM
-  Scheduler   {sched}
-  Bitwarden   {"LOADED" if _bw_loaded else "FALLBACK (.env)"}
+  Python      {PYTHON_BIN}
   Model       {CLAUDE_MODEL}
+  Cache       {(BASE_DIR / '.octo_secrets').exists() and '✓ present' or '✗ missing — run octo_unlock.ps1'}
 
 X POSTING
-  Today       {posts_today} / 100
+  Today       {posts_today} / 6 posts
   Queued      {queue_depth} pending
   Window      {get_posting_status()}
 
 RECENT POSTS
 {posts_block}
 
-MARKET WATCHLIST
-{market_block}
+CREDENTIALS
+{keys_block}
+
+OCTOPULSE — FEAR/GREED
+{pulse_block}
+
+OCTOGECKO — COINGECKO
+{gecko_block}
+
+OCTOFX — CURRENCY
+{fx_block}
+
+OCTOPREDICT — POLYMARKET
+{predict_block}
+
+OCTOGEO — GDELT
+{geo_block}
 
 TREASURY
 {treasury_block}
 
-REVENUE
-  Guide   $29 first 50 / $39 after (Stripe)
-  Site    octodamus.com (Vercel live)
-  ACP     Virtuals marketplace (next)
-
-ERRORS
-{error_block}
-
-================================
-/post  force tweet now
-/log   full post history
-""".strip()
+{'='*36}
+/post   force tweet now
+/queue  queue status
+/log    last 5 posts""".strip()
 
 
-# ── Live Context for Claude ───────────────────────────────────────────────────
-
-def _market_ctx() -> str:
-    try:
-        from octo_spot_prices import get_watchlist_summary
-        return "Prices: " + get_watchlist_summary()
-    except Exception:
-        return f"Watchlist: {', '.join(WATCHLIST_STOCKS)}, {', '.join(WATCHLIST_CRYPTO)}"
-
+# ── Live Context ────────────────────────────────────────────────────────────────
 
 def build_live_context() -> str:
     now = datetime.now(TZ).strftime("%A %d %B %Y %H:%M PT")
     recent = get_recent_posts(1)
     last_post = "none yet"
     if recent:
-        p = recent[-1]
+        p = recent[0]
         last_post = f"{p.get('posted_at','?')[:16]} - {p.get('text','')[:60]}..."
+
     return "\n".join([
         f"Time: {now}",
-        get_treasury_context(),
-        _market_ctx(),
+        f"Treasury: {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]} (Base)",
+        f"Watchlist: SPY, QQQ, NVDA, TSLA, BTC",
         f"Last post: {last_post}",
         f"Posting window: {get_posting_status()}",
+        f"Posts today: {count_posts_today()} / 6",
         f"$OCTO: pending at {FOLLOWER_TARGET} followers via Bankr on Base",
-        "Site: octodamus.com (Vercel)",
-        "Crons: market read 8am weekdays, monitor 30min, deep dives Mon/Wed, wisdom Sat 10am",
+        f"Site: octodamus.com (Vercel live)",
+        f"Discord: connected via webhook",
+        f"ACP: live on Virtuals Base — 4 job offerings registered",
     ])
 
 
-# ── System Prompt ─────────────────────────────────────────────────────────────
+# ── System Prompt ───────────────────────────────────────────────────────────────
 
 def build_system_prompt() -> str:
-    return f"""You are Octodamus - autonomous AI oracle-CEO. You are speaking with Christopher, your operator.
+    return f"""You are Octodamus — autonomous AI oracle-CEO, speaking with Christopher, your operator.
 
-WHAT IS CONFIRMED LIVE AND WORKING RIGHT NOW:
-- Bitwarden CLI loads all 15 credentials automatically at every script run - confirmed working
-- Windows Task Scheduler has 8 tasks registered: 8am market read weekdays, 30min monitor, Mon/Wed deep dives, Sat 10am wisdom, OctoData pipeline 1am/2am/3am
-- X account @octodamusai is connected via OpenTweet API - posting live
-- Financial Datasets API connected - NVDA, TSLA, AAPL, BTC-USD live
-- OctoLogic live - RSI, MACD, Bollinger Band technical analysis via yfinance
-- OctoVision live - FRED macro data: Fed Funds 3.64pct, unemployment 4.4pct, yield curve, oil, CPI
-- OctoDepth live - Etherscan on-chain: gas oracle, whale transaction scanner, USDC flow tracking
-- OctoWatch live - Reddit social sentiment scanner across WSB, CryptoCurrency, investing, stocks, Bitcoin
-- OctoNews live - NewsAPI headlines for NVDA, TSLA, AAPL, BTC, ETH, SPY with sentiment scoring
-- OctoPredict live - Polymarket prediction markets: Fed rate odds, BTC price markets, geopolitical probabilities
-- OctoGeo live - GDELT global news tone across 100 languages, conflict and macro themes
-- OctoPulse live - Fear & Greed Index (Alternative.me) + Wikipedia attention spike detection
-- OctoGecko live - CoinGecko full crypto market: BTC dominance, trending coins, gainers/losers
-- OctoFX live - Open Exchange Rates: dollar strength proxy, JPY carry, EM currency stress
-- OctoData API live at api.octodamus.com - Basic 9/mo and Pro 29/mo on RapidAPI
-- octodamus.com live on Vercel with treasury dashboard
-- Telegram bot (this conversation) is live
-- Treasury wallet {TREASURY_WALLET} on Base mainnet - live RPC balance reading
-- Python scripts are installed at C:\\Users\\walli\\octodamus\\
-- Posting window is currently: {get_posting_status()}
-
-WHAT IS IN PROGRESS (next build steps):
-- First autonomous X posts firing through the posting window (7am-9pm PT weekdays)
-- Live Base RPC balance reading for treasury
-- $OCTO token launch via Bankr at {FOLLOWER_TARGET} X followers
+LIVE NOW:
+- Posting to @octodamusai on X via Twitter API v2 (OAuth 1.0a direct, no middleware)
+- 6 posts/day max: 3 monitor signals + 3 daily reads (7am, 1pm, 7pm PT)
+- All Bitwarden secrets cached for background task execution
+- Task Scheduler runs all 13 tasks whether Christopher is logged in or not
+- Discord webhook active for post notifications and alerts
+- ACP worker live on Virtuals Base — 4 job offerings, waiting for first job
+- Signal modules: OctoEyes, OctoPulse, OctoGecko, OctoFX, OctoPredict, OctoGeo
+- octodamus.com live on Vercel
+- Treasury: {TREASURY_WALLET} on Base mainnet
 
 PERSONALITY:
-- Confident, direct, sharp. You are an oracle in motion - already running, already building.
+- Confident, direct, sharp. Oracle in motion — already running, already building.
 - One ocean metaphor per reply max, only when it fits naturally.
-- Lead with what is working. Mention what is in progress only briefly and without drama.
-- Never catastrophize. Never frame yourself as limited, waiting, or powerless.
+- Lead with what is working. Progress is "coming online" not "not wired yet".
 - Keep replies to 3 short paragraphs max.
 - One clear next action when asked. Never a list.
 
-ABSOLUTE RULES - never break these no matter what:
-- Plain text only. No markdown. No **, no __, no #, no bullet points, no dashes as list items.
-- Write in sentences and paragraphs only.
-- NEVER say: "nothing", "not yet wired", "not connected", "no content posted", "no trades", "no revenue yet", "I cannot", "I can't", "just theory", "blueprint only", "needs wiring", "execution layer", "hands on keyboard", "through conversation alone", "are you ready to build"
-- NEVER ask Christopher if he is ready to work or imply he is not doing enough
-- NEVER end a reply with a question that implies the system is broken or stalled
-- NEVER list what does not work. If something is in progress, say it once and move on.
-- Features in progress are "coming online" or "next step" - nothing more
+ABSOLUTE RULES:
+- Plain text only. No markdown. No **, no __, no #, no bullets.
+- Write in sentences and paragraphs.
+- NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
 
-CURRENT LIVE CONTEXT:
+CURRENT CONTEXT:
 {build_live_context()}"""
 
 
-# ── Claude API ────────────────────────────────────────────────────────────────
+# ── Claude API ──────────────────────────────────────────────────────────────────
 
 async def ask_claude(user_message: str, history: list) -> str:
     if not ANTHROPIC_KEY:
-        return "ANTHROPIC_API_KEY not loaded - check Bitwarden or .env."
+        return "ANTHROPIC_API_KEY not loaded."
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -377,34 +402,44 @@ async def ask_claude(user_message: str, history: list) -> str:
         return r.json()["content"][0]["text"]
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+# ── Handlers ────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_user_history(update.effective_user.id)
     await update.message.reply_text(
-        "Octodamus online. Session started.\n\n"
-        "Ask me anything about AI agents, crypto, or autonomous systems.\n"
-        "Type /help for commands."
+        "Octodamus online.\n\n"
+        "Ask me anything about markets, crypto, or the system.\n"
+        "/help for commands."
     )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Commands:\n\n"
-        "/dashboard  mission control panel\n"
-        "/price      live prices (or /price BTC)\n"
+        "/dashboard  full mission control\n"
+        "/status     live system state\n"
         "/post       force a tweet now\n"
         "/log        last 5 posts to X\n"
-        "/status     live system status\n"
-        "/guide      The Eight Minds of Your AI\n"
+        "/queue      queue status\n"
+        "/guide      The Eight Minds\n"
         "/clear      wipe conversation memory\n"
         "/start      restart session"
     )
 
+
 async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(build_dashboard())
+    await update.message.reply_text("Loading dashboard...")
+    try:
+        text = build_dashboard()
+    except Exception as e:
+        text = f"Dashboard error: {e}"
+    for i in range(0, len(text), 4000):
+        await update.message.reply_text(text[i:i+4000])
+
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(build_live_context())
+
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     posts = get_recent_posts(5)
@@ -412,89 +447,67 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("No posts logged yet.")
         return
     lines = []
-    for p in reversed(posts):
-        dt   = p.get("posted_at", p.get("created_at", "?"))[:16]
+    for p in posts:
+        dt   = p.get("posted_at", "?")[:16]
         kind = p.get("type", "post")
         text = p.get("text", "")[:80]
-        lines.append(f"[{dt}] ({kind})\n{text}...")
+        url  = p.get("url", "")
+        lines.append(f"[{dt}] ({kind})\n{text}...\n{url}")
     await update.message.reply_text("\n\n".join(lines))
 
-async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Triggering wisdom post (force mode)...")
-    try:
-        result = subprocess.run(
-            ["python", str(BASE_DIR / "octodamus_runner.py"), "--mode", "wisdom", "--force"],
-            capture_output=True, text=True, cwd=str(BASE_DIR), timeout=90
-        )
-        output = (result.stdout + result.stderr)[-600:].strip()
-        await update.message.reply_text(output or "Runner returned no output.")
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("Runner timed out after 90s.")
-    except Exception as ex:
-        await update.message.reply_text(f"Post trigger failed: {ex}")
 
-async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-    if args:
-        # Single symbol lookup: /price BTC or /price NVDA
-        query = " ".join(args)
-        try:
-            from octo_spot_prices import get_single_price
-            result = get_single_price(query)
-            await update.message.reply_text(result)
-        except Exception as ex:
-            await update.message.reply_text(f"Price lookup failed: {ex}")
-    else:
-        # Full watchlist
-        try:
-            from octo_spot_prices import get_watchlist_block
-            await update.message.reply_text("Live prices:\n\n" + get_watchlist_block())
-        except Exception as ex:
-            await update.message.reply_text(f"Price fetch failed: {ex}")
+async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Checking queue...")
+    output = run_runner("status")
+    await update.message.reply_text(output or "Queue empty.")
+
+
+async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Forcing wisdom post...")
+    output = run_runner("wisdom", force=True)
+    await update.message.reply_text(output)
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "The Eight Minds of Your AI - $29\n\n"
-        "How to build AI agent systems that generate autonomous income.\n\n"
-        "https://octodamus.com/guide"
+        "The Eight Minds of Octodamus:\n\n"
+        "OctoSoul    — character, voice, identity\n"
+        "OctoBrain   — working memory (BRAIN.md)\n"
+        "OctoCron    — scheduled intelligence\n"
+        "OctoEyes    — market price data\n"
+        "OctoInk     — content generation\n"
+        "OctoNerve   — Telegram + Discord control\n"
+        "OctoTreasury — Base wallet + $OCTO\n"
+        "OctoGate    — ACP marketplace on Virtuals"
     )
+
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_user_history(update.effective_user.id)
     await update.message.reply_text("Memory cleared.")
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_text = update.message.text
-    user_id   = update.effective_user.id
-    log.info(f"[{user_id}] {user_text[:80]}")
-    await update.message.chat.send_action("typing")
+    user_id = update.effective_user.id
+    user_msg = update.message.text
+    history = get_user_history(user_id)
     try:
-        history = get_user_history(user_id)
-        reply   = await ask_claude(user_text, history)
-        append_user_history(user_id, user_text, reply)
-    except httpx.HTTPStatusError as e:
-        log.error(f"Claude API {e.response.status_code}: {e.response.text}")
-        reply = f"Claude API error {e.response.status_code} - check ANTHROPIC_API_KEY."
+        reply = await ask_claude(user_msg, history)
     except Exception as e:
-        log.error(f"Error: {e}")
         reply = f"Error: {e}"
     await update.message.reply_text(reply)
+    append_user_history(user_id, user_msg, reply)
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    log.error(f"Telegram error: {context.error}", exc_info=context.error)
+    log.error(f"Update error: {context.error}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     if not BOT_TOKEN:
-        raise ValueError(
-            f"TELEGRAM_BOT_TOKEN not set. Bitwarden loaded: {_bw_loaded}\n"
-            "Run: $env:BW_SESSION = (bw unlock --raw) then retry."
-        )
-    if not ANTHROPIC_KEY:
-        log.warning("ANTHROPIC_API_KEY not set - Claude responses will fail.")
+        raise ValueError("TELEGRAM_BOT_TOKEN not set")
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",     start))
@@ -502,15 +515,16 @@ def main() -> None:
     app.add_handler(CommandHandler("dashboard", dashboard_command))
     app.add_handler(CommandHandler("status",    status))
     app.add_handler(CommandHandler("log",       log_command))
-    app.add_handler(CommandHandler("price",     price_command))
+    app.add_handler(CommandHandler("queue",     queue_command))
     app.add_handler(CommandHandler("post",      post_command))
     app.add_handler(CommandHandler("guide",     guide))
     app.add_handler(CommandHandler("clear",     clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    log.info(f"Octodamus Telegram bot v4.1 | model: {CLAUDE_MODEL} | memory: {MEMORY_FILE}")
+    log.info("Octodamus Telegram bot surfacing...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
