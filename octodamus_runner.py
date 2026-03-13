@@ -382,7 +382,7 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert",
+            "status", "drain", "journal", "alert", "scorecard",
         ],
         default="monitor",
     )
