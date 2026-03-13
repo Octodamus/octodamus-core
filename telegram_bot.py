@@ -332,8 +332,27 @@ def build_live_context() -> str:
         p = recent[0]
         last_post = f"{p.get('posted_at','?')[:16]} - {p.get('text','')[:60]}..."
 
+    # Live BTC price from CoinGecko
+    btc_price = "unavailable"
+    try:
+        import httpx as _httpx
+        r = _httpx.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            btc = data.get("bitcoin", {})
+            eth = data.get("ethereum", {})
+            sol = data.get("solana", {})
+            btc_price = f"BTC ${btc.get('usd',0):,.0f} ({btc.get('usd_24h_change',0):+.1f}%) | ETH ${eth.get('usd',0):,.0f} ({eth.get('usd_24h_change',0):+.1f}%) | SOL ${sol.get('usd',0):,.0f} ({sol.get('usd_24h_change',0):+.1f}%)"
+    except Exception:
+        pass
+
     return "\n".join([
         f"Time: {now}",
+        f"Crypto: {btc_price}",
         f"Treasury: {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]} (Base)",
         f"Watchlist: SPY, QQQ, NVDA, TSLA, BTC",
         f"Last post: {last_post}",
