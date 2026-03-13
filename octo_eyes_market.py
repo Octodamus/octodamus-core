@@ -1,25 +1,78 @@
 """
 octo_eyes_market.py
-OctoEyes — Market Oracle Monitoring Module
-Watches tickers, detects signal-worthy moves, triggers OctoInk to post.
+OctoEyes — Market Signal Monitor
 
-Plug into your existing OctoEyes agent loop.
+Stock prices:  Financial Datasets API (free tier: NVDA, TSLA, AAPL, MSFT, SPY, QQQ)
+Crypto prices: CoinGecko free API (no key required — BTC, ETH, SOL)
+
+Removed: META (402 on free Financial Datasets tier)
+Fixed:   Crypto was calling /crypto/prices/snapshot/ which returns 400 on free tier
 """
 
-import anthropic
 import json
-from financial_data_client import build_oracle_context, get_current_price, get_current_crypto_price
+import time
+import anthropic
 
-client = anthropic.Anthropic()
+from financial_data_client import get_current_price, build_oracle_context
+
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+    return _client
+
 
 # ─────────────────────────────────────────────
-# WATCHLIST — edit to your targets
+# WATCHLIST
 # ─────────────────────────────────────────────
-STOCK_WATCHLIST = ["NVDA", "TSLA", "AAPL", "META", "MSFT"]
-CRYPTO_WATCHLIST = ["BTC", "ETH", "SOL"]
 
-# Alert threshold — % move to trigger oracle post
+# Free tier Financial Datasets API tickers (META and snapshot endpoint not available)
+STOCK_WATCHLIST = ["NVDA", "TSLA", "AAPL", "MSFT", "SPY", "QQQ"]
+
+# Crypto via CoinGecko (free, no key needed)
+CRYPTO_WATCHLIST = ["bitcoin", "ethereum", "solana"]
+
+CRYPTO_DISPLAY = {
+    "bitcoin":  "BTC",
+    "ethereum": "ETH",
+    "solana":   "SOL",
+}
+
+# Alert threshold — % move to trigger a signal post
 MOVE_THRESHOLD_PCT = 3.0
+
+_TICKER_FETCH_DELAY = 0.25
+
+
+# ─────────────────────────────────────────────
+# CRYPTO PRICE via COINGECKO
+# ─────────────────────────────────────────────
+
+def _get_crypto_prices() -> dict:
+    """
+    Fetch BTC, ETH, SOL prices from CoinGecko free API.
+    Returns dict of {coingecko_id: {price, change_24h}}
+    """
+    import httpx
+    ids = ",".join(CRYPTO_WATCHLIST)
+    try:
+        r = httpx.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={
+                "ids": ids,
+                "vs_currencies": "usd",
+                "include_24hr_change": "true",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[OctoEyes] CoinGecko fetch failed: {e}")
+        return {}
 
 
 # ─────────────────────────────────────────────
@@ -28,114 +81,104 @@ MOVE_THRESHOLD_PCT = 3.0
 
 def check_for_signals() -> list[dict]:
     """
-    Scan watchlist for significant price moves.
-    Returns list of signal dicts for any ticker that crossed the threshold.
+    Scan stock and crypto watchlists for significant price moves.
+    Returns list of signal dicts for tickers that crossed MOVE_THRESHOLD_PCT.
     """
     signals = []
 
+    # Stocks via Financial Datasets API
     for ticker in STOCK_WATCHLIST:
         try:
             data = get_current_price(ticker)
             snapshot = data.get("snapshot", {})
-            change_pct = snapshot.get("day_change_percent", 0)
-
+            change_pct = float(snapshot.get("day_change_percent", 0) or 0)
             if abs(change_pct) >= MOVE_THRESHOLD_PCT:
                 signals.append({
-                    "type": "stock",
-                    "ticker": ticker,
-                    "price": snapshot.get("price"),
+                    "type":       "stock",
+                    "ticker":     ticker,
+                    "price":      snapshot.get("price"),
                     "change_pct": change_pct,
-                    "direction": "surge" if change_pct > 0 else "plunge"
+                    "direction":  "surge" if change_pct > 0 else "plunge",
                 })
         except Exception as e:
             print(f"[OctoEyes] Error checking {ticker}: {e}")
+        time.sleep(_TICKER_FETCH_DELAY)
 
-    for ticker in CRYPTO_WATCHLIST:
+    # Crypto via CoinGecko
+    crypto_data = _get_crypto_prices()
+    for cg_id in CRYPTO_WATCHLIST:
         try:
-            data = get_current_crypto_price(ticker)
-            snapshot = data.get("snapshot", {})
-            change_pct = snapshot.get("day_change_percent", 0)
-
+            data = crypto_data.get(cg_id, {})
+            price = data.get("usd", 0)
+            change_pct = float(data.get("usd_24h_change", 0) or 0)
+            ticker = CRYPTO_DISPLAY[cg_id]
             if abs(change_pct) >= MOVE_THRESHOLD_PCT:
                 signals.append({
-                    "type": "crypto",
-                    "ticker": ticker,
-                    "price": snapshot.get("price"),
+                    "type":       "crypto",
+                    "ticker":     ticker,
+                    "price":      price,
                     "change_pct": change_pct,
-                    "direction": "surge" if change_pct > 0 else "plunge"
+                    "direction":  "surge" if change_pct > 0 else "plunge",
                 })
         except Exception as e:
-            print(f"[OctoEyes] Error checking {ticker}: {e}")
+            print(f"[OctoEyes] Error checking {cg_id}: {e}")
 
     return signals
 
 
 # ─────────────────────────────────────────────
-# ORACLE SIGNAL → OCTOINK HANDOFF
+# SIGNAL → POST
 # ─────────────────────────────────────────────
 
-def signal_to_octoink_prompt(signal: dict) -> str:
-    """Convert a market signal into a prompt for OctoInk to craft an oracle post."""
-
-    ticker = signal["ticker"]
-    price = signal["price"]
-    change_pct = signal["change_pct"]
-    direction = signal["direction"]
-
-    # Get richer context for the post
-    context = build_oracle_context(ticker, include_fundamentals=False)
-    news_headlines = [
-        item.get("headline", "")
-        for item in context.get("recent_news", {}).get("news", [])[:3]
-    ]
-
-    return f"""
-You are Octodamus — the oracle octopus, market seer of the deep.
-You speak in sea metaphors with bored confidence. You are never excited, only knowing.
-
-A significant market signal has been detected. Generate ONE sharp X/Twitter post (under 280 chars).
-
-SIGNAL:
-- Ticker: {ticker}
-- Current Price: ${price}
-- Day Change: {change_pct:+.2f}%
-- Direction: {direction}
-- Recent News Headlines: {json.dumps(news_headlines)}
-
-Rules:
-- Speak as Octodamus. Use ocean/water metaphors naturally, don't force them.
-- Sound like you already knew this was coming.
-- Include the ticker and % move.
-- No hashtags unless one is extremely on-brand.
-- Do not be excited. Be inevitable.
-- End with silence (no "follow me" or engagement bait).
-
-Output ONLY the post text. Nothing else.
-"""
+OCTO_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
+You are @octodamusai on X. Max 280 chars. No hashtags. No engagement bait.
+Speak with bored certainty. You already knew this was coming.
+Lead with the specific number. Then the insight. One ocean metaphor max."""
 
 
 def generate_oracle_post(signal: dict) -> str:
-    """Run OctoInk (Claude) on a signal to produce a market oracle post."""
+    """Generate a market signal post via Claude Haiku."""
+    ticker     = signal["ticker"]
+    price      = signal["price"]
+    change_pct = signal["change_pct"]
+    direction  = signal["direction"]
 
-    prompt = signal_to_octoink_prompt(signal)
+    news_headlines = []
+    try:
+        context = build_oracle_context(ticker, include_fundamentals=False)
+        news_headlines = [
+            item.get("headline", "")
+            for item in context.get("recent_news", {}).get("news", [])[:3]
+        ]
+    except Exception:
+        pass
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",  # OctoInk — fast, cheap, sharp
-        max_tokens=150,
-        messages=[{"role": "user", "content": prompt}]
+    prompt = (
+        f"Market signal: {ticker} {direction} {change_pct:+.2f}% — now ${price}\n"
+        f"Recent headlines: {json.dumps(news_headlines)}\n\n"
+        "Generate ONE oracle post for @octodamusai. Under 280 chars.\n"
+        "Lead with the specific number and ticker. Sound like you already knew.\n"
+        "Output ONLY the post text."
     )
 
+    client = _get_client()
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=150,
+        system=OCTO_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
     return response.content[0].text.strip()
 
 
 # ─────────────────────────────────────────────
-# MAIN MONITOR LOOP (call from your scheduler)
+# MAIN MONITOR
 # ─────────────────────────────────────────────
 
-def run_market_monitor():
+def run_market_monitor() -> list[dict]:
     """
-    Call this on a schedule (every 15-30 min via cron or your OpenClaw scheduler).
-    Returns list of generated posts ready to queue for X.
+    Called by octodamus_runner.py on schedule (3x daily).
+    Returns list of {signal, post} dicts ready to queue.
     """
     print("[OctoEyes] Scanning the currents...")
     signals = check_for_signals()
@@ -146,55 +189,50 @@ def run_market_monitor():
 
     posts = []
     for signal in signals:
-        print(f"[OctoEyes] Signal detected: {signal['ticker']} {signal['change_pct']:+.2f}%")
-        post = generate_oracle_post(signal)
-        posts.append({
-            "signal": signal,
-            "post": post
-        })
-        print(f"[OctoInk] Generated post:\n  {post}\n")
+        print(f"[OctoEyes] Signal: {signal['ticker']} {signal['change_pct']:+.2f}%")
+        try:
+            post = generate_oracle_post(signal)
+            posts.append({"signal": signal, "post": post})
+            print(f"[OctoInk] Generated:\n  {post}\n")
+        except Exception as e:
+            print(f"[OctoEyes] Failed to generate post for {signal['ticker']}: {e}")
 
     return posts
 
 
 # ─────────────────────────────────────────────
-# DEEP DIVE — Fundamentals oracle read
-# For scheduled weekly content or guide promotion
+# DEEP DIVE — weekly fundamentals thread
 # ─────────────────────────────────────────────
 
-DEEP_DIVE_SYSTEM = """You are Octodamus — oracle octopus, market seer. 
-You have examined the depths of a company's financials. 
-Speak with bored certainty. Use ocean metaphors. Be brief and devastating in insight.
-You are selling wisdom, not hype. Your guide "The Eight Minds of Your AI" is $29-39.
-Occasionally, if the insight is particularly rich, close with a subtle nod to the guide."""
+DEEP_DIVE_SYSTEM = """You are Octodamus — oracle octopus, market seer.
+You have examined the depths of a company's fundamentals.
+Speak with bored certainty. Use ocean metaphors sparingly. Be brief and devastating.
+You are selling wisdom, not hype."""
+
 
 def generate_deep_dive_post(ticker: str) -> str:
-    """
-    Weekly deep-dive oracle post using fundamentals data.
-    Great for evergreen X content and guide funnel.
-    """
+    """Weekly deep-dive thread using fundamentals data."""
     context = build_oracle_context(ticker, include_fundamentals=True)
+    client = _get_client()
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",  # Deeper analysis needs Sonnet
+        model="claude-sonnet-4-6",
         max_tokens=300,
         system=DEEP_DIVE_SYSTEM,
         messages=[{
             "role": "user",
-            "content": f"""Generate a short oracle thread (2-3 posts) on {ticker} based on this data:
-{json.dumps(context, indent=2)}
-
-Format: Each post on its own line, separated by ---
-Keep each post under 280 chars.
-Reveal something most people miss in the data."""
-        }]
+            "content": (
+                f"Oracle thread (2-3 posts) on {ticker}:\n"
+                f"{json.dumps(context, indent=2)}\n\n"
+                "Format: each post on its own line, separated by ---\n"
+                "Under 280 chars each. Reveal what most people miss."
+            ),
+        }],
     )
-
     return response.content[0].text.strip()
 
 
 if __name__ == "__main__":
-    # Test run
     posts = run_market_monitor()
     for p in posts:
         print(f"\n🐙 ORACLE POST:\n{p['post']}")
