@@ -48,7 +48,7 @@ from telegram.ext import (
 # ── Config ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL    = "claude-sonnet-4-6"
+CLAUDE_MODEL    = "claude-opus-4-6"
 MEMORY_FILE     = BASE_DIR / "octodamus_memory.json"
 MAX_HISTORY     = 20
 TZ              = ZoneInfo("America/Los_Angeles")
@@ -551,10 +551,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_msg = update.message.text
     history = get_user_history(user_id)
 
+    # Fire immediately on message receipt
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
     async def keep_typing():
         while True:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
             await asyncio.sleep(4)
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     typing_task = asyncio.create_task(keep_typing())
     try:
