@@ -248,9 +248,13 @@ def mode_daily() -> None:
         )
 
         post = response.content[0].text.strip()
-        # Wrap in Oracle Signal Card
+        # Wrap in Oracle Signal Card using already-fetched prices
         try:
-            card = build_signal_card(post)
+            prices_for_card = {
+                k: {"price": v.get("price", v.get("close", 0)), "change": v.get("day_change_percent", v.get("change_percent", 0))}
+                for k, v in snapshots.items()
+            }
+            card = build_signal_card(post, prices=prices_for_card)
             if len(card) <= 280:
                 post = card
         except Exception as e:
