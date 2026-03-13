@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 import httpx
+import requests
 from requests_oauthlib import OAuth1
 
 # ─────────────────────────────────────────────
@@ -91,9 +92,9 @@ def get_own_user_id() -> str:
     if OCTO_USER_ID_FILE.exists():
         return OCTO_USER_ID_FILE.read_text().strip()
 
-    r = httpx.get(
+    r = requests.get(
         f"{TWITTER_API_BASE}/users/me",
-        headers=_bearer_headers(),
+        auth=_oauth1(),
         timeout=10,
     )
     r.raise_for_status()
