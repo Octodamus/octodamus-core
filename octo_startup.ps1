@@ -1,5 +1,5 @@
-﻿# octo_startup.ps1
-# Octodamus --- Full Auto Startup
+# octo_startup.ps1
+# Octodamus - Full Auto Startup
 
 $PROJECT_DIR = "C:\Users\walli\octodamus"
 $PYTHON      = "C:\Python314\python.exe"
@@ -20,7 +20,7 @@ try {
     Import-Module CredentialManager -ErrorAction Stop
     $stored = Get-StoredCredential -Target "OctodamusBitwarden"
     if (-not $stored) {
-        Log "FAIL: OctodamusBitwarden not found in Credential Manager"
+        Log "FAIL: OctodamusBitwarden not found"
         exit 1
     }
     $bwPassword = $stored.GetNetworkCredential().Password
@@ -30,33 +30,39 @@ try {
     exit 1
 }
 
-# Step 2: Unlock Bitwarden --- filter out Node.js warnings to get clean session token
+# Step 2: Unlock Bitwarden - filter Node.js warnings
 try {
     $env:BW_PASSWORD = $bwPassword
     $rawOutput = & $BW unlock --passwordenv BW_PASSWORD --raw 2>&1
     $env:BW_PASSWORD = ""
-    
-    # Filter: session token is a long base64 string, not a warning line
-    $session = ($rawOutput | Where-Object { 
-        $_ -match '^[A-Za-z0-9+/=]{20,}$' -and $_ -notmatch 'node|warning|deprecated'
+    $session = ($rawOutput | Where-Object {
+        $_ -match '^[A-Za-z0-9+/=]{20,}$'
     }) | Select-Object -Last 1
-    
     if (-not $session -or $session.Length -lt 20) {
-        Log "FAIL: Could not extract session token from output"
-        Log "Raw output: $rawOutput"
+        Log "FAIL: Could not extract session token"
         exit 1
     }
-    $env:BW_SESSION = $session
     Log "OK: Vault unlocked (token length: $($session.Length))"
 } catch {
     Log "FAIL: $_"
     exit 1
 }
 
-# Step 3: Load secrets to cache
+# Step 3: Write session to temp file so Python subprocess can read it
+$sessionFile = "$env:TEMP\octo_bw_session.tmp"
+$session | Out-File -FilePath $sessionFile -Encoding ascii -NoNewline
+
+# Step 4: Load secrets using session from file
 $loaderScript = "$env:TEMP\octo_loader_$PID.py"
 @"
-import sys
+import sys, os, subprocess
+from pathlib import Path
+
+# Read BW_SESSION from temp file
+session_file = r'$sessionFile'
+session = Path(session_file).read_text(encoding='ascii').strip()
+os.environ['BW_SESSION'] = session
+
 sys.path.insert(0, r'$PROJECT_DIR')
 import bitwarden
 s = bitwarden.load_all_secrets(verbose=False)
@@ -71,10 +77,10 @@ try {
     exit 1
 } finally {
     Remove-Item $loaderScript -ErrorAction SilentlyContinue
-    $env:BW_SESSION = ""
+    Remove-Item $sessionFile -ErrorAction SilentlyContinue
 }
 
-# Step 4: Verify cache
+# Step 5: Verify cache
 $cacheFile = "$PROJECT_DIR\.octo_secrets"
 if (Test-Path $cacheFile) {
     $age = (Get-Date) - (Get-Item $cacheFile).LastWriteTime
@@ -84,7 +90,7 @@ if (Test-Path $cacheFile) {
     exit 1
 }
 
-# Step 5: Start Telegram bot
+# Step 6: Start Telegram bot
 try {
     Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
@@ -94,6 +100,4 @@ try {
     Log "FAIL: Telegram: $_"
 }
 
-Log "=== Startup complete --- Octodamus is live ==="
-
-
+Log "=== Startup complete ==="
