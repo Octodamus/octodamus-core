@@ -36,6 +36,7 @@ except Exception as e:
     print(f"[TelegramBot] Bitwarden load failed: {e}")
     sys.exit(1)
 
+from octo_skill_log import rate_last_post, get_skill_summary, generate_amendment_proposal, get_weekly_stats, approve_latest_amendment, save_amendment_proposal
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -543,6 +544,59 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_user_history(update.effective_user.id)
     await update.message.reply_text("Memory cleared.")
+
+
+async def rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Rate the last post: /rate good | /rate bad | /rate ok"""
+    args = context.args
+    if not args or args[0].lower() not in ["good", "bad", "ok"]:
+        await update.message.reply_text("Usage: /rate good | /rate bad | /rate ok")
+        return
+    rating = args[0].lower()
+    note = " ".join(args[1:]) if len(args) > 1 else ""
+    result = rate_last_post(rating, note)
+    await update.message.reply_text(f"Logged: {result}")
+
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate a skill improvement proposal based on ratings."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    stats = get_weekly_stats()
+    if stats["total_rated"] == 0:
+        await update.message.reply_text("No rated posts yet. Use /rate good|bad|ok to start training.")
+        return
+    summary = get_skill_summary()
+    await update.message.reply_text(f"Analyzing {stats['total_rated']} rated posts...
+
+{summary}")
+    try:
+        import re as _re
+        from pathlib import Path as _Path
+        _runner_text = (_Path(__file__).parent / "octodamus_runner.py").read_text(encoding="utf-8")
+        _match = _re.search(r'OCTO_SYSTEM = """(.+?)"""', _runner_text, _re.DOTALL)
+        _octo_system = _match.group(1).strip() if _match else "System prompt not found."
+        proposal = generate_amendment_proposal(stats, _octo_system)
+        save_amendment_proposal(proposal)
+        await update.message.reply_text(f"Amendment proposal:
+
+{proposal}
+
+Use /approve to log it.")
+    except Exception as e:
+        await update.message.reply_text(f"Analysis failed: {e}")
+
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve the latest amendment proposal."""
+    result = approve_latest_amendment()
+    await update.message.reply_text(f"Amendment approved and logged.
+
+{result[:400]}")
+
+
+async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show skill log summary."""
+    await update.message.reply_text(get_skill_summary())
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

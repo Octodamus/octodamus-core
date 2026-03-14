@@ -41,6 +41,7 @@ from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
 from octo_signal_card import build_signal_card
+from octo_skill_log import log_post
 from octo_scorecard import (
     extract_and_log_from_signal, resolve_predictions, generate_scorecard_post, get_stats_summary
 )
@@ -239,7 +240,7 @@ def mode_daily() -> None:
                     "Generate the morning oracle market read for @octodamusai.\n"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
                     f"{news_section}\n\n"
-                    f"{random.choice(_VOICE_INSTRUCTIONS)}\n"
+                    f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
                     "Lead with a specific number or fact. Then the insight.\n"
                     "If a headline reveals something ironic or contradictory — use it."
@@ -259,8 +260,18 @@ def mode_daily() -> None:
                 post = card
         except Exception as e:
             print(f"[Runner] Signal card failed, using plain post: {e}")
+        _is_card_daily = post.startswith("◈")
         queue_post(post, post_type="daily_read", priority=1)
         posted = process_queue(max_posts=1)
+        if posted:
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                _last_entry = list(_plog.values())[-1]
+                log_post(_last_entry["text"], "daily_read", "daily", _is_card_daily, _last_entry.get("url", ""))
+            except Exception:
+                log_post(post, "daily_read", "daily", _is_card_daily)
         print(f"[Runner] Daily read {'posted' if posted else 'queued'}:\n  {post}")
 
     except Exception as e:
@@ -351,7 +362,7 @@ def mode_wisdom() -> None:
                 "content": (
                     f"Oracle post: {prompt}"
                     f"{news_section}\n\n"
-                    f"{random.choice(_VOICE_INSTRUCTIONS)}\n"
+                    f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
                     "Anchor the insight to a real fact or current market behavior.\n"
                     "Do NOT just restate the prompt. Answer it with a sharp take."
@@ -367,8 +378,20 @@ def mode_wisdom() -> None:
                 post = card
         except Exception as e:
             print(f"[Runner] Signal card failed, using plain post: {e}")
+        _is_card = post.startswith("◈")
+        # Extract voice name — instruction strings start with "ORACLE voice", "SARDONIC voice" etc
+        _voice_used = _chosen_voice_inst.split()[0] if '_chosen_voice_inst' in locals() else "wisdom"
         queue_post(post, post_type="wisdom", priority=8)
         posted = process_queue(max_posts=1)
+        if posted:
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                _last_entry = list(_plog.values())[-1]
+                log_post(_last_entry["text"], "wisdom", _voice_used, _is_card, _last_entry.get("url", ""))
+            except Exception as _log_err:
+                log_post(post, "wisdom", _voice_used, _is_card)
         print(f"[Runner] Wisdom post {'posted' if posted else 'queued'}:\n  {post}")
 
     except Exception as e:
