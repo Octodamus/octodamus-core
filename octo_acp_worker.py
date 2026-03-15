@@ -36,7 +36,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SELLER_ENTITY_ID          = 2
+SELLER_ENTITY_ID          = 3
 SELLER_AGENT_WALLET = "0x9DdE22707542FA69c9ecfEb0C4f0912797DF3d5E"
 BITWARDEN_ITEM            = "AGENT - Octodamus - ACP Wallet"
 
