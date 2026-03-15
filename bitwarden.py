@@ -66,6 +66,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - FRED API":                     "FRED_API_KEY",
     "AGENT - Octodamus - Open Exchange Rates":          "OPEN_EXCHANGE_RATES_API_KEY",
     "AGENT - Octodamus - Etherscan API":                "ETHERSCAN_API_KEY",
+    "AGENT - Octodamus - Quiver API":                   "QUIVER_API_KEY",
     "AGENT - Octodamus - Social - Discord":             "DISCORD_WEBHOOK_URL",
 }
 

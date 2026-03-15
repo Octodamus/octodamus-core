@@ -42,6 +42,7 @@ from octo_x_poster import (
 )
 from octo_signal_card import build_signal_card
 from octo_skill_log import log_post
+from octo_congress import run_congress_scan, format_congress_for_prompt
 from octo_scorecard import (
     extract_and_log_from_signal, resolve_predictions, generate_scorecard_post, get_stats_summary
 )
@@ -444,13 +445,43 @@ def mode_scorecard() -> None:
         discord_alert(f"scorecard mode failed: {e}")
 
 
+def mode_congress() -> None:
+    print(f"\n[Runner] Scanning congressional trades...")
+    try:
+        data = run_congress_scan(days_back=45)
+        if data.get("error"):
+            print(f"[Runner] Congress error: {data['error']}")
+            return
+        if data["total"] == 0:
+            print("[Runner] No notable congressional trades found.")
+            return
+        context = format_congress_for_prompt(data)
+        print(context)
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": (
+                f"Congressional trading alert for @octodamusai.\n{context}\n\n"
+                "CONTRARIAN voice. One post under 280 chars. Name the politician and ticker. "
+                "Call out the irony or timing. End with a price call. No hashtags."
+            )}],
+        )
+        post = response.content[0].text.strip()
+        queue_post(post, post_type="congress_signal", priority=2)
+        posted = process_queue(max_posts=1)
+        print(f"[Runner] Congress signal posted:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_congress failed: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Octodamus Runner")
     parser.add_argument(
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "scorecard",
+            "status", "drain", "journal", "alert", "scorecard", "congress",
         ],
         default="monitor",
     )
@@ -472,6 +503,8 @@ if __name__ == "__main__":
         mode_deep_dive(args.ticker)
     elif args.mode == "wisdom":
         mode_wisdom()
+    elif args.mode == "congress":
+        mode_congress()
     elif args.mode == "scorecard":
         mode_scorecard()
     elif args.mode == "journal":
