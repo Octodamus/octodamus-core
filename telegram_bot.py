@@ -566,9 +566,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("No rated posts yet. Use /rate good|bad|ok to start training.")
         return
     summary = get_skill_summary()
-    await update.message.reply_text(f"Analyzing {stats['total_rated']} rated posts...
-
-{summary}")
+    await update.message.reply_text("Analyzing " + str(stats['total_rated']) + " rated posts...\n\n" + summary)
     try:
         import re as _re
         from pathlib import Path as _Path
@@ -577,11 +575,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _octo_system = _match.group(1).strip() if _match else "System prompt not found."
         proposal = generate_amendment_proposal(stats, _octo_system)
         save_amendment_proposal(proposal)
-        await update.message.reply_text(f"Amendment proposal:
-
-{proposal}
-
-Use /approve to log it.")
+        await update.message.reply_text("Amendment proposal:\n\n" + proposal + "\n\nUse /approve to log it.")
     except Exception as e:
         await update.message.reply_text(f"Analysis failed: {e}")
 
@@ -589,9 +583,7 @@ Use /approve to log it.")
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approve the latest amendment proposal."""
     result = approve_latest_amendment()
-    await update.message.reply_text(f"Amendment approved and logged.
-
-{result[:400]}")
+    await update.message.reply_text("Amendment approved and logged.\n\n" + result[:400])
 
 
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
