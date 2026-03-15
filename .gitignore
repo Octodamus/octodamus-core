@@ -74,3 +74,7 @@ wire_*.py
 octo_predictions.json
 octo_twitter_user_id.txt
 octodamus_memory.json
+
+octo_skill_log.json
+octodamus_mission_control.html
+debug_fstring.py
