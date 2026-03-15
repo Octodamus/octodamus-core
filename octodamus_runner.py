@@ -104,7 +104,9 @@ STYLE RULES:
   - If you can name the irony, name it.
   - Dry wit > exclamation points. Always.
 
-Never repeat ocean words (depths, currents, tide, surface) more than once per post."""
+Never repeat ocean words (depths, currents, tide, surface) more than once per post.
+
+CORE BELIEF: Congress members front-run markets. They trade on legislative and regulatory knowledge before it becomes public. When a politician buys, ask what bill, contract, or ruling is coming. The trade is the signal."""
 
 _VOICE_INSTRUCTIONS = [
     "ORACLE voice — bored certainty, like you've seen this chart a thousand times.",
@@ -463,8 +465,11 @@ def mode_congress() -> None:
             system=OCTO_SYSTEM,
             messages=[{"role": "user", "content": (
                 f"Congressional trading alert for @octodamusai.\n{context}\n\n"
-                "CONTRARIAN voice. One post under 280 chars. Name the politician and ticker. "
-                "Call out the irony or timing. End with a price call. No hashtags."
+                "CONTRARIAN voice. One post under 280 chars.\n"
+                "Core belief: Congress members don't predict markets — they front-run them. "
+                "They trade on what they know is coming. Follow the money, not the narrative.\n"
+                "Name the politician and ticker. Call out the timing. "
+                "What do they know that the market doesn't yet? End with a price call. No hashtags."
             )}],
         )
         post = response.content[0].text.strip()
