@@ -12,7 +12,7 @@ import os
 
 # ── Bitwarden key loading ──────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
-from bitwarden import get_secret
+from bitwarden import _get_password as get_secret
 
 # ── ACP SDK ───────────────────────────────────────────────────────────────────
 from virtuals_acp.client import VirtualsACP
@@ -43,31 +43,83 @@ BITWARDEN_ITEM            = "AGENT - Octodamus - ACP Wallet"
 # ── Job handlers ──────────────────────────────────────────────────────────────
 
 def handle_market_oracle_briefing(requirements: dict) -> str:
-    """Fear & Greed + BTC dominance + FX snapshot."""
-    focus = requirements.get("focus", "general")
+    """Full market oracle briefing — crypto + macro + sentiment + oracle call."""
+    ticker = requirements.get("ticker", "BTC").upper()
     try:
+        import httpx, os
         pulse = octo_pulse.run_pulse_scan()
         gecko = octo_gecko.run_gecko_scan()
         fx    = octo_fx.run_fx_scan() if hasattr(octo_fx, "run_fx_scan") else {}
 
         fng_val   = pulse.get("fear_greed", {}).get("value", "N/A")
         fng_label = pulse.get("fear_greed", {}).get("label", "N/A")
-        btc_dom   = gecko.get("global", {}).get("btc_dominance", "N/A")
+        btc_dom   = gecko.get("btc_dominance", gecko.get("global", {}).get("btc_dominance", "N/A"))
         mcap      = gecko.get("global", {}).get("total_market_cap_usd", 0)
         mcap_t    = f"${mcap/1e12:.2f}T" if mcap else "N/A"
+        usd_eur   = fx.get("key_pairs", {}).get("EUR", {}).get("rate", "N/A") if fx else "N/A"
+        usd_jpy   = fx.get("key_pairs", {}).get("JPY", {}).get("rate", "N/A") if fx else "N/A"
 
-        usd_eur = fx.get("rates", {}).get("EUR", "N/A") if fx else "N/A"
+        # Live crypto prices
+        btc_price = eth_price = sol_price = "N/A"
+        btc_chg = eth_chg = sol_chg = "N/A"
+        try:
+            r = httpx.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
+                timeout=6
+            )
+            if r.status_code == 200:
+                d = r.json()
+                btc_price = f"${d['bitcoin']['usd']:,.0f}"
+                btc_chg   = f"{d['bitcoin']['usd_24h_change']:+.1f}%"
+                eth_price = f"${d['ethereum']['usd']:,.0f}"
+                eth_chg   = f"{d['ethereum']['usd_24h_change']:+.1f}%"
+                sol_price = f"${d['solana']['usd']:,.2f}"
+                sol_chg   = f"{d['solana']['usd_24h_change']:+.1f}%"
+        except Exception:
+            pass
+
+        # Oracle directional call based on F&G
+        fng_int = int(fng_val) if str(fng_val).isdigit() else 50
+        if fng_int < 20:
+            signal = "ACCUMULATE — Extreme fear historically precedes recovery. Strong buy zone."
+            btc_call = "BTC likely to rebound 15-25% within 30 days from current levels."
+        elif fng_int < 40:
+            signal = "CAUTIOUS BUY — Fear present but not extreme. Scale in carefully."
+            btc_call = "BTC consolidating. Watch for weekly close above key resistance."
+        elif fng_int < 60:
+            signal = "NEUTRAL — Hold positions. No strong directional signal."
+            btc_call = "BTC range-bound. Wait for breakout confirmation."
+        elif fng_int < 80:
+            signal = "REDUCE — Greed elevated. Consider taking partial profits."
+            btc_call = "BTC approaching resistance. Risk/reward unfavorable for new entries."
+        else:
+            signal = "EXIT RISK — Extreme greed. High probability of correction incoming."
+            btc_call = "BTC historically corrects 20-40% from extreme greed levels."
 
         lines = [
             f"OCTODAMUS MARKET ORACLE BRIEFING",
-            f"Focus: {focus}",
+            f"Generated: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
             f"",
-            f"Fear & Greed Index: {fng_val} ({fng_label})",
+            f"── CRYPTO PRICES ──",
+            f"BTC: {btc_price} ({btc_chg})",
+            f"ETH: {eth_price} ({eth_chg})",
+            f"SOL: {sol_price} ({sol_chg})",
+            f"",
+            f"── MARKET STRUCTURE ──",
             f"BTC Dominance: {btc_dom}%",
-            f"Total Crypto Market Cap: {mcap_t}",
-            f"USD/EUR: {usd_eur}",
+            f"Total Market Cap: {mcap_t}",
+            f"Fear & Greed: {fng_val} — {fng_label}",
             f"",
-            f"Powered by Octodamus (@octodamusai)",
+            f"── MACRO ──",
+            f"USD/EUR: {usd_eur}",
+            f"USD/JPY: {usd_jpy}",
+            f"",
+            f"── ORACLE SIGNAL ──",
+            f"{signal}",
+            f"{btc_call}",
+            f"",
+            f"Powered by Octodamus (@octodamusai) — 8 data streams, zero consensus trades.",
         ]
         return "\n".join(lines)
     except Exception as e:
@@ -76,38 +128,117 @@ def handle_market_oracle_briefing(requirements: dict) -> str:
 
 
 def handle_ticker_deep_dive(requirements: dict) -> str:
-    """Deep dive on a specific ticker via CoinGecko."""
+    """Deep BTC/crypto analysis with price targets and directional forecast."""
     ticker = requirements.get("ticker", "BTC").upper()
+    timeframe = requirements.get("timeframe", "1d")
     try:
-        gecko = octo_gecko.run_gecko_scan()
-        coins = gecko.get("top_coins", [])
-        match = next((c for c in coins if c.get("symbol", "").upper() == ticker), None)
+        import httpx
 
-        if match:
+        # Map ticker to CoinGecko ID
+        cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+                  "BNB": "binancecoin", "XRP": "ripple", "DOGE": "dogecoin",
+                  "AVAX": "avalanche-2", "LINK": "chainlink", "DOT": "polkadot"}
+        cg_id = cg_map.get(ticker, ticker.lower())
+
+        # Fetch detailed coin data
+        r = httpx.get(
+            f"https://api.coingecko.com/api/v3/coins/{cg_id}",
+            params={"localization": "false", "tickers": "false", "community_data": "false"},
+            timeout=8
+        )
+        pulse = octo_pulse.run_pulse_scan()
+        predict = octo_predict.run_predict_scan() if hasattr(octo_predict, "run_predict_scan") else {}
+        fng_val = int(pulse.get("fear_greed", {}).get("value", 50) or 50)
+
+        if r.status_code == 200:
+            d = r.json()
+            md = d.get("market_data", {})
+            price     = md.get("current_price", {}).get("usd", 0)
+            chg_24h   = md.get("price_change_percentage_24h", 0) or 0
+            chg_7d    = md.get("price_change_percentage_7d", 0) or 0
+            chg_30d   = md.get("price_change_percentage_30d", 0) or 0
+            ath       = md.get("ath", {}).get("usd", 0)
+            ath_pct   = md.get("ath_change_percentage", {}).get("usd", 0) or 0
+            mcap      = md.get("market_cap", {}).get("usd", 0)
+            vol_24h   = md.get("total_volume", {}).get("usd", 0)
+            high_24h  = md.get("high_24h", {}).get("usd", 0)
+            low_24h   = md.get("low_24h", {}).get("usd", 0)
+            circ      = md.get("circulating_supply", 0)
+            max_sup   = md.get("max_supply", 0)
+
+            # Supply scarcity
+            sup_str = f"{circ/max_sup*100:.1f}% circulating" if max_sup else "No max supply"
+
+            # Momentum signal
+            if chg_24h > 3 and chg_7d > 5:
+                momentum = "STRONG BULLISH — multi-timeframe momentum aligned"
+            elif chg_24h > 1:
+                momentum = "BULLISH — short-term upward pressure"
+            elif chg_24h < -3 and chg_7d < -5:
+                momentum = "STRONG BEARISH — selling pressure across timeframes"
+            elif chg_24h < -1:
+                momentum = "BEARISH — short-term downward pressure"
+            else:
+                momentum = "NEUTRAL — consolidating, watch for breakout"
+
+            # Price targets
+            support    = low_24h * 0.97
+            resistance = high_24h * 1.03
+            bull_target = price * 1.15
+            bear_target = price * 0.85
+
+            # Polymarket context
+            pm_context = ""
+            if predict and not predict.get("error"):
+                markets = list(predict.get("markets", {}).values())[:2]
+                if markets:
+                    pm_lines = [f"  • {m.get('question','?')[:50]} — {m.get('yes_probability','?')}% YES" for m in markets]
+                    pm_context = "\n── PREDICTION MARKETS ──\n" + "\n".join(pm_lines)
+
             lines = [
-                f"OCTODAMUS TICKER DEEP DIVE: {ticker}",
+                f"OCTODAMUS {ticker} DEEP DIVE",
+                f"Timeframe: {timeframe} | Generated: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
                 f"",
-                f"Price (USD): ${match.get('current_price', 'N/A'):,}",
-                f"24h Change: {match.get('price_change_percentage_24h', 'N/A')}%",
-                f"Market Cap: ${match.get('market_cap', 0):,}",
-                f"24h Volume: ${match.get('total_volume', 0):,}",
-                f"7d Change: {match.get('price_change_percentage_7d_in_currency', 'N/A')}%",
+                f"── PRICE ACTION ──",
+                f"Current:    ${price:,.2f}",
+                f"24h Range:  ${low_24h:,.2f} — ${high_24h:,.2f}",
+                f"24h Change: {chg_24h:+.2f}%",
+                f"7d Change:  {chg_7d:+.2f}%",
+                f"30d Change: {chg_30d:+.2f}%",
+                f"ATH:        ${ath:,.2f} ({ath_pct:+.1f}% from ATH)",
                 f"",
-                f"Powered by Octodamus (@octodamusai)",
+                f"── MARKET STRUCTURE ──",
+                f"Market Cap: ${mcap/1e9:.2f}B",
+                f"24h Volume: ${vol_24h/1e9:.2f}B",
+                f"Supply:     {sup_str}",
+                f"",
+                f"── MOMENTUM ──",
+                f"{momentum}",
+                f"Fear & Greed: {fng_val}",
+                f"",
+                f"── PRICE TARGETS ──",
+                f"Support:    ${support:,.2f}",
+                f"Resistance: ${resistance:,.2f}",
+                f"Bull case:  ${bull_target:,.2f} (+15%)",
+                f"Bear case:  ${bear_target:,.2f} (-15%)",
             ]
+            if pm_context:
+                lines.append(pm_context)
+            lines += ["", "── ORACLE CALL ──"]
+            if chg_24h > 2 and fng_val < 50:
+                lines.append(f"{ticker} pushing up while fear remains — smart money accumulating. Target: ${bull_target:,.0f}.")
+            elif chg_24h < -2 and fng_val > 60:
+                lines.append(f"{ticker} dropping while greed elevated — distribution phase. Watch ${support:,.0f} support.")
+            else:
+                lines.append(f"{ticker} consolidating. Break above ${resistance:,.0f} confirms next leg. Below ${support:,.0f} signals deeper correction.")
+            lines += ["", "Powered by Octodamus (@octodamusai) — 8 data streams, zero consensus trades."]
         else:
-            lines = [
-                f"OCTODAMUS TICKER DEEP DIVE: {ticker}",
-                f"",
-                f"Ticker not found in top CoinGecko listings.",
-                f"Try BTC, ETH, SOL, BNB, XRP, DOGE, etc.",
-                f"",
-                f"Powered by Octodamus (@octodamusai)",
-            ]
+            lines = [f"OCTODAMUS {ticker} DEEP DIVE", "", f"Data temporarily unavailable for {ticker}.", "Try again shortly.", "", "Powered by Octodamus (@octodamusai)"]
+
         return "\n".join(lines)
     except Exception as e:
         log.error(f"ticker_deep_dive error: {e}")
-        return f"Error generating deep dive: {e}"
+        return f"Error generating deep dive for {ticker}: {e}"
 
 
 def handle_crypto_sentiment_snapshot(requirements: dict) -> str:
@@ -180,8 +311,8 @@ def handle_congressional_trade_alert(requirements: dict) -> str:
         for t in trades[:5]:
             lines.append(f"• {t['politician']} ({t.get('party','?')}) {t['direction']} {t['ticker']} — {t['amount_str']} — {t['date']}")
         lines += ["", "Congress front-runs markets. Follow the money.", "", "Powered by Octodamus (@octodamusai)"]
-        return "
-".join(lines)
+        return "\n".join(lines)
+
     except Exception as e:
         log.error(f"congressional_trade_alert error: {e}")
         return f"Error generating congressional alert: {e}"
