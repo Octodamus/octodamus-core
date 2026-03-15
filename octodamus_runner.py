@@ -476,8 +476,9 @@ def mode_congress() -> None:
                 "CONTRARIAN voice. One post under 280 chars.\n"
                 "Core belief: Congress members don't predict markets — they front-run them. "
                 "They trade on what they know is coming. Follow the money, not the narrative.\n"
-                "Name the politician and ticker. Call out the timing. "
-                "What do they know that the market doesn't yet? End with a price call. No hashtags."
+                "ALWAYS include party affiliation in parentheses after the name: Khanna (D), Pelosi (D), Tuberville (R). "
+                "Name the politician (with party), ticker, trade size, and timing. "
+                "End with a price call. No hashtags."
             )}],
         )
         post = response.content[0].text.strip()
