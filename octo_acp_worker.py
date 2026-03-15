@@ -416,6 +416,8 @@ def handle_congressional_trade_alert(requirements: dict) -> str:
     try:
         import octo_congress
         data = octo_congress.run_congress_scan(days_back=45)
+        if not data.get("error") and data.get("total", 0) == 0:
+            data = octo_congress.run_congress_scan(days_back=730)
         if data.get("error"):
             return f"Congressional data unavailable: {data['error']}"
         # Filter for requested ticker if specified
@@ -461,10 +463,11 @@ def on_new_task(task, memo_to_sign=None):
     requirements = getattr(task, 'service_requirement', None) or getattr(task, 'requirement', None) or {}
     log.info(f"New ACP job #{job_id}: service='{service_name}' req={requirements}")
 
-    # Match to handler
+    # Match to handler — normalize underscores to spaces for matching
     handler = None
+    sn_normalized = service_name.lower().replace("_", " ")
     for key, fn in JOB_HANDLERS.items():
-        if key in service_name.lower() or service_name.lower() in key:
+        if key in sn_normalized or sn_normalized in key:
             handler = fn
             break
 
