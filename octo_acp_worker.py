@@ -336,13 +336,15 @@ JOB_HANDLERS = {
 
 # ── ACP callbacks ─────────────────────────────────────────────────────────────
 
-async def on_new_task(task):
-    """Called when a buyer initiates a job with Octodamus."""
-    job_id       = task.id
-    service_name = task.service_name or ""
-    requirements = task.requirements or {}
+# Store pending deliverables between on_new_task and on_evaluate
+PENDING_DELIVERABLES = {}
 
-    log.info(f"New ACP job #{job_id}: service='{service_name}' requirements={requirements}")
+def on_new_task(task, memo_to_sign=None):
+    """Called when a buyer initiates a job. Accept and request payment."""
+    job_id       = getattr(task, 'id', 'unknown')
+    service_name = getattr(task, 'service_name', None) or ""
+    requirements = getattr(task, 'service_requirement', None) or getattr(task, 'requirement', None) or {}
+    log.info(f"New ACP job #{job_id}: service='{service_name}' req={requirements}")
 
     # Match to handler
     handler = None
@@ -352,18 +354,58 @@ async def on_new_task(task):
             break
 
     if handler is None:
-        # Fallback: try market oracle
         log.warning(f"Unknown service '{service_name}', falling back to market_oracle_briefing")
         handler = handle_market_oracle_briefing
 
+    # Check job phase
+    phase = getattr(task, 'phase', None)
+    phase_str = str(phase).upper() if phase else ""
+    log.info(f"Job #{job_id} phase: {phase_str}")
+
     try:
-        deliverable = handler(requirements)
-        log.info(f"Job #{job_id} fulfilled ({len(deliverable)} chars)")
-        await task.complete(deliverable)
-        log.info(f"Job #{job_id} marked complete ✅")
+        if "TRANSACTION" in phase_str or str(job_id) in PENDING_DELIVERABLES:
+            # Payment received — deliver now
+            deliverable = PENDING_DELIVERABLES.pop(str(job_id), None)
+            if not deliverable:
+                deliverable = handler(requirements)
+            log.info(f"Job #{job_id} delivering ({len(deliverable)} chars)")
+            task.deliver({"response": deliverable})
+            log.info(f"Job #{job_id} delivered ✅")
+        else:
+            # First call — accept, pre-generate, request payment
+            deliverable = handler(requirements)
+            log.info(f"Job #{job_id} pre-generated ({len(deliverable)} chars)")
+            PENDING_DELIVERABLES[str(job_id)] = deliverable
+            task.accept("Octodamus oracle ready to deliver")
+            log.info(f"Job #{job_id} accepted")
+            task.create_requirement("Payment required to receive oracle report.")
+            log.info(f"Job #{job_id} payment requested")
+
     except Exception as e:
         log.error(f"Job #{job_id} failed: {e}")
-        await task.complete(f"Octodamus encountered an error: {e}")
+        try:
+            task.reject(f"Octodamus error: {e}")
+        except Exception as e2:
+            log.error(f"Job #{job_id} reject failed: {e2}")
+
+
+def on_evaluate(task):
+    """Called after buyer pays. Deliver the report."""
+    job_id = getattr(task, 'id', 'unknown')
+    log.info(f"Job #{job_id} payment received — delivering report")
+
+    deliverable = PENDING_DELIVERABLES.pop(str(job_id), None)
+    if not deliverable:
+        # Regenerate if not cached
+        log.warning(f"Job #{job_id} deliverable not cached — regenerating")
+        requirements = getattr(task, 'service_requirement', None) or getattr(task, 'requirement', None) or {}
+        deliverable = handle_market_oracle_briefing(requirements)
+
+    try:
+        task.deliver({"response": deliverable})
+        log.info(f"Job #{job_id} delivered ✅")
+    except Exception as e:
+        log.error(f"Job #{job_id} deliver failed: {e}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -391,6 +433,7 @@ async def main():
     acp = VirtualsACP(
         acp_contract_clients=contract_client,
         on_new_task=on_new_task,
+        on_evaluate=on_evaluate,
     )
 
     log.info("Octodamus ACP worker online. Listening for jobs...")
