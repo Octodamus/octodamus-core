@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SELLER_ENTITY_ID          = 2
-SELLER_AGENT_WALLET = "0x89FBF85AC90E08af952e404e442Ce045c6Df9a5C"
+SELLER_AGENT_WALLET = "0x9DdE22707542FA69c9ecfEb0C4f0912797DF3d5E"
 BITWARDEN_ITEM            = "AGENT - Octodamus - ACP Wallet"
 
 # ── Job handlers ──────────────────────────────────────────────────────────────
@@ -164,11 +164,43 @@ def handle_prediction_market_read(requirements: dict) -> str:
         return f"Error reading prediction markets: {e}"
 
 
+def handle_congressional_trade_alert(requirements: dict) -> str:
+    """Congressional trading alerts via Quiver API."""
+    ticker = requirements.get("ticker", "NVDA").upper()
+    try:
+        import octo_congress
+        data = octo_congress.run_congress_scan(days_back=45)
+        if data.get("error"):
+            return f"Congressional data unavailable: {data['error']}"
+        # Filter for requested ticker if specified
+        trades = [t for t in data.get("trades", []) if t["ticker"] == ticker]
+        if not trades:
+            trades = data.get("trades", [])[:5]
+        lines = [f"OCTODAMUS CONGRESSIONAL TRADE ALERT", f"Ticker: {ticker}", ""]
+        for t in trades[:5]:
+            lines.append(f"• {t['politician']} ({t.get('party','?')}) {t['direction']} {t['ticker']} — {t['amount_str']} — {t['date']}")
+        lines += ["", "Congress front-runs markets. Follow the money.", "", "Powered by Octodamus (@octodamusai)"]
+        return "
+".join(lines)
+    except Exception as e:
+        log.error(f"congressional_trade_alert error: {e}")
+        return f"Error generating congressional alert: {e}"
+
+
 JOB_HANDLERS = {
-    "market_oracle_briefing":    handle_market_oracle_briefing,
-    "ticker_deep_dive":          handle_ticker_deep_dive,
-    "crypto_sentiment_snapshot": handle_crypto_sentiment_snapshot,
-    "prediction_market_read":    handle_prediction_market_read,
+    "market_oracle_briefing":       handle_market_oracle_briefing,
+    "ticker_deep_dive":             handle_ticker_deep_dive,
+    "crypto_sentiment_snapshot":    handle_crypto_sentiment_snapshot,
+    "prediction_market_read":       handle_prediction_market_read,
+    "get crypto market signal":     handle_market_oracle_briefing,
+    "get fear greed sentiment":     handle_crypto_sentiment_snapshot,
+    "get bitcoin price analysis":   handle_ticker_deep_dive,
+    "get congressional stock":      handle_congressional_trade_alert,
+    "congressional":                handle_congressional_trade_alert,
+    "congress":                     handle_congressional_trade_alert,
+    "fear greed":                   handle_crypto_sentiment_snapshot,
+    "bitcoin":                      handle_ticker_deep_dive,
+    "crypto market":                handle_market_oracle_briefing,
 }
 
 # ── ACP callbacks ─────────────────────────────────────────────────────────────
