@@ -401,10 +401,18 @@ def build_live_context() -> str:
 
 def build_system_prompt() -> str:
     brain_path = BASE_DIR / "BRAIN.md"
+    soul_path = BASE_DIR / "SOUL.md"
     brain_section = ""
+    if soul_path.exists():
+        try:
+            brain_section += "\n\nSOUL (Identity & Principles):\n" + soul_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
     if brain_path.exists():
         try:
-            brain_section = "\n\nSYSTEM MEMORY (BRAIN.md):\n" + brain_path.read_text(encoding="utf-8")
+            b = brain_path.read_text(encoding="utf-8")
+            if len(b) > 2000: b = "...[truncated]...\n" + b[-2000:]
+            brain_section += "\n\nBRAIN (Working Memory):\n" + b
         except Exception:
             pass
 
