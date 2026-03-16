@@ -98,14 +98,19 @@ VALID_STOCKS  = {"NVDA","TSLA","AAPL","MSFT","AMZN","META","GOOGL","SPY","QQQ"}
 VALID_TICKERS = VALID_CRYPTO | VALID_STOCKS
 
 def handle_crypto_market_signal(req):
-    import httpx
-    import sys, os
+    import httpx, sys, os
+    from concurrent.futures import ThreadPoolExecutor
     sys.path.insert(0, os.path.dirname(__file__))
     import octo_pulse, octo_gecko, octo_fx
     ticker = req.get("ticker","BTC").upper()
-    pulse = octo_pulse.run_pulse_scan()
-    gecko = octo_gecko.run_gecko_scan()
-    fx    = octo_fx.run_fx_scan() if hasattr(octo_fx,"run_fx_scan") else {}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_pulse = ex.submit(octo_pulse.run_pulse_scan)
+        f_gecko = ex.submit(octo_gecko.run_gecko_scan)
+        f_fx    = ex.submit(octo_fx.run_fx_scan if hasattr(octo_fx,"run_fx_scan") else dict)
+        f_ta    = ex.submit(fetch_technicals, ticker)
+        f_deriv = ex.submit(fetch_derivatives, ticker)
+        pulse = f_pulse.result(); gecko = f_gecko.result()
+        fx = f_fx.result(); ta = f_ta.result(); deriv = f_deriv.result()
     fng_val   = int(pulse.get("fear_greed",{}).get("value",50)or 50)
     fng_label = pulse.get("fear_greed",{}).get("label","N/A")
     btc_dom   = gecko.get("btc_dominance",gecko.get("global",{}).get("btc_dominance","N/A"))
@@ -121,7 +126,7 @@ def handle_crypto_market_signal(req):
     except Exception: pass
     usd_eur=fx.get("key_pairs",{}).get("EUR",{}).get("rate","N/A") if fx else "N/A"
     usd_jpy=fx.get("key_pairs",{}).get("JPY",{}).get("rate","N/A") if fx else "N/A"
-    ta=fetch_technicals(ticker); deriv=fetch_derivatives(ticker)
+    # ta and deriv already fetched in parallel above
     momentum="N/A"
     if ta:
         rsi,macd,e20,e50=ta.get("rsi",50),ta.get("macd",0),ta.get("ema20",0),ta.get("ema50",0)
@@ -153,8 +158,13 @@ def handle_crypto_market_signal(req):
 
 def handle_fear_greed(req):
     import sys, os; sys.path.insert(0, os.path.dirname(__file__))
+    from concurrent.futures import ThreadPoolExecutor
     import octo_pulse
-    pulse=octo_pulse.run_pulse_scan()
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_pulse = ex.submit(octo_pulse.run_pulse_scan)
+        f_ta    = ex.submit(fetch_technicals, "BTC")
+        f_deriv = ex.submit(fetch_derivatives, "BTC")
+        pulse = f_pulse.result(); ta = f_ta.result(); deriv = f_deriv.result()
     fng=pulse.get("fear_greed",{}); val=int(fng.get("value",50)or 50); label=fng.get("label","N/A")
     wiki=pulse.get("wikipedia",{}); spikes=wiki.get("spikes",[])[:3] if wiki else []
     if val<20: pos="STRONG BUY"; ctx="Capitulation zone. Best entry for 30-90 day holds."
@@ -162,7 +172,6 @@ def handle_fear_greed(req):
     elif val<60: pos="HOLD"; ctx="Market at equilibrium. Wait for extremes."
     elif val<80: pos="REDUCE EXPOSURE"; ctx="Retail FOMO increasing. Trim profits."
     else: pos="EXIT"; ctx="Everyone is bullish. That is the signal to be cautious."
-    ta=fetch_technicals("BTC"); deriv=fetch_derivatives("BTC")
     call=directional_call("BTC",0,0,ta,deriv,val)
     return {
         "type":"fear_greed","ticker":"BTC",
@@ -175,14 +184,19 @@ def handle_fear_greed(req):
 
 def handle_bitcoin_analysis(req):
     import httpx, sys, os; sys.path.insert(0, os.path.dirname(__file__))
+    from concurrent.futures import ThreadPoolExecutor
     import octo_pulse
     ticker=req.get("ticker","BTC").upper()
     timeframe=req.get("timeframe","4h")
     cg_map={"BTC":"bitcoin","ETH":"ethereum","SOL":"solana","BNB":"binancecoin","XRP":"ripple","DOGE":"dogecoin"}
     cg_id=cg_map.get(ticker,ticker.lower())
-    pulse=octo_pulse.run_pulse_scan(); fng_val=int(pulse.get("fear_greed",{}).get("value",50)or 50)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_pulse = ex.submit(octo_pulse.run_pulse_scan)
+        f_ta    = ex.submit(fetch_technicals, ticker)
+        f_deriv = ex.submit(fetch_derivatives, ticker)
+        pulse = f_pulse.result(); ta = f_ta.result(); deriv = f_deriv.result()
+    fng_val=int(pulse.get("fear_greed",{}).get("value",50)or 50)
     fng_label=pulse.get("fear_greed",{}).get("label","N/A")
-    ta=fetch_technicals(ticker); deriv=fetch_derivatives(ticker)
     price=chg_24h=chg_7d=chg_30d=ath=ath_pct=mcap=vol=high_24h=low_24h=circ=max_sup=0
     try:
         r=httpx.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}",
@@ -246,7 +260,12 @@ def handle_congressional(req):
                     pass
         if not token: return {"type":"congressional","ticker":ticker,"error":"QUIVER_API_KEY unavailable"}
         quiver=quiverquant.quiver(token)
-        df=quiver.congress_trading(ticker)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_df    = ex.submit(quiver.congress_trading, ticker)
+            f_pulse = ex.submit(__import__("octo_pulse").run_pulse_scan)
+            df = f_df.result()
+            _pulse_prefetch = f_pulse.result()
         if df is None or df.empty: return {"type":"congressional","ticker":ticker,"trades":[],"error":"No trades found"}
         cutoff_r=datetime.now()-timedelta(days=45)
         cutoff_h=datetime.now()-timedelta(days=730)
@@ -267,7 +286,7 @@ def handle_congressional(req):
             if direction=="BUY": buys+=1
             else: sells+=1
             trades.append({"name":name,"party":p_tag,"direction":direction,"amount":amount,"date":date_str})
-        pulse=octo_pulse.run_pulse_scan()
+        pulse=_pulse_prefetch
         fng_val=int(pulse.get("fear_greed",{}).get("value",50)or 50)
         fng_label=pulse.get("fear_greed",{}).get("label","N/A")
         if buys>sells: interpretation=f"Net congressional BUYING on {ticker}. Committee insiders accumulating — something favorable may be coming."
