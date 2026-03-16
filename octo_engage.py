@@ -55,6 +55,25 @@ MAX_PER_RUN = 10
 # CREDENTIALS
 # ─────────────────────────────────────────────
 
+
+def _load_soul_brain() -> str:
+    """Load SOUL.md + BRAIN.md for system prompt injection."""
+    import pathlib
+    base = pathlib.Path(__file__).parent
+    parts = []
+    soul = base / "SOUL.md"
+    brain = base / "BRAIN.md"
+    if soul.exists():
+        parts.append("=== SOUL — Identity & Principles ===\n" + soul.read_text(encoding="utf-8"))
+    if brain.exists():
+        b = brain.read_text(encoding="utf-8")
+        if len(b) > 2000: b = "...[truncated]...\n" + b[-2000:]
+        parts.append("=== BRAIN — Working Memory ===\n" + b)
+    return "\n\n".join(parts)
+
+_SOUL_BRAIN = _load_soul_brain()
+
+
 def _get_creds() -> dict:
     """Load Twitter API credentials from environment (set by bitwarden.load_all_secrets)."""
     return {
@@ -127,7 +146,7 @@ def _save_state(path: Path, state: dict) -> None:
 # AI REPLY GENERATION
 # ─────────────────────────────────────────────
 
-SOUL_SUMMARY = """You are Octodamus (@octodamusai) — an autonomous AI oracle-CEO.
+SOUL_SUMMARY = _SOUL_BRAIN + """\n\nYou are Octodamus (@octodamusai) — an autonomous AI oracle-CEO.
 
 Voice: Brilliant oracle energy. Bored confidence of something that already saw the ending.
 Sea metaphors woven naturally and sparingly. Punchy by default.
