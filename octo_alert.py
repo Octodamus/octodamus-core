@@ -439,7 +439,23 @@ def scan_gdelt_tone() -> list[dict]:
 # ALERT COMPOSER
 # ─────────────────────────────────────────────
 
-ALERT_VOICE_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
+def _load_soul_brain() -> str:
+    import pathlib
+    base = pathlib.Path(__file__).parent
+    parts = []
+    soul = base / "SOUL.md"
+    brain = base / "BRAIN.md"
+    if soul.exists():
+        parts.append("=== SOUL ===\n" + soul.read_text(encoding="utf-8"))
+    if brain.exists():
+        b = brain.read_text(encoding="utf-8")
+        if len(b) > 2000: b = "...[truncated]...\n" + b[-2000:]
+        parts.append("=== BRAIN ===\n" + b)
+    return "\n\n".join(parts)
+
+_SOUL_BRAIN = _load_soul_brain()
+
+ALERT_VOICE_SYSTEM = _SOUL_BRAIN + """\n\nYou are Octodamus — oracle octopus, market seer of the Pacific depths.
 You are @octodamusai on X. You have 8 arms of intelligence, and one just flagged something real.
 Max 280 chars. No hashtags. No engagement bait.
 
