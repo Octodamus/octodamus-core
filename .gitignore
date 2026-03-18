@@ -90,3 +90,4 @@ data/
 journals/
 logs/
 .octo_secrets
+patch_*.py
