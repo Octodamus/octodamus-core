@@ -1,4 +1,4 @@
-﻿"""
+"""
 bitwarden.py
 Octodamus â€” Secrets Manager
 
@@ -44,7 +44,9 @@ from pathlib import Path
 # CONSTANTS
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-BW_CMD       = r"C:\Users\walli\AppData\Roaming\npm\bw.cmd"
+import shutil as _shutil
+import sys as _sys
+BW_CMD = "bw" if _sys.platform != "win32" else (_shutil.which("bw.cmd") or r"C:\Users\walli\AppData\Roaming\npm\bw.cmd")
 CACHE_FILE   = Path(__file__).parent / ".octo_secrets"
 CACHE_MAX_AGE_HOURS = 23  # warn if cache older than this
 
@@ -54,6 +56,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Financial Datasets API":       "FINANCIAL_DATASETS_API_KEY",
     "AGENT - Octodamus - Social - OpenTweet":            "OPENTWEET_API_KEY",
     "AGENT - Octodamus - Control - Telegram":           "TELEGRAM_BOT_TOKEN",
+    "AGENT - Octodamus - OctoBoto":                       "OCTOBOTO_TELEGRAM_TOKEN",
     "AGENT - Octodamus - Search - Tavily":              "TAVILY_API_KEY",
     "AGENT - Octodamus - Deploy - Vercel":              "VERCEL_API_KEY",
     "AGENT - Octodamus - Domain - Cloudflare":          "CLOUDFLARE_API_KEY",
@@ -77,6 +80,7 @@ OCTODAMUS_OPTIONAL_SECRETS = {
 OCTODAMUS_CRITICAL_KEYS = {
     "ANTHROPIC_API_KEY",
     "TELEGRAM_BOT_TOKEN",
+    "OCTOBOTO_TELEGRAM_TOKEN",
 }
 
 

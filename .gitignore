@@ -78,3 +78,15 @@ octodamus_memory.json
 octo_skill_log.json
 octodamus_mission_control.html
 debug_fstring.py
+*.Zone.Identifier
+*.backup
+*.save
+bw.zip
+bw_unlock.sh
+octo_quiver_key.txt
+octo_boto_wallet.json
+octo_logo_b64.txt
+data/
+journals/
+logs/
+.octo_secrets
