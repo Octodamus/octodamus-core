@@ -267,7 +267,7 @@ def mode_daily() -> None:
                 k: {"price": v.get("price", v.get("close", 0)), "change": v.get("day_change_percent", v.get("change_percent", 0))}
                 for k, v in snapshots.items()
             }
-            card = build_signal_card(post, prices=prices_for_card)
+            card = build_signal_card(post)
             if len(card) <= 280:
                 post = card
         except Exception as e:
