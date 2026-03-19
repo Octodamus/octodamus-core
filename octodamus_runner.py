@@ -218,10 +218,19 @@ def mode_daily() -> None:
         for ticker in DAILY_TICKERS:
             try:
                 if ticker in ("BTC", "ETH", "SOL"):
-                    data = get_current_crypto_price(ticker)
+                    import requests as _req
+                    _cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
+                    _r = _req.get("https://api.coingecko.com/api/v3/simple/price",
+                        params={"ids": _cg_map[ticker], "vs_currencies": "usd", "include_24hr_change": "true"},
+                        timeout=10)
+                    _d = _r.json().get(_cg_map[ticker], {})
+                    snapshots[ticker] = {
+                        "price": _d.get("usd", 0),
+                        "day_change_percent": float(_d.get("usd_24h_change", 0) or 0),
+                    }
                 else:
                     data = get_current_price(ticker)
-                snapshots[ticker] = data.get("snapshot", {})
+                    snapshots[ticker] = data.get("snapshot", {})
             except Exception as e:
                 print(f"[Runner] Could not fetch {ticker}: {e}")
 
