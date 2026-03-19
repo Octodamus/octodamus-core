@@ -17,8 +17,8 @@ import numpy as np
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 MIN_EV_THRESHOLD   = 0.06   # 6% edge required (raised from 5%)
-MIN_LIQUIDITY      = 3_000  # $3k min liquidity (lowered to find more markets)
-MIN_VOLUME_24H     = 500    # $500+ daily volume (screens out dead markets)
+MIN_LIQUIDITY      = 1_000  # $1k min liquidity
+MIN_VOLUME_24H     = 200    # $200+ daily volume
 KELLY_FRACTION     = 0.25   # Quarter-Kelly — proven safer for volatile markets
 MAX_POSITION_PCT   = 0.04   # 4% of bankroll max = $20 on $500 starting
 MIN_MARKET_PRICE   = 0.03   # Tighter band
@@ -182,8 +182,16 @@ def is_valid_market(market: dict) -> bool:
     if not (MIN_MARKET_PRICE < float(price) < MAX_MARKET_PRICE):
         return False
 
-    # Must be binary YES/NO structure
-    if not market.get("is_binary", False):
+    # Must be binary YES/NO structure — detect from outcomes if is_binary missing
+    is_binary = market.get("is_binary")
+    if is_binary is None:
+        outcomes = market.get("outcomes", [])
+        if isinstance(outcomes, str):
+            import json as _json
+            try: outcomes = _json.loads(outcomes)
+            except: outcomes = []
+        is_binary = len(outcomes) == 2
+    if not is_binary:
         return False
 
     # Liquidity gate
@@ -191,9 +199,13 @@ def is_valid_market(market: dict) -> bool:
     if liq < MIN_LIQUIDITY:
         return False
 
-    # Activity gate — dead markets have no price discovery
+    # Activity gate — use volume24h if available, fall back to total volume > 1k
     vol24 = float(market.get("volume24h", 0) or 0)
-    if vol24 < MIN_VOLUME_24H:
+    if vol24 == 0:
+        vol_total = float(market.get("volume", 0) or 0)
+        if vol_total < 1000:
+            return False
+    elif vol24 < MIN_VOLUME_24H:
         return False
 
     # Already resolved — skip

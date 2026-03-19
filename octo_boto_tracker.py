@@ -22,7 +22,7 @@ import os
 import numpy as np
 
 TRADES_FILE      = Path("/home/walli/octodamus/octo_boto_trades.json")
-STARTING_BALANCE = 500.0    # $500 paper USDC (was $1,000)
+STARTING_BALANCE = 1000.0    # $500 paper USDC (was $1,000)
 TAKER_FEE        = 0.005    # 0.5% fee on position size (Polymarket standard)
 MIN_POSITION     = 2.00     # $2 minimum position size
 

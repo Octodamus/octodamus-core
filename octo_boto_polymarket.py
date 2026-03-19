@@ -29,7 +29,7 @@ RETRY_DELAY  = 1.5   # seconds, doubles each retry
 
 
 class GammaClient:
-    def __init__(self, min_liquidity: float = 3_000):
+    def __init__(self, min_liquidity: float = 1_000):
         self.min_liquidity = min_liquidity
         self.session = requests.Session()
         self.session.headers.update({
@@ -153,12 +153,19 @@ class GammaClient:
         return None
 
     def _is_binary(self, market: dict) -> bool:
-        """True only if market has exactly 2 tokens, one of which is YES-type."""
+        """True only if market has exactly 2 outcomes (YES/NO structure)."""
+        # Try tokens field first
         tokens = market.get("tokens") or []
-        if len(tokens) != 2:
-            return False
-        outcomes = {str(t.get("outcome", "")).strip().upper() for t in tokens}
-        return bool(outcomes & YES_OUTCOMES)
+        if len(tokens) == 2:
+            outcomes = {str(t.get("outcome", "")).strip().upper() for t in tokens}
+            return bool(outcomes & YES_OUTCOMES)
+        # Fall back to outcomes field (used by gamma API)
+        outcomes_raw = market.get("outcomes") or []
+        if isinstance(outcomes_raw, str):
+            import json as _j
+            try: outcomes_raw = _j.loads(outcomes_raw)
+            except: return False
+        return len(outcomes_raw) == 2
 
     def _check_resolved(self, market: dict) -> Optional[str]:
         """

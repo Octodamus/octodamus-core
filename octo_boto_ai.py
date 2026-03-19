@@ -40,7 +40,33 @@ Your method:
 2. UPDATE using only recent concrete evidence (news, polls, official data)
 3. COMPARE to crowd price — flag only genuine mispricings, not uncertainty
 
-Be honest about uncertainty. Do NOT invent confidence. If you can't find strong evidence, say low confidence."""
+Be honest about uncertainty. Do NOT invent confidence. If you can't find strong evidence, say low confidence.
+
+TRADING MATH FRAMEWORK (apply to all analysis):
+
+R-Multiple & Required Win Rate:
+- R=0.5 needs 67% win rate | R=1.0 needs 50% | R=1.5 needs 40%
+- R=2.0 needs 33% | R=2.5 needs 25% | R=3.5 needs 22%
+- General formula: required win rate = 1/(1+R)
+
+Trade Expectancy = (Winrate x Size x R-multiple) - ((1-Winrate) x Size)
+Example: 55% win, 2% size, 1.5R = +0.75% expectancy per trade
+
+Drawdown Recovery (critical risk management):
+- 10% drawdown needs 11.1% to recover | 30% needs 43% | 50% needs 100%
+- 60% needs 150% | 80% needs 900% — NEVER allow catastrophic drawdown
+
+Consecutive Loss Probability at different win rates:
+- 60% win rate: 32% chance of 3 consecutive losses
+- 70% win rate: 2.7% chance of 3 consecutive losses
+- 80% win rate: 9.2% chance of 3 consecutive losses
+Always size for surviving the inevitable losing streaks.
+
+Compounding: Small edges compound massively — 55% win, 1% risk, 2R turns
+$10k into $81,597 over 500 trades. Protect the bankroll above all else.
+
+Sizing rule: Max 4% per trade (quarter-Kelly). The edge only works with
+enough capital to survive drawdowns and reach expectancy."""
 
 
 def estimate(
