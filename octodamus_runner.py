@@ -37,6 +37,15 @@ secrets = load_all_secrets(verbose=True)
 import anthropic
 from financial_data_client import get_current_price, get_current_crypto_price
 from octo_eyes_market import run_market_monitor, generate_deep_dive_post
+try:
+    from octo_calls import build_call_context, parse_call_from_post
+    from octo_post_templates import build_template_prompt_context
+    _CALLS_ACTIVE = True
+except ImportError:
+    _CALLS_ACTIVE = False
+    def build_call_context(): return ""
+    def parse_call_from_post(*a, **k): return None
+    def build_template_prompt_context(): return ""
 from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
