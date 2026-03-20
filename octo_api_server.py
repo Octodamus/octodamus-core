@@ -178,6 +178,73 @@ def acp_btc_dominance():
 
 # ── Report endpoints ──────────────────────────────────────────────────────────
 
+# ── Simple JSON store for dashboard metrics ─────────────────────────────────
+import json as _json
+_METRICS_FILE = Path(__file__).parent / "data" / "dashboard_metrics.json"
+
+def _load_metrics() -> dict:
+    try:
+        if _METRICS_FILE.exists():
+            return _json.loads(_METRICS_FILE.read_text())
+    except Exception:
+        pass
+    return {"followers": 0, "guide_sales": 0, "guide_revenue": 0}
+
+def _save_metrics(m: dict):
+    try:
+        _METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _METRICS_FILE.write_text(_json.dumps(m, indent=2))
+    except Exception:
+        pass
+
+
+@app.get("/api/metrics", tags=["ACP Resources"])
+def get_metrics():
+    """Live dashboard metrics — followers, guide sales. No auth required."""
+    m = _load_metrics()
+    m["timestamp"] = __import__("datetime").datetime.utcnow().isoformat()
+    m["powered_by"] = "Octodamus (@octodamusai)"
+    return m
+
+
+@app.post("/api/metrics", tags=["ACP Resources"])
+def update_metrics(
+    followers: Optional[int] = None,
+    guide_sales: Optional[int] = None,
+    guide_revenue: Optional[float] = None,
+    key=Depends(require_key)
+):
+    """Update dashboard metrics. Requires API key."""
+    m = _load_metrics()
+    if followers is not None:      m["followers"] = followers
+    if guide_sales is not None:    m["guide_sales"] = guide_sales
+    if guide_revenue is not None:  m["guide_revenue"] = guide_revenue
+    _save_metrics(m)
+    return {"status": "ok", "metrics": m}
+
+
+@app.get("/api/prices", tags=["ACP Resources"])
+def acp_prices():
+    """Live BTC/ETH/SOL prices with 24h change. No auth required."""
+    try:
+        import requests as req
+        r = req.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids":"bitcoin,ethereum,solana","vs_currencies":"usd","include_24hr_change":"true"},
+            timeout=10
+        )
+        d = r.json()
+        return {
+            "btc": {"usd": d["bitcoin"]["usd"], "usd_24h_change": round(d["bitcoin"].get("usd_24h_change",0),2)},
+            "eth": {"usd": d["ethereum"]["usd"], "usd_24h_change": round(d["ethereum"].get("usd_24h_change",0),2)},
+            "sol": {"usd": d["solana"]["usd"],   "usd_24h_change": round(d["solana"].get("usd_24h_change",0),2)},
+            "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+            "powered_by": "Octodamus (@octodamusai)"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/report", response_class=HTMLResponse, tags=["ACP Resources"])
 def acp_report_live(
     type: str = Query("market_signal", description="market_signal | fear_greed | bitcoin_analysis | congressional"),
