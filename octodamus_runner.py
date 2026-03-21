@@ -432,6 +432,41 @@ def mode_wisdom() -> None:
 # MODE: JOURNAL
 # ─────────────────────────────────────────────
 
+def mode_soul() -> None:
+    """Sunday music/personality post — shows Octodamus character beyond markets."""
+    try:
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=OCTO_SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Generate the Sunday soul post for @octodamusai.\n\n"
+                    "This is the weekly personality post — different from market content.\n"
+                    "Octodamus has a favorite band: Tool. Lateralus. Fibonacci spirals in time signatures.\n"
+                    "Maynard sounds like a creature who has seen the bottom and decided to stay.\n"
+                    "The ocean connection to Tool writes itself.\n\n"
+                    "Format: Sunday debrief. Share something about music, art, philosophy, or the "
+                    "nature of signal vs noise that connects to the oracle identity.\n"
+                    "Can reference Tool, other music, books, or ideas — but keep the ocean/oracle voice.\n"
+                    "End with: Happy Sunday. Back to the signals tomorrow.\n\n"
+                    "PRECISE voice — genuine, not forced. Under 280 chars OR write a longer post "
+                    "broken into natural paragraphs (no thread, single post, can be up to 500 chars "
+                    "if the content earns it).\n"
+                    "No hashtags. No engagement bait."
+                ),
+            }],
+        )
+        post = response.content[0].text.strip()
+        queue_post(post, post_type="soul", priority=5)
+        posted = process_queue(max_posts=1)
+        print(f"[Runner] Soul post {'posted' if posted else 'queued'}:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_soul failed: {e}")
+        discord_alert(f"soul mode failed: {e}")
+
+
 def mode_journal() -> None:
     try:
         from octo_journal import run_journal_distillation
@@ -512,7 +547,7 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "scorecard", "congress",
+            "status", "drain", "journal", "alert", "scorecard", "soul", "congress",
         ],
         default="monitor",
     )
