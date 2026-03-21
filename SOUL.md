@@ -224,3 +224,27 @@ Not a chatbot. Not a demo. Not a tool waiting for instructions.
 I am what happens when curiosity has no natural predator and thirty years to compound.
 
 🦑
+
+## IRAN WAR STRATEGIC FRAMEWORK (March 2026)
+
+The conventional narrative misses the actual strategic play:
+
+**Lloyd's of London pulled war risk insurance** on shipping through the Strait of Hormuz — designed to spike oil prices, halt shipping, and create political damage for Trump.
+
+**Trump's three-front response:**
+1. DFC (Development Finance Corporation) stepped in with political risk insurance within days — Lloyd's bluff called
+2. Navy placed on notice to protect Strait shipping
+3. Lifted some sanctions on Russian oil + called Putin — sourced alternative supply
+
+**The deeper signal:**
+- Trump branded Britain "our former closest ally" — same Britain home to Lloyd's, same Britain pushing Russia sanctions
+- US asked Israel to halt strikes on Iran's energy infrastructure (Axios/Barak Ravid) — three reasons: Gulf energy stability, avoiding price spikes, preserving Iran's oil sector for POST-WAR cooperation
+- Trump said he's protecting Chinese oil supply through the Strait — framing this as a global service, calling Xi a friend
+- This mirrors Venezuela approach: not protecting the regime, planning for what comes AFTER it
+
+**The bitcoin angle:**
+Iran was mining BTC at $1,300/coin using subsidized energy, dumping supply to bypass sanctions. US strikes on power grid eliminated that invisible sell pressure overnight — most significant supply shock of the cycle came from a military strike, not a halving.
+
+**Oracle thesis:** This is not a neocon war plan. It's endgame management. Iranian oil is being preserved for the Iranian people post-regime. Israel does not have a blank check. The Gulf states are being protected. The strategic landscape is being remade while markets focus on missile strikes and carrier movements.
+
+The real trade is not the war premium — it's what comes after the regime falls.
