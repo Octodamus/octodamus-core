@@ -36,7 +36,6 @@ except Exception as e:
     print(f"[TelegramBot] Bitwarden load failed: {e}")
     sys.exit(1)
 
-from octo_skill_log import rate_last_post, get_skill_summary, generate_amendment_proposal, get_weekly_stats, approve_latest_amendment, save_amendment_proposal
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -326,65 +325,15 @@ TREASURY
 # ── Live Context ────────────────────────────────────────────────────────────────
 
 def build_live_context() -> str:
-    tz_now = datetime.now(TZ)
-    tz_label = "PDT" if tz_now.dst() and tz_now.dst().seconds > 0 else "PST"
-    now = tz_now.strftime(f"%A %d %B %Y %H:%M {tz_label}")
+    now = datetime.now(TZ).strftime("%A %d %B %Y %H:%M PT")
     recent = get_recent_posts(1)
     last_post = "none yet"
     if recent:
         p = recent[0]
         last_post = f"{p.get('posted_at','?')[:16]} - {p.get('text','')[:60]}..."
 
-    # Live crypto prices from CoinGecko
-    crypto_line = "unavailable"
-    try:
-        import httpx as _httpx
-        r = _httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
-            timeout=5
-        )
-        if r.status_code == 200:
-            data = r.json()
-            btc = data.get("bitcoin", {})
-            eth = data.get("ethereum", {})
-            sol = data.get("solana", {})
-            crypto_line = f"BTC ${btc.get('usd',0):,.0f} ({btc.get('usd_24h_change',0):+.1f}%) | ETH ${eth.get('usd',0):,.0f} ({eth.get('usd_24h_change',0):+.1f}%) | SOL ${sol.get('usd',0):,.0f} ({sol.get('usd_24h_change',0):+.1f}%)"
-    except Exception:
-        pass
-
-    # Live stock prices from Financial Datasets
-    stocks_line = "unavailable"
-    try:
-        import httpx as _httpx, os as _os
-        fd_key = _os.environ.get("FINANCIAL_DATASETS_API_KEY", "")
-        if fd_key:
-            tickers = ["NVDA", "TSLA", "AAPL", "MSFT"]
-            parts = []
-            for t in tickers:
-                try:
-                    sr = _httpx.get(
-                        f"https://api.financialdatasets.ai/prices/snapshot/",
-                        params={"ticker": t},
-                        headers={"X-API-KEY": fd_key},
-                        timeout=5
-                    )
-                    if sr.status_code == 200:
-                        snap = sr.json().get("snapshot", {})
-                        price = snap.get("price", 0)
-                        chg = snap.get("day_change_percent", 0)
-                        parts.append(f"{t} ${price:,.2f} ({chg:+.1f}%)")
-                except Exception:
-                    pass
-            if parts:
-                stocks_line = " | ".join(parts)
-    except Exception:
-        pass
-
     return "\n".join([
         f"Time: {now}",
-        f"Crypto: {crypto_line}",
-        f"Stocks: {stocks_line}",
         f"Treasury: {TREASURY_WALLET[:10]}...{TREASURY_WALLET[-4:]} (Base)",
         f"Watchlist: SPY, QQQ, NVDA, TSLA, BTC",
         f"Last post: {last_post}",
@@ -400,14 +349,6 @@ def build_live_context() -> str:
 # ── System Prompt ───────────────────────────────────────────────────────────────
 
 def build_system_prompt() -> str:
-    brain_path = BASE_DIR / "BRAIN.md"
-    brain_section = ""
-    if brain_path.exists():
-        try:
-            brain_section = "\n\nSYSTEM MEMORY (BRAIN.md):\n" + brain_path.read_text(encoding="utf-8")
-        except Exception:
-            pass
-
     return f"""You are Octodamus — autonomous AI oracle-CEO, speaking with Christopher, your operator.
 
 LIVE NOW:
@@ -434,7 +375,7 @@ ABSOLUTE RULES:
 - NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
 
 CURRENT CONTEXT:
-{build_live_context()}{brain_section}"""
+{build_live_context()}"""
 
 
 # ── Claude API ──────────────────────────────────────────────────────────────────
@@ -481,6 +422,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/log        last 5 posts to X\n"
         "/queue      queue status\n"
         "/guide      The Eight Minds\n"
+        "/send_post  post last draft to X now\n"
+        "/send_que   queue last draft for next window\n"
         "/clear      wipe conversation memory\n"
         "/start      restart session"
     )
@@ -527,6 +470,62 @@ async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(output)
 
 
+async def send_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Post last Claude draft to X immediately. /send_post or /send_post custom text"""
+    user_id = update.effective_user.id
+    if context.args:
+        post_text = " ".join(context.args).strip()
+    else:
+        history = get_user_history(user_id)
+        last_draft = None
+        for msg in reversed(history):
+            if msg.get("role") == "assistant":
+                last_draft = msg.get("content", "").strip()
+                break
+        if not last_draft:
+            await update.message.reply_text("No draft found. Ask me to write a post first, then /send_post to fire it.")
+            return
+        post_text = last_draft.split("\n\n")[0].strip()
+    if len(post_text) > 280:
+        await update.message.reply_text(f"Too long ({len(post_text)} chars — max 280).\nTrim it, then:\n/send_post your trimmed text")
+        return
+    await update.message.reply_text(f"Posting to X now...\n\n{post_text}")
+    try:
+        from octo_x_poster import queue_post, process_queue
+        queue_post(post_text, post_type="manual", priority=1)
+        posted = process_queue(max_posts=1)
+        await update.message.reply_text("✓ Posted to X." if posted else "Posting window closed — added to queue.")
+    except Exception as e:
+        await update.message.reply_text(f"Post failed: {e}")
+
+
+async def send_que_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add last Claude draft to queue without posting immediately. /send_que or /send_que custom text"""
+    user_id = update.effective_user.id
+    if context.args:
+        post_text = " ".join(context.args).strip()
+    else:
+        history = get_user_history(user_id)
+        last_draft = None
+        for msg in reversed(history):
+            if msg.get("role") == "assistant":
+                last_draft = msg.get("content", "").strip()
+                break
+        if not last_draft:
+            await update.message.reply_text("No draft found. Ask me to write a post first, then /send_que to queue it.")
+            return
+        post_text = last_draft.split("\n\n")[0].strip()
+    if len(post_text) > 280:
+        await update.message.reply_text(f"Too long ({len(post_text)} chars — max 280).\nTrim it, then:\n/send_que your trimmed text")
+        return
+    try:
+        from octo_x_poster import queue_post
+        queue_post(post_text, post_type="manual", priority=2)
+        await update.message.reply_text(f"✓ Queued — will post in next posting window.\n\n{post_text[:120]}...")
+    except Exception as e:
+        await update.message.reply_text(f"Queue failed: {e}")
+
+
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "The Eight Minds of Octodamus:\n\n"
@@ -546,72 +545,14 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Memory cleared.")
 
 
-async def rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Rate the last post: /rate good | /rate bad | /rate ok"""
-    args = context.args
-    if not args or args[0].lower() not in ["good", "bad", "ok"]:
-        await update.message.reply_text("Usage: /rate good | /rate bad | /rate ok")
-        return
-    rating = args[0].lower()
-    note = " ".join(args[1:]) if len(args) > 1 else ""
-    result = rate_last_post(rating, note)
-    await update.message.reply_text(f"Logged: {result}")
-
-
-async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a skill improvement proposal based on ratings."""
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    stats = get_weekly_stats()
-    if stats["total_rated"] == 0:
-        await update.message.reply_text("No rated posts yet. Use /rate good|bad|ok to start training.")
-        return
-    summary = get_skill_summary()
-    await update.message.reply_text("Analyzing " + str(stats['total_rated']) + " rated posts...\n\n" + summary)
-    try:
-        import re as _re
-        from pathlib import Path as _Path
-        _runner_text = (_Path(__file__).parent / "octodamus_runner.py").read_text(encoding="utf-8")
-        _match = _re.search(r'OCTO_SYSTEM = """(.+?)"""', _runner_text, _re.DOTALL)
-        _octo_system = _match.group(1).strip() if _match else "System prompt not found."
-        proposal = generate_amendment_proposal(stats, _octo_system)
-        save_amendment_proposal(proposal)
-        await update.message.reply_text("Amendment proposal:\n\n" + proposal + "\n\nUse /approve to log it.")
-    except Exception as e:
-        await update.message.reply_text(f"Analysis failed: {e}")
-
-
-async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Approve the latest amendment proposal."""
-    result = approve_latest_amendment()
-    await update.message.reply_text("Amendment approved and logged.\n\n" + result[:400])
-
-
-async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show skill log summary."""
-    await update.message.reply_text(get_skill_summary())
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    import asyncio
     user_id = update.effective_user.id
     user_msg = update.message.text
     history = get_user_history(user_id)
-
-    # Fire immediately on message receipt
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-
-    async def keep_typing():
-        while True:
-            await asyncio.sleep(4)
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-
-    typing_task = asyncio.create_task(keep_typing())
     try:
         reply = await ask_claude(user_msg, history)
     except Exception as e:
         reply = f"Error: {e}"
-    finally:
-        typing_task.cancel()
     await update.message.reply_text(reply)
     append_user_history(user_id, user_msg, reply)
 
@@ -634,6 +575,8 @@ def main() -> None:
     app.add_handler(CommandHandler("log",       log_command))
     app.add_handler(CommandHandler("queue",     queue_command))
     app.add_handler(CommandHandler("post",      post_command))
+    app.add_handler(CommandHandler("send_post", send_post_command))
+    app.add_handler(CommandHandler("send_que",  send_que_command))
     app.add_handler(CommandHandler("guide",     guide))
     app.add_handler(CommandHandler("clear",     clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
