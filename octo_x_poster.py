@@ -70,6 +70,11 @@ def _opentweet_remaining() -> int:
 
 
 def _create_post(payload: dict) -> dict:
+    # API v2: wrap in posts array if not already
+    if "posts" not in payload and "text" in payload:
+        payload = {"posts": [{"text": payload["text"]}]}
+    elif "posts" not in payload:
+        payload = {"posts": [payload]}
     r = httpx.post(f"{BASE_URL}/posts", headers=_headers(), json=payload, timeout=15)
     r.raise_for_status()
     return r.json()

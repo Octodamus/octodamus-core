@@ -52,9 +52,17 @@ from octo_x_poster import (
 from octo_signal_card import build_signal_card
 from octo_skill_log import log_post
 from octo_congress import run_congress_scan, format_congress_for_prompt
-from octo_scorecard import (
-    extract_and_log_from_signal, resolve_predictions, generate_scorecard_post, get_stats_summary
-)
+try:
+    from octo_scorecard import mode_scorecard
+    from octo_calls import build_call_context, parse_call_from_post
+    from octo_post_templates import build_template_prompt_context
+    _SCORECARD_ACTIVE = True
+except ImportError:
+    _SCORECARD_ACTIVE = False
+    def mode_scorecard(**k): pass
+    def build_call_context(): return ""
+    def parse_call_from_post(*a, **k): return None
+    def build_template_prompt_context(): return ""
 
 claude = anthropic.Anthropic()
 
@@ -201,7 +209,7 @@ def mode_monitor() -> None:
                 priority=2,
             )
             # Log prediction to scorecard
-            extract_and_log_from_signal(item["signal"], item["post"])
+            pass  # call tracking handled by parse_call_from_post
         if signals_and_posts:
             print(f"[Runner] {len(signals_and_posts)} signal(s) queued.")
 
@@ -217,7 +225,7 @@ def mode_monitor() -> None:
 # MODE: DAILY — morning oracle read
 # ─────────────────────────────────────────────
 
-DAILY_TICKERS = ["SPY", "QQQ", "BTC", "NVDA"]
+DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA"]
 
 
 def mode_daily() -> None:
