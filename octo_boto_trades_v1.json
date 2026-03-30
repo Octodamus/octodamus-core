@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "starting_balance": 1000.0,
+  "balance": 921.6,
+  "open_positions": [
+    {
+      "id": "1162940_YES_1773934334",
+      "market_id": "1162940",
+      "question": "US forces enter Iran by March 31?",
+      "side": "YES",
+      "size": 40.0,
+      "fee": 0.2,
+      "entry_price": 0.255,
+      "shares": 156.0784,
+      "true_p": 0.8,
+      "ev": 0.545,
+      "kelly_frac": 0.04,
+      "score": 2.0292,
+      "confidence": "high",
+      "reasoning": "War already underway since February 28, 2026. <cite index=\"13-7,16-4,16-12,20-1\">Reports confirm US considering deploying thousands of Marines to Iranian coastline for Strait of Hormuz operations, with officials discussing ground force deployment to",
+      "url": "https://polymarket.com/event/us-forces-enter-iran-by",
+      "opened_at": "2026-03-19T15:32:14.659099+00:00",
+      "status": "open"
+    },
+    {
+      "id": "1467766_YES_1773935287",
+      "market_id": "1467766",
+      "question": "Will Crude Oil (CL) hit (HIGH) $100 by end of March?",
+      "side": "YES",
+      "size": 38.4,
+      "fee": 0.192,
+      "entry_price": 0.79,
+      "shares": 48.3646,
+      "true_p": 0.88,
+      "ev": 0.09,
+      "kelly_frac": 0.04,
+      "score": 0.2975,
+      "confidence": "high",
+      "reasoning": "<cite index=\"1-2,6-2\">Current WTI oil price is $96-98</cite> with <cite index=\"21-12,23-26\">the largest oil supply disruption in history</cite> causing <cite index=\"27-14,24-13\">20% of global oil supply to be blocked through Strait of Hormuz</cite>.",
+      "url": "https://polymarket.com/event/will-crude-oil-cl-hit-by-end-of-march",
+      "opened_at": "2026-03-19T15:48:07.819696+00:00",
+      "status": "open"
+    }
+  ],
+  "closed_trades": [],
+  "balance_history": [
+    1000.0
+  ],
+  "fees_paid": 0.392,
+  "created_at": "2026-03-19T15:31:03.455398+00:00"
+}

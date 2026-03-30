@@ -1,4 +1,4 @@
-﻿"""
+"""
 octo_eyes_market.py
 OctoEyes â€” Market Signal Monitor
 
@@ -170,11 +170,15 @@ def generate_oracle_post(signal: dict) -> str:
         pass
 
     prompt = (
-        f"Market signal: {ticker} {direction} {change_pct:+.2f}% â€” now ${price}\n"
+        f"Market data: {ticker} {direction} {change_pct:+.2f}% at ${price}\n"
         f"Recent headlines: {json.dumps(news_headlines)}\n\n"
-        "Generate ONE oracle post for @octodamusai. Under 280 chars.\n"
-        "Lead with the specific number and ticker. Sound like you already knew.\n"
-        "Output ONLY the post text."
+        "Generate ONE sharp oracle post for @octodamusai. Under 280 chars.\n"
+        "NO price tables. NO headers. NO dividers. NO ticker/price lists.\n"
+        "Write one punchy insight — what does this move actually mean or signal?\n"
+        "Use the price naturally in context if needed, not as a display item.\n"
+        "One ocean metaphor MAX. End with something memorable.\n"
+        "Do NOT write Oracle call: or CALLING IT: — reserved for official call system only.\n"
+        "Output ONLY the post text. No formatting symbols."
     )
 
     client = _get_client()

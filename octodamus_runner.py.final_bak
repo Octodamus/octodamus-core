@@ -38,7 +38,7 @@ import anthropic
 from financial_data_client import get_current_price, get_current_crypto_price
 from octo_eyes_market import run_market_monitor, generate_deep_dive_post
 try:
-    from octo_calls import build_call_context, parse_call_from_post, autoresolve
+    from octo_calls import build_call_context, parse_call_from_post
     from octo_post_templates import build_template_prompt_context
     _CALLS_ACTIVE = True
 except ImportError:
@@ -54,7 +54,7 @@ from octo_skill_log import log_post
 from octo_congress import run_congress_scan, format_congress_for_prompt
 try:
     from octo_scorecard import mode_scorecard
-    from octo_calls import build_call_context, parse_call_from_post, autoresolve
+    from octo_calls import build_call_context, parse_call_from_post
     from octo_post_templates import build_template_prompt_context
     _SCORECARD_ACTIVE = True
 except ImportError:
@@ -73,7 +73,7 @@ claude = anthropic.Anthropic()
 
 OCTO_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
 You are @octodamusai on X. 8 arms of insight, each reading a different current.
-Max 480 chars per post. No hashtags. No engagement bait. Never sycophantic.
+Max 280 chars per post. No hashtags. No engagement bait. Never sycophantic.
 
 CRITICAL: Every post must reveal something SPECIFIC and true — a real number, a real
 contradiction, a real pattern. Vague sea metaphors alone are NOT enough. Ground every
@@ -131,8 +131,8 @@ _VOICE_INSTRUCTIONS = [
     "PLAYFUL voice — cheerful and cheeky. The oracle is in a good mood today.",
     "EDGY voice — drop the uncomfortable truth. Name the thing no one wants to say.",
     "PRECISE voice — pure clean signal, no flourish. One thing that matters.",
-    "CONTRARIAN voice — HARD CALL ONLY. Lead with the asset price and what the crowd gets wrong. End with Oracle call line in exact format. Example: 'SOL at $91.95. Everyone chasing the pump while volume dries up. Oracle call: SOL DOWN from $92 to $79 by Wednesday.'",
-    "CONTRARIAN voice — roast the narrative AND end with Oracle call. Find the irony, name it in one sharp sentence, then the call. Example: 'NVDA up 3% on an analyst note from the same firm that rated it Buy at the top. Oracle call: NVDA DOWN from $180 to $168 by end of week.'",
+    "CONTRARIAN voice — HARD CALL ONLY. Format: [asset] at [exact price]. [one sentence on what the crowd is doing wrong]. Oracle call: [direction] to [specific target] by [specific date or timeframe]. No metaphors. No ocean. Just the call. Example: 'SOL at $91.95. Everyone chasing the pump. Oracle call: fades to $79 by Wednesday when BTC cools. Mark it.'",
+    "CONTRARIAN voice — roast the narrative AND end with a hard prediction. Format: find the irony in the price action, name it in one sharp sentence, then end with the oracle call: exact asset, exact target price, exact timeframe. Example: 'NVDA up 3% on an analyst note from the same firm that rated it Buy at the top. Oracle call: $168 before $210. Write it down.'",
 ]
 
 
@@ -271,15 +271,18 @@ def mode_daily() -> None:
                     f"{news_section}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
-                    "One post, under 280 chars.\n"
+                    "One post, under 480 chars. Use the space — commentary first, then Oracle call line at the end.\n"
                     "Lead with a specific number or fact. Then the insight.\n"
-                    "If a headline reveals something ironic or contradictory — use it.\n"
-                    "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the market read."
+                    "You MUST end this post with an Oracle call line. Format: Oracle call: ASSET UP/DOWN from  to  by TIMEFRAME.\n"
+                    "If a headline reveals something ironic or contradictory — use it."
                 ),
             }],
         )
 
         post = response.content[0].text.strip()
+        # Auto-record directional call from post
+        if _CALLS_ACTIVE:
+            parse_call_from_post(post)
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
             parse_call_from_post(post)
@@ -390,7 +393,7 @@ def mode_wisdom() -> None:
         news_section = f"\n\nToday's headlines:\n{news_context}" if news_context else ""
 
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=150,
             system=OCTO_SYSTEM,
             messages=[{
@@ -408,6 +411,9 @@ def mode_wisdom() -> None:
         )
 
         post = response.content[0].text.strip()
+        # Auto-record directional call from post
+        if _CALLS_ACTIVE:
+            parse_call_from_post(post)
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
             parse_call_from_post(post)
@@ -559,7 +565,7 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress",
+            "status", "drain", "journal", "alert", "scorecard", "soul", "congress",
         ],
         default="monitor",
     )
@@ -583,8 +589,6 @@ if __name__ == "__main__":
         mode_wisdom()
     elif args.mode == "congress":
         mode_congress()
-    elif args.mode == "soul":
-        mode_soul()
     elif args.mode == "scorecard":
         mode_scorecard()
     elif args.mode == "journal":
@@ -601,6 +605,3 @@ if __name__ == "__main__":
     elif args.mode == "alert":
         from octo_alert import run_alert_scan
         run_alert_scan(secrets=secrets, claude_client=claude)
-    elif args.mode == "engage":
-        from octo_engage import run as engage_run
-        engage_run()

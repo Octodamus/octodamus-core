@@ -52,31 +52,13 @@ try {
 $sessionFile = "$env:TEMP\octo_bw_session.tmp"
 $session | Out-File -FilePath $sessionFile -Encoding ascii -NoNewline
 
-# Step 4: Load secrets using session from file
-$loaderScript = "$env:TEMP\octo_loader_$PID.py"
-@"
-import sys, os, subprocess
-from pathlib import Path
-
-# Read BW_SESSION from temp file
-session_file = r'$sessionFile'
-session = Path(session_file).read_text(encoding='ascii').strip()
-os.environ['BW_SESSION'] = session
-
-sys.path.insert(0, r'$PROJECT_DIR')
-import bitwarden
-s = bitwarden.load_all_secrets(verbose=False)
-print(f'Loaded {len(s)} secrets')
-"@ | Set-Content -Path $loaderScript -Encoding utf8
-
+# Step 4: Use WSL to rebuild cache with unlocked session
 try {
-    $loadOutput = & $PYTHON $loaderScript 2>&1
-    Log "OK: $loadOutput"
+    wsl.exe -d Ubuntu -- bash -c "cd /home/walli/octodamus && export BW_SESSION=$(cat $env:TEMP\octo_bw_session.tmp 2>/dev/null) && python3 -c 'from bitwarden import _load_from_bitwarden, _save_cache; _save_cache(_load_from_bitwarden())' >> /home/walli/octodamus/logs/unlock.log 2>&1"
+    Log "OK: Cache rebuilt via WSL"
 } catch {
-    Log "FAIL: $_"
-    exit 1
+    Log "WARN: WSL cache rebuild failed: $_"
 } finally {
-    Remove-Item $loaderScript -ErrorAction SilentlyContinue
     Remove-Item $sessionFile -ErrorAction SilentlyContinue
 }
 

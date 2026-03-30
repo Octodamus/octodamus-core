@@ -135,38 +135,11 @@ def build_signal_card(call: str, asset: str = None) -> str:
     prices_block = "\n".join(price_lines)
     divider = "━━━━━━━━━━━━━━━━━━━"
 
-    card = f"""◈ OCTODAMUS ORACLE ◈
-{divider}
-{prices_block}
-F&G: {fg}
-{divider}
-{call}
-— @octodamusai"""
-
-    # Trim to 280 if needed
+    # No price table — just the sharp oracle take
+    # Prices are context for Claude to write the insight, not for display
+    card = call.strip()
     if len(card) > 280:
-        # Shorten to 3 price lines
-        prices_block = "\n".join(price_lines[:3])
-        card = f"""◈ OCTODAMUS ORACLE ◈
-{divider}
-{prices_block}
-F&G: {fg}
-{divider}
-{call}
-— @octodamusai"""
-
-    if len(card) > 280:
-        # Last resort — trim the call
-        max_call = 280 - len(card) + len(call) - 3
-        call = call[:max_call] + "..."
-        card = f"""◈ OCTODAMUS ORACLE ◈
-{divider}
-{prices_block}
-F&G: {fg}
-{divider}
-{call}
-— @octodamusai"""
-
+        card = card[:277] + "..."
     return card
 
 

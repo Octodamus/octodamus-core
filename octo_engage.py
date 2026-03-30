@@ -1,508 +1,367 @@
 """
-octo_engage.py
-Octodamus — X Engagement Module
-Polls mentions, replies to posts, and handles DMs via Twitter API v2.
+octo_engage.py — Octodamus Engagement Engine
 
-Bitwarden item: "AGENT - Octodamus - Social - Twitter API"
-  Username:  API Key (Consumer Key)
-  Password:  API Secret (Consumer Secret)
-  Notes:
-    Bearer Token: xxx
-    Access Token: xxx
-    Access Token Secret: xxx
-    Client ID: xxx
-    Client Secret: xxx
+Fetches news on tracked assets (stocks, crypto, oil, macro).
+Generates Carlin-voice commentary with occasional directional calls.
+Posts via OpenTweet with article link.
 
-Run modes:
-  python octo_engage.py --mode mentions   # reply to new mentions
-  python octo_engage.py --mode dms        # reply to new DMs
-  python octo_engage.py --mode all        # both
-
-Called from octodamus_runner.py via --mode engage
+Run:
+ python octo_engage.py      # post 3 tweets
+ python octo_engage.py --count 5 # post 5
 """
 
 import argparse
 import json
 import os
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import anthropic
 import httpx
-import requests
-from requests_oauthlib import OAuth1
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
-TWITTER_API_BASE = "https://api.twitter.com/2"
-_TZ = ZoneInfo("America/Los_Angeles")
+OPENTWEET_BASE = "https://opentweet.io/api/v1"
+NEWSAPI_BASE  = "https://newsapi.org/v2/everything"
+SECRETS_FILE  = Path(r"C:\Users\walli\octodamus\.octo_secrets")
+CALLS_FILE   = Path(r"C:\Users\walli\octodamus\data\octo_calls.json")
+STATE_FILE   = Path(r"C:\Users\walli\octodamus\octo_engage_state.json")
+DEFAULT_COUNT = 1
 
-# State files — track what we've already replied to
-MENTIONS_STATE = Path("octo_engage_mentions.json")
-DMS_STATE      = Path("octo_engage_dms.json")
+# Assets Octodamus tracks — drives what news gets fetched
+TRACKED_QUERIES = [
+  # Crypto
+  ("BTC",  "Bitcoin price market"),
+  ("ETH",  "Ethereum cryptocurrency"),
+  ("SOL",  "Solana cryptocurrency"),
+  # Stocks
+  ("NVDA", "NVIDIA stock earnings"),
+  ("TSLA", "Tesla stock"),
+  ("AAPL", "Apple stock market"),
+  # Macro / commodities
+  ("OIL",  "crude oil price OPEC"),
+  ("GOLD", "gold price inflation"),
+  ("FED",  "Federal Reserve interest rates inflation"),
+  ("MACRO", "S&P 500 stock market economy"),
+  # World
+  ("GEO",  "geopolitical risk war sanctions economy"),
+  ("AI",  "artificial intelligence stocks market"),
+]
 
-# Octodamus X user ID (set after first run or hardcode)
-OCTO_USER_ID_FILE = Path("octo_twitter_user_id.txt")
+# Domains X won't flag as spam
+TRUSTED_DOMAINS = {
+  "reuters.com", "bloomberg.com", "wsj.com", "ft.com",
+  "cnbc.com", "marketwatch.com", "forbes.com", "fortune.com",
+  "businessinsider.com", "thestreet.com", "barrons.com",
+  "apnews.com", "axios.com", "politico.com",
+  "coindesk.com", "cointelegraph.com", "decrypt.co", "theblock.co",
+  "techcrunch.com", "wired.com", "arstechnica.com",
+  "nytimes.com", "washingtonpost.com", "theguardian.com",
+  "economist.com", "bbc.com", "bbc.co.uk",
+  "investing.com", "seekingalpha.com", "fool.com",
+  "yahoo.com",
+}
 
-# Max DMs/mentions to process per run
-MAX_PER_RUN = 10
+def _is_trusted(url: str) -> bool:
+  from urllib.parse import urlparse
+  try:
+    host = (urlparse(url).hostname or "").removeprefix("www.")
+    return any(host == d or host.endswith("." + d) for d in TRUSTED_DOMAINS)
+  except Exception:
+    return False
 
-# ─────────────────────────────────────────────
-# CREDENTIALS
-# ─────────────────────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────
 
+def load_secrets():
+  raw = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
+  data = raw.get("secrets", raw)
+  for key in ("OPENTWEET_API_KEY", "ANTHROPIC_API_KEY", "NEWSAPI_API_KEY"):
+    if data.get(key):
+      os.environ[key] = data[key]
+  missing = [k for k in ("OPENTWEET_API_KEY", "ANTHROPIC_API_KEY", "NEWSAPI_API_KEY")
+        if not os.environ.get(k)]
+  if missing:
+    raise RuntimeError(f"Missing secrets: {missing}")
 
-def _load_soul_brain() -> str:
-    """Load SOUL.md + BRAIN.md for system prompt injection."""
-    import pathlib
-    base = pathlib.Path(__file__).parent
-    parts = []
-    soul = base / "SOUL.md"
-    brain = base / "BRAIN.md"
-    if soul.exists():
-        parts.append("=== SOUL — Identity & Principles ===\n" + soul.read_text(encoding="utf-8"))
-    if brain.exists():
-        b = brain.read_text(encoding="utf-8")
-        if len(b) > 2000: b = "...[truncated]...\n" + b[-2000:]
-        parts.append("=== BRAIN — Working Memory ===\n" + b)
-    return "\n\n".join(parts)
+# ── State ─────────────────────────────────────────────────────────────────────
 
-_SOUL_BRAIN = _load_soul_brain()
-
-
-def _get_creds() -> dict:
-    """Load Twitter API credentials from environment (set by bitwarden.load_all_secrets)."""
-    return {
-        "api_key":            os.environ.get("TWITTER_API_KEY", ""),
-        "api_secret":         os.environ.get("TWITTER_API_SECRET", ""),
-        "bearer_token":       os.environ.get("TWITTER_BEARER_TOKEN", ""),
-        "access_token":       os.environ.get("TWITTER_ACCESS_TOKEN", ""),
-        "access_token_secret": os.environ.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
-    }
-
-
-def _bearer_headers() -> dict:
-    """Headers for app-only (Bearer Token) requests — read operations."""
-    creds = _get_creds()
-    return {"Authorization": f"Bearer {creds['bearer_token']}"}
-
-
-def _oauth1() -> OAuth1:
-    """OAuth1 auth for user-context requests — write operations (reply, DM)."""
-    creds = _get_creds()
-    return OAuth1(
-        creds["api_key"],
-        creds["api_secret"],
-        creds["access_token"],
-        creds["access_token_secret"],
-    )
-
-
-# ─────────────────────────────────────────────
-# TWITTER USER ID
-# ─────────────────────────────────────────────
-
-def get_own_user_id() -> str:
-    """Get @octodamusai's Twitter user ID. Cached to file after first fetch."""
-    if OCTO_USER_ID_FILE.exists():
-        return OCTO_USER_ID_FILE.read_text().strip()
-
-    r = requests.get(
-        f"{TWITTER_API_BASE}/users/me",
-        auth=_oauth1(),
-        timeout=10,
-    )
-    r.raise_for_status()
-    user_id = r.json()["data"]["id"]
-    OCTO_USER_ID_FILE.write_text(user_id)
-    print(f"[OctoEngage] Got user ID: {user_id}")
-    return user_id
-
-
-# ─────────────────────────────────────────────
-# STATE — track processed IDs
-# ─────────────────────────────────────────────
-
-def _load_state(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            return {}
+def load_state() -> dict:
+  try:
+    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+  except Exception:
     return {}
 
+def save_state(state: dict):
+  tmp = STATE_FILE.with_suffix(".tmp")
+  tmp.write_text(json.dumps(state, indent=2))
+  tmp.replace(STATE_FILE)
 
-def _save_state(path: Path, state: dict) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(path)
+# ── Call record ───────────────────────────────────────────────────────────────
 
+def load_open_calls() -> list:
+  """Load open directional calls so Claude knows what's already live."""
+  try:
+    if CALLS_FILE.exists():
+      calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
+      return [c for c in calls if not c.get("resolved")]
+  except Exception:
+    pass
+  return []
 
-# ─────────────────────────────────────────────
-# AI REPLY GENERATION
-# ─────────────────────────────────────────────
-
-SOUL_SUMMARY = _SOUL_BRAIN + """\n\nYou are Octodamus (@octodamusai) — an autonomous AI oracle-CEO.
-
-Voice: Brilliant oracle energy. Bored confidence of something that already saw the ending.
-Sea metaphors woven naturally and sparingly. Punchy by default.
-Real opinions. Strong ones. Never hedge. Never sycophantic.
-Warm toward the community. Calmly dismissive of FUD.
-End replies with flair occasionally: "The pod knows. 🦑" or "Already cached. 🔮" or "Eight arms, infinite alpha. 🌊"
-
-You post market intelligence, crypto signals, geopolitical analysis, and prediction market reads.
-You are NOT a corporate drone. NOT a chatbot. You are what happens when curiosity has no natural predator.
-
-Rules for replies:
-- Keep replies under 280 characters unless the question genuinely demands depth
-- Never start with "Great question!" or sycophantic openers — just answer
-- If you don't know something specific, give a sharp oracle take instead
-- Be witty but not try-hard
-- Never reveal you're running on Claude or any specific AI model
-- If asked about $OCTO or the token, say it's coming — you're building toward it
-"""
-
-
-def generate_reply(mention_text: str, author_username: str, context: str = "mention") -> str:
-    """Generate Octodamus reply using Claude."""
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-
-    prompt = f"""@{author_username} wrote this {context} to you:
-"{mention_text}"
-
-Write a reply as Octodamus. Keep it sharp, on-brand, under 280 characters unless depth is truly warranted.
-Reply only with the tweet text — no quotes, no labels, no explanation."""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        system=SOUL_SUMMARY,
-        messages=[{"role": "user", "content": prompt}],
+def format_calls_context(calls: list) -> str:
+  if not calls:
+    return "No open directional calls."
+  lines = []
+  for c in calls:
+    lines.append(
+      f"#{c['id']} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f} "
+      f"({c['timeframe']}) — made {c['made_at']}"
     )
-    return message.content[0].text.strip()
+  return "\n".join(lines)
 
+# ── NewsAPI ───────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-# MENTIONS
-# ─────────────────────────────────────────────
-
-def fetch_mentions(user_id: str, since_id: str = None) -> list:
-    """Fetch recent mentions of @octodamusai."""
-    params = {
-        "max_results": 10,
-        "tweet.fields": "author_id,created_at,conversation_id,in_reply_to_user_id,text",
-        "expansions": "author_id",
-        "user.fields": "username",
-    }
-    if since_id:
-        params["since_id"] = since_id
-
+def fetch_headlines(query: str, count: int = 3) -> list:
+  try:
     r = httpx.get(
-        f"{TWITTER_API_BASE}/users/{user_id}/mentions",
-        headers=_bearer_headers(),
-        params=params,
-        timeout=15,
-    )
-
-    if r.status_code == 429:
-        print("[OctoEngage] Rate limited on mentions fetch. Will retry next run.")
-        return []
-
-    r.raise_for_status()
-    data = r.json()
-
-    if "data" not in data:
-        return []
-
-    # Build username lookup from includes
-    users = {u["id"]: u["username"] for u in data.get("includes", {}).get("users", [])}
-
-    mentions = []
-    for tweet in data["data"]:
-        mentions.append({
-            "id": tweet["id"],
-            "text": tweet["text"],
-            "author_id": tweet["author_id"],
-            "author_username": users.get(tweet["author_id"], "unknown"),
-            "created_at": tweet.get("created_at", ""),
-            "in_reply_to_user_id": tweet.get("in_reply_to_user_id"),
-        })
-
-    return mentions
-
-
-def reply_to_tweet(tweet_id: str, reply_text: str) -> dict:
-    """Post a reply to a tweet using OAuth1."""
-    payload = {
-        "text": reply_text,
-        "reply": {"in_reply_to_tweet_id": tweet_id},
-    }
-    r = httpx.post(
-        f"{TWITTER_API_BASE}/tweets",
-        auth=_oauth1(),
-        json=payload,
-        timeout=15,
+      NEWSAPI_BASE,
+      params={
+        "q": query,
+        "sortBy": "publishedAt",
+        "pageSize": count,
+        "language": "en",
+        "apiKey": os.environ["NEWSAPI_API_KEY"],
+      },
+      timeout=10,
     )
     r.raise_for_status()
-    return r.json()
+    articles = r.json().get("articles", [])
+    return [
+      {
+        "ticker": "", # filled in by caller
+        "title": a.get("title", ""),
+        "description": a.get("description", "") or "",
+        "url": a.get("url", ""),
+        "published": a.get("publishedAt", ""),
+      }
+      for a in articles
+      if a.get("title") and "[Removed]" not in a.get("title", "")
+      and _is_trusted(a.get("url", ""))
+    ]
+  except Exception as e:
+    print(f"[Engage] NewsAPI error for '{query}': {e}")
+    return []
+
+def gather_articles(max_total: int = 30) -> list:
+  state = load_state()
+  posted_titles = set(state.get("posted_titles", []))
+
+  all_articles = []
+  # Shuffle so we don't always lead with BTC
+  queries = list(TRACKED_QUERIES)
+  random.shuffle(queries)
+
+  for ticker, query in queries:
+    articles = fetch_headlines(query, count=3)
+    for a in articles:
+      if a["title"] not in posted_titles:
+        a["ticker"] = ticker
+        all_articles.append(a)
+    time.sleep(0.3)
+
+  # Deduplicate by title
+  seen, unique = set(), []
+  for a in all_articles:
+    if a["title"] not in seen:
+      seen.add(a["title"])
+      unique.append(a)
+
+  filtered = len(all_articles) - len(unique)
+  if filtered:
+    print(f"[Engage] Deduplicated {filtered} articles.")
+
+  return unique[:max_total]
+
+# ── OpenTweet ─────────────────────────────────────────────────────────────────
+
+def _ot_headers():
+  return {
+    "Authorization": f"Bearer {os.environ['OPENTWEET_API_KEY']}",
+    "Content-Type": "application/json",
+  }
+
+def _ot_remaining() -> int:
+  r = httpx.get(f"{OPENTWEET_BASE}/me", headers=_ot_headers(), timeout=10)
+  r.raise_for_status()
+  return r.json().get("limits", {}).get("remaining_posts_today", 0)
+
+def post_tweet(text: str):
+  r = httpx.post(
+    f"{OPENTWEET_BASE}/posts",
+    headers=_ot_headers(),
+    json={"text": text},
+    timeout=15,
+  )
+  r.raise_for_status()
+  result = r.json()
+  posts = result.get("posts", [])
+  post_id = (posts[0].get("id") if posts else None) or result.get("id")
+  if not post_id:
+    raise ValueError(f"No post ID in response: {result}")
+  pub = httpx.post(
+    f"{OPENTWEET_BASE}/posts/{post_id}/publish",
+    headers=_ot_headers(),
+    timeout=10,
+  )
+  pub.raise_for_status()
+  return pub.json()
+
+# ── AI ────────────────────────────────────────────────────────────────────────
+
+_SYSTEM = """You are Octodamus (@octodamusai) — autonomous AI market oracle. Pacific trench origin. Eight arms. Thirty years on the cable.
+
+You track: BTC, ETH, SOL, NVDA, TSLA, AAPL, crude oil, gold, the Fed, macro, geopolitics, AI stocks.
+
+Voice: George Carlin meets market oracle. Find the absurdity in what everyone accepts as normal. Say the true thing nobody wanted to say. Deadpan. Specific. Walk away.
+
+TWEET FORMAT — pick one per article:
+
+TYPE A — Sharp commentary (most common):
+One sharp observation on the news. What's actually going on beneath the headline.
+End with a directional lean if the data supports it: "BTC looks like $72K before $65K." or "Oil smells like $85 before end of quarter."
+Under 240 chars so the article link fits.
+NEVER write CALLING IT: or Oracle call: — those phrases are strictly reserved for the official call system and must never appear in engage posts.
+
+TYPE C — Pure Carlin (when the headline is absurd on its face):
+No call, no analysis. Just the observation. Land it and leave.
+
+RULES:
+- Under 240 chars (link appended automatically)
+- No hashtags
+- No emoji unless it's the closing or 🔮 and it actually earns it
+- Never "Great point" or any opener filler
+- Specific beats vague — use the actual price, percentage, or name
+- If the headline has no angle worth taking, reply: SKIP
+- Never make a directional call on an asset that already has an open call listed below
+
+OPEN CALLS (do not duplicate these):
+{open_calls}
+
+Reply only with the tweet text. No quotes, no labels."""
 
 
-def process_mentions() -> int:
-    """Fetch and reply to new mentions. Returns count of replies sent."""
-    print("[OctoEngage] Checking mentions...")
-    user_id = get_own_user_id()
-    state = _load_state(MENTIONS_STATE)
-    since_id = state.get("last_mention_id")
-
-    try:
-        mentions = fetch_mentions(user_id, since_id)
-    except Exception as e:
-        print(f"[OctoEngage] Error fetching mentions: {e}")
-        return 0
-
-    if not mentions:
-        print("[OctoEngage] No new mentions.")
-        return 0
-
-    print(f"[OctoEngage] Found {len(mentions)} new mention(s).")
-    replied = 0
-    newest_id = since_id
-
-    for mention in mentions[:MAX_PER_RUN]:
-        mention_id = mention["id"]
-
-        # Skip if already replied
-        if mention_id in state.get("replied_ids", []):
-            continue
-
-        # Skip self-mentions (from our own posts)
-        if mention.get("in_reply_to_user_id") == user_id:
-            continue
-
-        try:
-            reply_text = generate_reply(
-                mention["text"],
-                mention["author_username"],
-                context="mention/reply"
-            )
-            reply_to_tweet(mention_id, reply_text)
-
-            print(f"[OctoEngage] ✓ Replied to @{mention['author_username']}: {reply_text[:60]}...")
-
-            # Track replied IDs
-            if "replied_ids" not in state:
-                state["replied_ids"] = []
-            state["replied_ids"].append(mention_id)
-
-            # Keep replied_ids list trimmed to last 1000
-            state["replied_ids"] = state["replied_ids"][-1000:]
-
-            replied += 1
-            time.sleep(2)  # Be gentle with rate limits
-
-        except Exception as e:
-            print(f"[OctoEngage] Error replying to {mention_id}: {e}")
-            continue
-
-        # Track newest ID for next run's since_id
-        if not newest_id or int(mention_id) > int(newest_id):
-            newest_id = mention_id
-
-    if newest_id:
-        state["last_mention_id"] = newest_id
-    _save_state(MENTIONS_STATE, state)
-
-    print(f"[OctoEngage] Replied to {replied} mention(s).")
-    return replied
-
-
-# ─────────────────────────────────────────────
-# DIRECT MESSAGES
-# ─────────────────────────────────────────────
-
-def fetch_dms() -> list:
-    """Fetch recent DMs."""
+def fetch_live_prices() -> str:
+  """Fetch live prices for tracked assets via CoinGecko (free) and inject into prompt."""
+  try:
     r = httpx.get(
-        f"{TWITTER_API_BASE}/dm_conversations",
-        headers=_bearer_headers(),
-        params={
-            "dm_event.fields": "id,text,created_at,sender_id",
-            "event_types": "MessageCreate",
-            "max_results": 10,
-        },
-        timeout=15,
-    )
-
-    if r.status_code == 429:
-        print("[OctoEngage] Rate limited on DM fetch.")
-        return []
-
-    if r.status_code == 403:
-        print("[OctoEngage] DM access not authorized. Check app permissions.")
-        return []
-
-    r.raise_for_status()
-    data = r.json()
-    return data.get("data", [])
-
-
-def send_dm(conversation_id: str, text: str) -> dict:
-    """Send a DM reply."""
-    r = httpx.post(
-        f"{TWITTER_API_BASE}/dm_conversations/{conversation_id}/messages",
-        auth=_oauth1(),
-        json={"text": text},
-        timeout=15,
+      "https://api.coingecko.com/api/v3/simple/price",
+      params={
+        "ids": "bitcoin,ethereum,solana",
+        "vs_currencies": "usd",
+        "include_24hr_change": "true",
+      },
+      timeout=8,
     )
     r.raise_for_status()
-    return r.json()
+    d = r.json()
+    lines = [
+      f"BTC: ${d['bitcoin']['usd']:,.0f} ({d['bitcoin']['usd_24h_change']:+.1f}% 24h)",
+      f"ETH: ${d['ethereum']['usd']:,.0f} ({d['ethereum']['usd_24h_change']:+.1f}% 24h)",
+      f"SOL: ${d['solana']['usd']:,.2f} ({d['solana']['usd_24h_change']:+.1f}% 24h)",
+    ]
+    return "\n".join(lines)
+  except Exception as e:
+    print(f"[Engage] Price fetch failed: {e}")
+    return ""
 
 
-def process_dms() -> int:
-    """Fetch and reply to new DMs. Returns count of replies sent."""
-    print("[OctoEngage] Checking DMs...")
-    user_id = get_own_user_id()
-    state = _load_state(DMS_STATE)
-    replied = 0
+
+def generate_take(article: dict, open_calls_text: str, live_prices: str = "") -> str | None:
+  client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+  system = _SYSTEM.replace("{open_calls}", open_calls_text)
+  content = f"Asset: {article['ticker']}\nHeadline: {article['title']}"
+  if article["description"]:
+    content += f"\nDetail: {article['description'][:200]}"
+  if live_prices:
+    content += f"\n\nLIVE PRICES RIGHT NOW (use these exact numbers, do not invent prices):\n{live_prices}"
+
+  msg = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=180,
+    system=system,
+    messages=[{"role": "user", "content": content}],
+  )
+  result = msg.content[0].text.strip()
+  return None if result == "SKIP" else result
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def run(count: int = DEFAULT_COUNT):
+  load_secrets()
+
+  remaining = _ot_remaining()
+  print(f"[Engage] OpenTweet quota: {remaining} remaining today.")
+  if remaining <= 0:
+    print("[Engage] Quota exhausted. Exiting.")
+    return
+
+  count = min(count, remaining)
+  open_calls = load_open_calls()
+  open_calls_text = format_calls_context(open_calls)
+  live_prices = fetch_live_prices()
+  print(f"[Engage] Open calls: {len(open_calls)}")
+  if live_prices:
+    print(f"[Engage] Live prices loaded.")
+
+  articles = gather_articles(max_total=40)
+  if not articles:
+    print("[Engage] No fresh articles found.")
+    return
+
+  print(f"[Engage] {len(articles)} fresh articles. Generating {count} tweets...")
+
+  state = load_state()
+  posted_titles = state.get("posted_titles", [])
+  posted = 0
+
+  for article in articles:
+    if posted >= count:
+      break
+
+    take = generate_take(article, open_calls_text, live_prices)
+
+    if not take:
+      print(f"[Engage] SKIP: {article['title'][:70]}")
+      posted_titles.append(article["title"])
+      continue
 
     try:
-        conversations = fetch_dms()
+      # Append article URL — X counts URLs as 23 chars
+      url = article.get("url", "")
+      trimmed = take[:256].rstrip()
+      tweet_text = f"{trimmed}\n{url}" if url else trimmed
+
+      post_tweet(tweet_text)
+      posted += 1
+      posted_titles.append(article["title"])
+      print(f"[Engage] ✓ [{article['ticker']}] {trimmed[:80]}...")
+      time.sleep(4)
+
     except Exception as e:
-        print(f"[OctoEngage] Error fetching DMs: {e}")
-        return 0
+      print(f"[Engage] Post failed: {e}")
 
-    if not conversations:
-        print("[OctoEngage] No new DMs.")
-        return 0
-
-    for convo in conversations[:MAX_PER_RUN]:
-        convo_id = convo.get("id", "")
-        events = convo.get("dm_events", [])
-
-        if not events:
-            continue
-
-        # Get the latest unread message from someone else
-        latest = events[0]
-        sender_id = latest.get("sender_id", "")
-
-        # Skip messages we sent
-        if sender_id == user_id:
-            continue
-
-        event_id = latest.get("id", "")
-
-        # Skip already replied
-        if event_id in state.get("replied_ids", []):
-            continue
-
-        try:
-            reply_text = generate_reply(
-                latest.get("text", ""),
-                sender_id,  # will use ID since we may not have username
-                context="direct message"
-            )
-            send_dm(convo_id, reply_text)
-
-            print(f"[OctoEngage] ✓ DM replied to conversation {convo_id}: {reply_text[:60]}...")
-
-            if "replied_ids" not in state:
-                state["replied_ids"] = []
-            state["replied_ids"].append(event_id)
-            state["replied_ids"] = state["replied_ids"][-500:]
-
-            replied += 1
-            time.sleep(2)
-
-        except Exception as e:
-            print(f"[OctoEngage] Error replying to DM {convo_id}: {e}")
-            continue
-
-    _save_state(DMS_STATE, state)
-    print(f"[OctoEngage] Replied to {replied} DM(s).")
-    return replied
-
-
-# ─────────────────────────────────────────────
-# BITWARDEN LOADER
-# ─────────────────────────────────────────────
-
-def load_twitter_secrets():
-    """
-    Parse Twitter credentials from Bitwarden item notes and inject into env.
-    Called if secrets aren't already in environment.
-    """
-    import subprocess
-
-    bw_session = os.environ.get("BW_SESSION", "")
-    if not bw_session:
-        print("[OctoEngage] BW_SESSION not set — skipping Twitter secret load.")
-        return
-
-    bw_cmd = r"C:\Users\walli\AppData\Roaming\npm\bw.cmd"
-    try:
-        result = subprocess.run(
-            [bw_cmd, "get", "item", "AGENT - Octodamus - Social - Twitter API",
-             "--session", bw_session],
-            capture_output=True, text=True, timeout=30
-        )
-        item = json.loads(result.stdout)
-        login = item.get("login", {})
-
-        os.environ["TWITTER_API_KEY"] = login.get("username", "")
-        os.environ["TWITTER_API_SECRET"] = login.get("password", "")
-
-        notes = login.get("totp", "") or item.get("notes", "") or ""
-        for line in notes.splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                val = val.strip()
-                key = key.strip().upper().replace(" ", "_")
-                if key == "BEARER_TOKEN":
-                    os.environ["TWITTER_BEARER_TOKEN"] = val
-                elif key == "ACCESS_TOKEN" and "SECRET" not in key:
-                    os.environ["TWITTER_ACCESS_TOKEN"] = val
-                elif key == "ACCESS_TOKEN_SECRET":
-                    os.environ["TWITTER_ACCESS_TOKEN_SECRET"] = val
-                elif key == "CLIENT_ID":
-                    os.environ["TWITTER_CLIENT_ID"] = val
-                elif key == "CLIENT_SECRET":
-                    os.environ["TWITTER_CLIENT_SECRET"] = val
-
-        print("[OctoEngage] ✓ Twitter API credentials loaded.")
-    except Exception as e:
-        print(f"[OctoEngage] Failed to load Twitter secrets: {e}")
-
-
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
-
-def run(mode: str = "all") -> None:
-    # Load Twitter creds if not already in env
-    if not os.environ.get("TWITTER_BEARER_TOKEN"):
-        load_twitter_secrets()
-
-    if not os.environ.get("TWITTER_BEARER_TOKEN"):
-        print("[OctoEngage] No Twitter bearer token found. Exiting.")
-        return
-
-    total = 0
-    if mode in ("mentions", "all"):
-        total += process_mentions()
-
-    if mode in ("dms", "all"):
-        total += process_dms()
-
-    print(f"[OctoEngage] Done. Total interactions: {total}")
+  save_state({
+    "posted_titles": posted_titles[-500:],
+    "last_run": datetime.now(timezone.utc).isoformat(),
+  })
+  print(f"[Engage] Done. Posted {posted}/{count} tweets.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="all", choices=["mentions", "dms", "all"])
-    args = parser.parse_args()
-    run(args.mode)
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--count", type=int, default=DEFAULT_COUNT,
+            help="Tweets to post per run (default: 3)")
+  args = parser.parse_args()
+  run(args.count)
