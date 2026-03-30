@@ -809,6 +809,270 @@ def get_handler(report_type: str):
 
 
 # ── Text formatter (for ACP deliverable) ─────────────────────────────────────
+# ── Oracle Commentary Engine ──────────────────────────────────────────────────
+# Rules-based: reads the data, builds a paragraph explaining the directional call.
+# No API calls, instant, deterministic. The oracle's voice from the data.
+
+def _build_oracle_commentary(data: dict) -> str:
+    """
+    Build 4-6 sentence oracle commentary from structured report data.
+    Reads futures positioning, sentiment, technicals and explains the call.
+    """
+    t    = data.get("type", "") or ""
+    ta   = data.get("ta") or {}
+    cg   = data.get("cg") or {}
+    call = data.get("call", "") or ""
+
+    sentences = []
+
+    # ── Determine direction from call string ──
+    is_up = "UP" in call and "DOWN" not in call
+    is_down = "DOWN" in call
+    is_range = "RANGE" in call
+    is_breakout = "BREAKOUT" in call
+    ticker = data.get("ticker", "BTC")
+
+    # ── Sentiment read ──
+    fng = int(data.get("fng_val", 50) or 50)
+    if fng < 15:
+        sentences.append(f"Fear is at extreme levels ({fng}) — historically, this is where the smart money starts accumulating while retail panic-sells.")
+    elif fng < 30:
+        sentences.append(f"Sentiment sits deep in fear territory ({fng}). The crowd is scared, which typically marks the early stages of a reversal.")
+    elif fng < 45:
+        sentences.append(f"Sentiment is cautious ({fng}) — not capitulation, but the market is nervous. Positioning matters more than feelings here.")
+    elif fng < 60:
+        sentences.append(f"Sentiment is neutral ({fng}) — neither fear nor greed dominating. The market is waiting for a catalyst.")
+    elif fng < 75:
+        sentences.append(f"Greed is creeping in ({fng}). Retail is getting comfortable, which is usually when the rug gets pulled.")
+    else:
+        sentences.append(f"Extreme greed ({fng}) — everyone is bullish, which is precisely the moment to be cautious. The herd is rarely right at extremes.")
+
+    # ── Futures positioning read ──
+    long_pct = cg.get("long_pct", 0) or 0
+    top_long = cg.get("top_long_pct", 0) or 0
+    funding = cg.get("funding_avg", 0) or 0
+    taker_flow = cg.get("taker_flow", "") or ""
+    taker_buy = cg.get("taker_buy_pct", 50) or 50
+    ls_skew = cg.get("ls_skew", "") or ""
+
+    if long_pct and top_long:
+        if long_pct > 60 and top_long > 55:
+            sentences.append(f"Futures are crowded long — {long_pct:.0f}% of accounts and {top_long:.0f}% of top traders are positioned for upside. When everyone leans one way, the market tends to punish them.")
+        elif long_pct > 60 and top_long < 50:
+            sentences.append(f"Retail is heavily long ({long_pct:.0f}%) but the whales have flipped short ({top_long:.0f}% long). This divergence is a warning sign — smart money is fading the crowd.")
+        elif long_pct < 45 and top_long > 55:
+            sentences.append(f"Retail is leaning short ({long_pct:.0f}% long) while top traders are accumulating longs ({top_long:.0f}%). The whales are buying what the crowd is selling.")
+        elif long_pct < 45:
+            sentences.append(f"The market is short-heavy ({long_pct:.0f}% long). Contrarian setups like this often precede a squeeze when shorts get trapped.")
+        else:
+            sentences.append(f"Positioning is relatively balanced ({long_pct:.0f}% long) with top traders at {top_long:.0f}% — no extreme crowding in either direction.")
+
+    # ── Funding rate read ──
+    if funding:
+        if funding > 0.02:
+            sentences.append(f"Funding is elevated at {funding:+.4f}% — longs are paying a premium to hold, which adds selling pressure as leveraged positions get expensive to maintain.")
+        elif funding < -0.005:
+            sentences.append(f"Funding has gone negative ({funding:+.4f}%) — shorts are paying longs to stay in their positions. This is fuel for a squeeze.")
+        elif abs(funding) < 0.005:
+            sentences.append(f"Funding is near-neutral ({funding:+.4f}%), meaning neither side is paying a significant premium. The leverage game is balanced.")
+
+    # ── Taker flow read ──
+    if taker_flow:
+        if taker_flow == "BUY PRESSURE":
+            sentences.append(f"Taker flow shows aggressive buying ({taker_buy:.0f}% buy-side) — market orders are hitting the ask, signaling urgency from buyers.")
+        elif taker_flow == "SELL PRESSURE":
+            sentences.append(f"Taker flow is sell-dominated ({taker_buy:.0f}% buy-side) — sellers are aggressively hitting bids, applying downward pressure.")
+
+    # ── Liquidation read ──
+    liq_total = cg.get("liq_total", 0) or 0
+    liq_pain = cg.get("liq_pain", "") or ""
+    if liq_total > 50:
+        if liq_pain == "LONG PAIN":
+            sentences.append(f"${liq_total:.0f}M in liquidations over the last 4 hours, mostly longs getting flushed. The weak hands are out — that often clears the path for a bounce.")
+        elif liq_pain == "SHORT PAIN":
+            sentences.append(f"${liq_total:.0f}M liquidated in 4 hours, primarily shorts. The squeeze has already started — late shorts are fuel for more upside.")
+    elif liq_total > 10:
+        sentences.append(f"Liquidation activity is moderate (${liq_total:.0f}M in 4h) — no major flush yet, meaning a larger move could still be building.")
+
+    # ── Technical confirmation ──
+    rsi = float(ta.get("rsi", 50) or 50)
+    trend = ta.get("trend", "") or ""
+    macd = float(ta.get("macd", 0) or 0)
+    if rsi < 30:
+        sentences.append(f"Technicals confirm oversold conditions — RSI at {rsi:.0f} with {trend.lower()} trend. The rubber band is stretched.")
+    elif rsi > 70:
+        sentences.append(f"RSI at {rsi:.0f} signals overbought territory. The {trend.lower()} trend has room to reverse.")
+    elif trend and macd:
+        direction_word = "supportive" if (trend == "Bullish" and is_up) or (trend == "Bearish" and is_down) else "conflicting"
+        sentences.append(f"Technical structure is {direction_word} — {trend.lower()} trend with MACD at {macd:+.0f} and RSI at {rsi:.0f}.")
+
+    # ── OI context ──
+    oi_chg = cg.get("oi_chg_24h", 0) or 0
+    if abs(oi_chg) > 5:
+        if oi_chg > 0:
+            sentences.append(f"Open interest surged {oi_chg:+.1f}% in 24 hours — new money is entering the market, which adds conviction to the current move.")
+        else:
+            sentences.append(f"Open interest dropped {oi_chg:+.1f}% — positions are being closed, suggesting the current trend is losing participation.")
+
+    # Cap at 6 sentences
+    commentary = " ".join(sentences[:6])
+
+    if not commentary:
+        commentary = f"Data is limited for {ticker} at this time. The oracle reserves judgment until the currents speak more clearly."
+
+    return commentary
+
+
+def _build_fear_greed_commentary(data: dict) -> str:
+    """Commentary for fear & greed reports."""
+    fng = int(data.get("fng_val", 50) or 50)
+    cg = data.get("cg") or {}
+    ta = data.get("ta") or {}
+    pos = data.get("position", "") or ""
+
+    sentences = []
+
+    if fng < 15:
+        sentences.append(f"The Fear & Greed Index has collapsed to {fng} — deep capitulation territory. Markets at this level have historically rewarded buyers within 30-90 days.")
+    elif fng < 30:
+        sentences.append(f"At {fng}, fear is elevated but not extreme. The crowd is nervous — this is the zone where patient capital starts deploying.")
+    elif fng < 60:
+        sentences.append(f"Sentiment at {fng} is in no-man's-land. Neither fear nor greed is dominant, which means the market is waiting for direction.")
+    elif fng < 80:
+        sentences.append(f"Greed has taken hold at {fng}. Historically, this is where wise money starts trimming while the crowd doubles down.")
+    else:
+        sentences.append(f"Extreme greed at {fng} — this is a warning sign. The crowd is euphoric, and euphoria is the market's favorite setup for pain.")
+
+    funding = cg.get("funding_avg", 0) or 0
+    long_pct = cg.get("long_pct", 0) or 0
+    if long_pct and funding:
+        if fng < 30 and long_pct < 50:
+            sentences.append(f"Futures confirm the fear — only {long_pct:.0f}% of accounts are long, and funding at {funding:+.4f}% shows shorts are confident. This is the contrarian's playground.")
+        elif fng > 70 and long_pct > 60:
+            sentences.append(f"Futures validate the greed — {long_pct:.0f}% of accounts are long with funding at {funding:+.4f}%. Too many passengers on one side of the boat.")
+        else:
+            sentences.append(f"Futures positioning ({long_pct:.0f}% long, funding {funding:+.4f}%) tells a more nuanced story than sentiment alone. The market's structure doesn't fully match the mood.")
+
+    taker_flow = cg.get("taker_flow", "") or ""
+    if taker_flow == "BUY PRESSURE":
+        sentences.append("Taker flow is buy-dominant — despite the sentiment reading, aggressive buyers are stepping in.")
+    elif taker_flow == "SELL PRESSURE":
+        sentences.append("Taker flow confirms sellers are in control — market orders are hitting bids, validating the fear.")
+
+    rsi = float(ta.get("rsi", 50) or 50)
+    if rsi < 35:
+        sentences.append(f"RSI at {rsi:.0f} backs up the fear reading — technically oversold with room for a relief bounce.")
+    elif rsi > 65:
+        sentences.append(f"RSI at {rsi:.0f} aligns with the greed — momentum is extended and vulnerable to a pullback.")
+
+    sentences.append(f"Octodamus positioning signal: {pos}.")
+
+    return " ".join(sentences[:5])
+
+
+def _build_deep_dive_commentary(data: dict) -> str:
+    """Commentary for bitcoin/crypto deep dive reports."""
+    ticker = data.get("ticker", "BTC")
+    price = float(data.get("price", 0) or 0)
+    chg_24h = float(data.get("chg_24h", 0) or 0)
+    chg_7d = float(data.get("chg_7d", 0) or 0)
+    cg = data.get("cg") or {}
+    ta = data.get("ta") or {}
+    fng = int(data.get("fng_val", 50) or 50)
+
+    sentences = []
+
+    # Price action context
+    if chg_7d < -10:
+        sentences.append(f"{ticker} has dropped {chg_7d:+.1f}% over seven days — a significant drawdown that has shaken out weak holders and reset expectations.")
+    elif chg_7d > 10:
+        sentences.append(f"{ticker} has surged {chg_7d:+.1f}% in a week — strong momentum, but extended moves like this often need to consolidate before continuing.")
+    elif chg_24h > 3:
+        sentences.append(f"{ticker} is up {chg_24h:+.1f}% today, showing short-term strength. The question is whether this is a dead cat bounce or the start of a trend reversal.")
+    elif chg_24h < -3:
+        sentences.append(f"{ticker} down {chg_24h:+.1f}% in 24 hours — sellers are pressing, and the key is whether current support levels hold.")
+    else:
+        sentences.append(f"{ticker} is grinding sideways ({chg_24h:+.1f}% today, {chg_7d:+.1f}% weekly) — range-bound action that typically precedes a directional breakout.")
+
+    # Futures context
+    long_pct = cg.get("long_pct", 0) or 0
+    top_long = cg.get("top_long_pct", 0) or 0
+    funding = cg.get("funding_avg", 0) or 0
+    oi_chg = cg.get("oi_chg_24h", 0) or 0
+
+    if long_pct and top_long:
+        if abs(long_pct - top_long) > 10:
+            side = "retail" if long_pct > top_long else "whale"
+            sentences.append(f"There's a notable divergence between retail ({long_pct:.0f}% long) and top traders ({top_long:.0f}% long) — the {side} crowd is more aggressive, and that divergence usually resolves in favor of the whales.")
+        elif long_pct > 60:
+            sentences.append(f"Both retail ({long_pct:.0f}%) and whales ({top_long:.0f}%) are leaning long — consensus is bullish, which can work until it becomes too crowded.")
+
+    if funding and abs(funding) > 0.01:
+        cost = "longs" if funding > 0 else "shorts"
+        sentences.append(f"Funding at {funding:+.4f}% means {cost} are paying to hold — this cost erodes conviction over time and often triggers a positioning unwind.")
+
+    if abs(oi_chg) > 5:
+        sentences.append(f"Open interest moved {oi_chg:+.1f}% in 24 hours — {'new positions building' if oi_chg > 0 else 'positions unwinding'}, which {'adds fuel to the move' if oi_chg > 0 else 'suggests exhaustion'}.")
+
+    # Technicals
+    trend = ta.get("trend", "") or ""
+    rsi = float(ta.get("rsi", 50) or 50)
+    bb_w = float(ta.get("bb_width", 5) or 5)
+    if bb_w < 3:
+        sentences.append(f"Bollinger Bands have compressed to {bb_w:.1f}% — volatility is coiled tight. A major move is imminent; the direction will be decided by which side blinks first.")
+    elif trend:
+        sentences.append(f"The technical structure is {trend.lower()} with RSI at {rsi:.0f} — {'room to run' if (trend == 'Bullish' and rsi < 65) or (trend == 'Bearish' and rsi > 35) else 'getting extended'}.")
+
+    # Sentiment tie-in
+    if fng < 25:
+        sentences.append(f"With fear at {fng}, the macro backdrop favors accumulation over distribution.")
+    elif fng > 75:
+        sentences.append(f"Sentiment at {fng} suggests the easy money has been made — risk management matters more than FOMO here.")
+
+    return " ".join(sentences[:6])
+
+
+def _build_congressional_commentary(data: dict) -> str:
+    """Commentary for congressional trade reports."""
+    ticker = data.get("ticker", "")
+    buys = data.get("buys", 0) or 0
+    sells = data.get("sells", 0) or 0
+    trades = data.get("trades") or []
+    fng = int(data.get("fng_val", 50) or 50)
+
+    sentences = []
+
+    total = buys + sells
+    if total == 0:
+        return f"No recent congressional trading activity on {ticker}. Silence from Capitol Hill can mean anything — or nothing. The oracle watches, but the politicians aren't moving."
+
+    if buys > sells * 2:
+        sentences.append(f"Congress is buying {ticker} aggressively — {buys} purchases vs {sells} sales. When the people writing the rules are placing bets, it's worth paying attention.")
+    elif sells > buys * 2:
+        sentences.append(f"Congressional selling on {ticker} is heavy — {sells} sales vs {buys} purchases. Politicians dumping a stock is one of the most reliable bearish signals in the market.")
+    elif buys > sells:
+        sentences.append(f"Slight congressional buying bias on {ticker} ({buys} buys, {sells} sells). Not a stampede, but the direction is notable.")
+    elif sells > buys:
+        sentences.append(f"Congressional activity leans toward selling on {ticker} ({sells} sales, {buys} buys). Not panic selling, but the insiders are reducing exposure.")
+    else:
+        sentences.append(f"Mixed signals from Capitol Hill on {ticker} — {buys} buys and {sells} sells. No clear directional conviction from the insiders.")
+
+    # Name notable traders
+    if trades:
+        names = list(set(tr.get("name", "?") for tr in trades[:5]))
+        if len(names) <= 3:
+            sentences.append(f"Key names in the activity: {', '.join(names)}.")
+
+    sentences.append("Core thesis: Congress has asymmetric information. They write the regulations, approve the contracts, and see the data before the market does. Following their money has historically outperformed the S&P 500.")
+
+    if fng < 30:
+        sentences.append(f"Macro context: Fear & Greed at {fng} suggests broad market anxiety — congressional buying during fear periods has an even stronger track record.")
+    elif fng > 70:
+        sentences.append(f"Macro context: Fear & Greed at {fng} — the market is complacent. Congressional selling during greed periods is a particularly strong warning.")
+
+    return " ".join(sentences[:4])
+
+
 # v3: ~2/3 compact data, ~1/3 oracle directional take, footer with results link
 
 def render_text(data: dict) -> str:
@@ -866,9 +1130,12 @@ def render_text(data: dict) -> str:
                 L.append(f"Liquidations (4h): ${cg['liq_total']}M total — Longs: ${cg['liq_long']}M, Shorts: ${cg['liq_short']}M ({cg.get('liq_pain', '')})")
 
         # ── ORACLE TAKE (1/3 of report) ──────────────────────────────
+        commentary = _build_oracle_commentary(data)
         L += [
             "",
             "── OCTODAMUS READS THE CURRENTS ────────────",
+            "",
+            commentary,
             "",
             f"Signal: {data.get('signal','')}",
             "",
@@ -914,11 +1181,12 @@ def render_text(data: dict) -> str:
             L.append(f"Wikipedia Spikes: {', '.join(str(s) for s in spikes)}")
 
         # ── ORACLE TAKE ──────────────────────────────────────────────
+        commentary = _build_fear_greed_commentary(data)
         L += [
             "",
             "── OCTODAMUS READS THE CURRENTS ────────────",
             "",
-            f"Context: {data.get('context','')}",
+            commentary,
             "",
             f"OCTODAMUS CALL: {call}",
             "",
@@ -979,9 +1247,12 @@ def render_text(data: dict) -> str:
         L.append(f"Bull: ${bull_t:,.0f} (+18%) | Bear: ${bear_t:,.0f} (-18%)")
 
         # ── ORACLE TAKE ──────────────────────────────────────────────
+        commentary = _build_deep_dive_commentary(data)
         L += [
             "",
             "── OCTODAMUS READS THE CURRENTS ────────────",
+            "",
+            commentary,
             "",
             f"Fear & Greed: {data.get('fng_val')} — {data.get('fng_label')}",
             "",
@@ -1010,12 +1281,12 @@ def render_text(data: dict) -> str:
         L.append(f"  Summary: {data.get('buys',0)} buys, {data.get('sells',0)} sells")
 
         # ── ORACLE TAKE ──────────────────────────────────────────────
+        commentary = _build_congressional_commentary(data)
         L += [
             "",
             "── OCTODAMUS READS THE CURRENTS ────────────",
             "",
-            f"Oracle read: {data.get('interpretation','')}",
-            f"Macro context: Fear & Greed {data.get('fng_val')} — {data.get('fng_label','')}",
+            commentary,
             "",
             f"OCTODAMUS CALL: {call}",
             "",
