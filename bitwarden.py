@@ -71,6 +71,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Etherscan API":                "ETHERSCAN_API_KEY",
     "AGENT - Octodamus - Quiver API":                   "QUIVER_API_KEY",
     "AGENT - Octodamus - Social - Discord":             "DISCORD_WEBHOOK_URL",
+"AGENT - Octodamus - API - Coinglass":              "COINGLASS_API_KEY",
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
