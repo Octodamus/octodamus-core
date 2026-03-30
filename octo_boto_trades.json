@@ -1,5 +1,5 @@
 {
-  "balance": 921.6,
+  "balance": 970.2076000000001,
   "starting_balance": 1000.0,
   "positions": [
     {
@@ -18,7 +18,9 @@
       "url": "https://polymarket.com/event/us-forces-enter-iran-by",
       "fee": 0.2,
       "opened_at": "2026-03-19T15:32:14.659099+00:00"
-    },
+    }
+  ],
+  "closed": [
     {
       "id": "1467766_",
       "market_id": "1467766",
@@ -34,12 +36,18 @@
       "score": 0.2975,
       "url": "https://polymarket.com/event/will-crude-oil-cl-hit-by-end-of-march",
       "fee": 0.192,
-      "opened_at": "2026-03-19T15:48:07.819696+00:00"
+      "opened_at": "2026-03-19T15:48:07.819696+00:00",
+      "resolution": "YES",
+      "won": true,
+      "payout": 48.6076,
+      "pnl": 10.2076,
+      "pnl_pct": 26.58,
+      "closed_at": "2026-03-30T23:39:07.803046+00:00"
     }
   ],
-  "closed": [],
   "balance_history": [
-    1000.0
+    1000.0,
+    970.21
   ],
   "fees_paid": 0.392
 }
