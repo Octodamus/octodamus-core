@@ -87,6 +87,93 @@ except ImportError:
 claude = anthropic.Anthropic()
 
 
+def _check_smart_call():
+    """
+    Check if the 11-signal engine shows a high-conviction setup.
+    Only makes a call when >=7 signals agree (STRONG UP or STRONG DOWN).
+    This protects the 75%+ win rate by staying silent on weak signals.
+    """
+    try:
+        from octo_report_handlers import (
+            fetch_technicals, fetch_derivatives, directional_call,
+            _fetch_coinglass_compact,
+        )
+        from octo_calls import record_call, _load
+        import httpx
+
+        # Check if we already have an open call — don't stack
+        calls = _load()
+        open_calls = [c for c in calls if not c["resolved"]]
+        if len(open_calls) >= 2:
+            print("[SmartCall] Already have 2+ open calls — skipping.")
+            return None
+
+        # Gather data for BTC (primary asset)
+        ta = fetch_technicals("BTC")
+        deriv = fetch_derivatives("BTC")
+        cg = _fetch_coinglass_compact("BTC")
+
+        # Get current price + 24h change
+        price = 0.0
+        chg_24h = 0.0
+        cg_prices = cg.get("prices", {})
+        if cg_prices.get("BTC"):
+            price = cg_prices["BTC"]["price"]
+            chg_24h = cg_prices["BTC"].get("chg_24h", 0)
+        else:
+            try:
+                r = httpx.get(
+                    "https://api.coingecko.com/api/v3/simple/price",
+                    params={"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true"},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    d = r.json().get("bitcoin", {})
+                    price = d.get("usd", 0)
+                    chg_24h = float(d.get("usd_24h_change", 0) or 0)
+            except Exception:
+                pass
+
+        if not price:
+            print("[SmartCall] No price data — skipping.")
+            return None
+
+        # Get Fear & Greed
+        fng = 50
+        try:
+            r = httpx.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+            if r.status_code == 200:
+                fng = int(r.json()["data"][0]["value"])
+        except Exception:
+            pass
+
+        # Run the 11-signal engine
+        call_str = directional_call("BTC", price, chg_24h, ta, deriv, fng, cg)
+
+        # Only act on STRONG signals (>=7 agreement)
+        if "STRONG UP" in call_str:
+            direction = "UP"
+            target = round(price * 1.05, 0)  # 5% target for conservative calls
+            timeframe = "48h"
+        elif "STRONG DOWN" in call_str:
+            direction = "DOWN"
+            target = round(price * 0.95, 0)
+            timeframe = "48h"
+        else:
+            print(f"[SmartCall] Signal not strong enough for a call: {call_str[:80]}")
+            return None
+
+        # Record the call
+        print(f"[SmartCall] HIGH CONVICTION: BTC {direction} from ${price:,.0f} to ${target:,.0f}")
+        note = f"Auto-call from 11-signal engine. {call_str[:100]}"
+        result = record_call("BTC", direction, price, timeframe, target, note=note)
+        return result
+
+    except Exception as e:
+        print(f"[SmartCall] Error: {e}")
+        return None
+
+
 def _get_recent_posts(n: int = 5) -> str:
     """Get last N posted texts for dedup in prompts."""
     try:
