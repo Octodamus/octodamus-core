@@ -56,17 +56,66 @@ try:
     from octo_coinglass import glass as _cg_glass
     def _get_coinglass_context():
         try:
-            ctx = _cg_glass.build_oracle_context("BTC")
+            # Rotate focus asset based on post count today
+            import json as _cj
+            from pathlib import Path as _cP
+            from datetime import datetime as _cdt
+            _today = _cdt.now().strftime("%Y-%m-%d")
+            _post_count = 0
+            try:
+                _plog = _cj.loads((_cP(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                _post_count = sum(1 for v in _plog.values() if _today in v.get("posted_at", ""))
+            except Exception:
+                pass
+            
+            _FOCUS_ROTATION = ["BTC", "ETH", "SOL", "MACRO"]
+            _focus = _FOCUS_ROTATION[_post_count % len(_FOCUS_ROTATION)]
+            
+            # Build context for focus asset
+            if _focus == "MACRO":
+                # Pull all three for cross-market view
+                parts = []
+                for sym in ["BTC", "ETH", "SOL"]:
+                    try:
+                        ctx = _cg_glass.build_oracle_context(sym)
+                        parts.append(ctx[:400])
+                    except Exception:
+                        pass
+                context = "\n".join(parts)
+                focus_instruction = (
+                    "\n\nFOCUS THIS POST ON: Cross-market dynamics, macro sentiment, "
+                    "or correlation between BTC/ETH/SOL. Do NOT lead with a single asset price. "
+                    "Talk about the broader market picture."
+                )
+            else:
+                context = _cg_glass.build_oracle_context(_focus)
+                focus_instruction = (
+                    f"\n\nFOCUS THIS POST ON: {_focus}. "
+                    f"Lead with {_focus} data, not BTC (unless {_focus} IS BTC). "
+                    f"Find the most interesting signal in the {_focus} futures data."
+                )
+            
+            # Check for alerts across all assets
             alerts = _cg_glass.check_alerts(["BTC", "ETH", "SOL"])
+            alert_text = ""
             if alerts:
-                ctx += "\n\nACTIVE ALERTS:\n"
+                alert_text = "\n\nACTIVE ALERTS:\n"
                 for a in alerts:
-                    ctx += f"  [{a['severity']}] {a['message']}\n"
-            return ctx
+                    alert_text += f"  [{a['severity']}] {a['message']}\n"
+                # If there's a high-severity alert, override focus to that asset
+                for a in alerts:
+                    if a["severity"] >= 3:
+                        focus_instruction = (
+                            f"\n\nURGENT: Write about this alert — {a['message']}. "
+                            "This is a major market event."
+                        )
+                        break
+            
+            return context + alert_text + focus_instruction
         except Exception as e:
             print(f"[Coinglass] Context build failed: {e}")
             return ""
-    _COINGLASS_ACTIVE = True
+        _COINGLASS_ACTIVE = True
 except ImportError:
     _COINGLASS_ACTIVE = False
     def _get_coinglass_context():
@@ -404,7 +453,7 @@ def mode_daily() -> None:
                     f"{build_call_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
-                    "Lead with a specific number or fact. Then the insight.\n"
+                    "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed divergence, cross-market correlation, OI shifts, liquidation patterns, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
                     "If a headline reveals something ironic or contradictory — use it.\n"
                     "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the market read."
                 ),
