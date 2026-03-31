@@ -53,6 +53,26 @@ from octo_signal_card import build_signal_card
 from octo_skill_log import log_post
 from octo_congress import run_congress_scan, format_congress_for_prompt
 try:
+    from octo_coinglass import glass as _cg_glass
+    def _get_coinglass_context():
+        try:
+            ctx = _cg_glass.build_oracle_context("BTC")
+            alerts = _cg_glass.check_alerts(["BTC", "ETH", "SOL"])
+            if alerts:
+                ctx += "\n\nACTIVE ALERTS:\n"
+                for a in alerts:
+                    ctx += f"  [{a['severity']}] {a['message']}\n"
+            return ctx
+        except Exception as e:
+            print(f"[Coinglass] Context build failed: {e}")
+            return ""
+    _COINGLASS_ACTIVE = True
+except ImportError:
+    _COINGLASS_ACTIVE = False
+    def _get_coinglass_context():
+        return ""
+
+try:
     from octo_scorecard import mode_scorecard
     from octo_calls import build_call_context, parse_call_from_post, autoresolve
     from octo_post_templates import build_template_prompt_context
@@ -268,6 +288,7 @@ def mode_daily() -> None:
                 "content": (
                     "Generate the morning oracle market read for @octodamusai.\n"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
+                    f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
                     f"{news_section}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"

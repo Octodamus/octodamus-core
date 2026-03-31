@@ -169,8 +169,21 @@ def generate_oracle_post(signal: dict) -> str:
     except Exception:
         pass
 
+    # Coinglass futures context for richer posts
+    _cg_context = ""
+    try:
+        from octo_coinglass import glass as _cg
+        _cg_context = _cg.build_oracle_context(ticker)
+        _cg_alerts = _cg.check_alerts([ticker])
+        if _cg_alerts:
+            _cg_context += "\nALERTS: " + "; ".join(a["message"] for a in _cg_alerts)
+    except Exception:
+        pass
+    _futures_line = f"\nFutures positioning:\n{_cg_context}\n" if _cg_context else ""
+
     prompt = (
         f"Market data: {ticker} {direction} {change_pct:+.2f}% at ${price}\n"
+        f"{_futures_line}"
         f"Recent headlines: {json.dumps(news_headlines)}\n\n"
         "Generate ONE sharp oracle post for @octodamusai. Under 280 chars.\n"
         "NO price tables. NO headers. NO dividers. NO ticker/price lists.\n"
