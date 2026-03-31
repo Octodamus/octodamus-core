@@ -549,6 +549,16 @@ Challenge this signal."""
         }
 
 
+# Coinglass context helper for reflection
+def _reflection_futures_context(question: str) -> str:
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from octo_boto_ai import _get_crypto_context
+        return _get_crypto_context(question)
+    except Exception:
+        return ""
+
 def apply_reflection_to_batch(
     opportunities: list,
     anthropic_key: str,

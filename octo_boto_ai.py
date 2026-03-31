@@ -69,6 +69,51 @@ Sizing rule: Max 4% per trade (quarter-Kelly). The edge only works with
 enough capital to survive drawdowns and reach expectancy."""
 
 
+
+# ── Coinglass context for crypto markets ──────────────────────────────────────
+def _get_crypto_context(question: str) -> str:
+    """
+    If the market question is crypto-related, fetch Coinglass futures context.
+    Returns empty string for non-crypto markets.
+    """
+    q = question.lower()
+    CRYPTO_KEYWORDS = [
+        "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
+        "crypto", "binance", "coinbase", "defi", "altcoin",
+        "bnb", "xrp", "doge", "ada", "avax", "link",
+    ]
+    # Check if this market is crypto-related
+    if not any(kw in q for kw in CRYPTO_KEYWORDS):
+        return ""
+    
+    # Determine which symbol to pull data for
+    symbol = "BTC"  # default
+    if any(k in q for k in ["ethereum", "eth "]):
+        symbol = "ETH"
+    elif any(k in q for k in ["solana", "sol "]):
+        symbol = "SOL"
+    elif any(k in q for k in ["bnb", "binance coin"]):
+        symbol = "BNB"
+    elif any(k in q for k in ["xrp", "ripple"]):
+        symbol = "XRP"
+    elif any(k in q for k in ["doge", "dogecoin"]):
+        symbol = "DOGE"
+    
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from octo_coinglass import glass
+        ctx = glass.build_oracle_context(symbol)
+        alerts = glass.check_alerts([symbol])
+        if alerts:
+            ctx += "\nACTIVE ALERTS:\n"
+            for a in alerts:
+                ctx += f"  [{a['severity']}] {a['message']}\n"
+        return ctx
+    except Exception:
+        return ""
+
+
 def estimate(
     market_id:    str,
     question:     str,
@@ -101,11 +146,15 @@ def estimate(
 
     # 2. Build prompt
     date_hint = f"\nResolution date: {end_date}" if end_date else ""
+    # Fetch Coinglass futures data for crypto markets
+    futures_context = _get_crypto_context(question)
+    futures_section = f"\n\nFUTURES INTELLIGENCE (use this data to inform your estimate):\n{futures_context}" if futures_context else ""
+
     prompt = f"""PREDICTION MARKET ANALYSIS
 
 Question: {question}
 Additional context: {description[:300] if description else "None provided"}{date_hint}
-Current crowd price (implied YES probability): {market_price:.1%}
+Current crowd price (implied YES probability): {market_price:.1%}{futures_section}
 
 TASK: Estimate the TRUE probability this resolves YES.
 
