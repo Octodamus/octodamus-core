@@ -169,6 +169,21 @@ def generate_oracle_post(signal: dict) -> str:
     except Exception:
         pass
 
+    # Recent post dedup
+    _recent_ctx = ""
+    try:
+        from pathlib import Path as _P
+        import json as _j
+        _log_path = _P(__file__).parent / "octo_posted_log.json"
+        if _log_path.exists():
+            _log = _j.loads(_log_path.read_text(encoding="utf-8"))
+            _recent = sorted(_log.values(), key=lambda x: x.get("posted_at", ""), reverse=True)[:3]
+            _texts = [e.get("text", "")[:120] for e in _recent if e.get("text")]
+            if _texts:
+                _recent_ctx = "RECENT POSTS (pick a DIFFERENT angle):\n" + "\n".join(f"  - {t}" for t in _texts)
+    except Exception:
+        pass
+
     # Coinglass futures context for richer posts
     _cg_context = ""
     try:
@@ -192,6 +207,7 @@ def generate_oracle_post(signal: dict) -> str:
         "One ocean metaphor MAX. End with something memorable.\n"
         "Do NOT write Oracle call: or CALLING IT: — reserved for official call system only.\n"
         "Output ONLY the post text. No formatting symbols."
+        "\n\n" + _recent_ctx
     )
 
     client = _get_client()

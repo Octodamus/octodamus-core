@@ -1,25 +1,7 @@
 {
   "balance": 970.2076000000001,
   "starting_balance": 1000.0,
-  "positions": [
-    {
-      "id": "1162940_",
-      "market_id": "1162940",
-      "question": "US forces enter Iran by March 31?",
-      "side": "YES",
-      "size": 40.0,
-      "entry_price": 0.255,
-      "true_p": 0.8,
-      "ev": 0.545,
-      "kelly_frac": 0.04,
-      "confidence": "high",
-      "reasoning": "War already underway since February 28, 2026. <cite index=\"13-7,16-4,16-12,20-1\">Reports confirm US considering deploying thousands of Marines to Iranian coastline for Strait of Hormuz operations, with officials discussing ground force deployment to",
-      "score": 2.0292,
-      "url": "https://polymarket.com/event/us-forces-enter-iran-by",
-      "fee": 0.2,
-      "opened_at": "2026-03-19T15:32:14.659099+00:00"
-    }
-  ],
+  "positions": [],
   "closed": [
     {
       "id": "1467766_",
@@ -42,11 +24,35 @@
       "payout": 48.6076,
       "pnl": 10.2076,
       "pnl_pct": 26.58,
-      "closed_at": "2026-03-30T23:39:07.803046+00:00"
+      "closed_at": "2026-03-31T11:19:59.532957+00:00"
+    },
+    {
+      "id": "1162940_",
+      "market_id": "1162940",
+      "question": "US forces enter Iran by March 31?",
+      "side": "YES",
+      "size": 40.0,
+      "entry_price": 0.255,
+      "true_p": 0.8,
+      "ev": 0.545,
+      "kelly_frac": 0.04,
+      "confidence": "high",
+      "reasoning": "War already underway since February 28, 2026. <cite index=\"13-7,16-4,16-12,20-1\">Reports confirm US considering deploying thousands of Marines to Iranian coastline for Strait of Hormuz operations, with officials discussing ground force deployment to",
+      "score": 2.0292,
+      "url": "https://polymarket.com/event/us-forces-enter-iran-by",
+      "fee": 0.2,
+      "opened_at": "2026-03-19T15:32:14.659099+00:00",
+      "resolution": "NO",
+      "won": false,
+      "payout": 0.0,
+      "pnl": -40.0,
+      "pnl_pct": -100.0,
+      "closed_at": "2026-03-31T11:53:04.519526+00:00"
     }
   ],
   "balance_history": [
     1000.0,
+    970.21,
     970.21
   ],
   "fees_paid": 0.392

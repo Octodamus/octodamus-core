@@ -87,6 +87,30 @@ except ImportError:
 claude = anthropic.Anthropic()
 
 
+def _get_recent_posts(n: int = 5) -> str:
+    """Get last N posted texts for dedup in prompts."""
+    try:
+        from pathlib import Path as _P
+        import json as _j
+        log_path = _P(__file__).parent / "octo_posted_log.json"
+        if not log_path.exists():
+            return ""
+        log = _j.loads(log_path.read_text(encoding="utf-8"))
+        # Sort by posted_at descending, get last N
+        recent = sorted(
+            log.values(),
+            key=lambda x: x.get("posted_at", ""),
+            reverse=True
+        )[:n]
+        texts = [entry.get("text", "")[:150] for entry in recent if entry.get("text")]
+        if not texts:
+            return ""
+        numbered = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(texts))
+        return f"\n\nRECENT POSTS (do NOT repeat these topics or angles — pick something DIFFERENT):\n{numbered}\n"
+    except Exception:
+        return ""
+
+
 # ─────────────────────────────────────────────
 # OCTODAMUS VOICE SYSTEM
 # ─────────────────────────────────────────────
