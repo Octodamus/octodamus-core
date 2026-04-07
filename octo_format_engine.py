@@ -310,6 +310,7 @@ Write an ORACLE TAKE post. A short directional view with a specific reason.
 This builds authority — people follow accounts that make clear calls.
 
 Rules:
+- CRITICAL: Only use prices from LIVE DATA above. Do NOT cite historical prices or ATHs from training data.
 - Lead with the asset and level: "BTC at $82,400."
 - State the directional view and why in one sentence.
 - Be specific. Name the signal, level, or data that supports it.
@@ -331,6 +332,8 @@ Write a CONTRARIAN post. Name what the crowd has wrong. Be a little mean about i
 This is the most reshared format — people love seeing the narrative punctured.
 
 Rules:
+- CRITICAL: Only use prices and data from LIVE DATA above. Do NOT reference historical prices,
+  all-time highs, or any figures from your training data. If you don't have a price in LIVE DATA, don't cite one.
 - Lead with what everyone believes right now.
 - Flip it with data or logic in one sentence.
 - Be direct. Don't soften the take.
