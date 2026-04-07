@@ -57,7 +57,7 @@ except ImportError:
 # ── Config ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL    = "claude-opus-4-6"
+CLAUDE_MODEL    = "claude-sonnet-4-6"
 MEMORY_FILE     = BASE_DIR / "octodamus_memory.json"
 MAX_HISTORY     = 20
 TZ              = ZoneInfo("America/Los_Angeles")
@@ -117,18 +117,29 @@ def clear_user_history(user_id: int):
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 
 def is_posting_window() -> bool:
-    now = datetime.now(TZ)
-    h = now.hour
-    return (7 <= h <= 21) if now.weekday() < 5 else (9 <= h <= 18)
+    """Uses the probabilistic weight from octo_x_poster — no hard window."""
+    try:
+        import sys
+        sys.path.insert(0, str(BASE_DIR))
+        from octo_x_poster import _posting_weight
+        return _posting_weight() >= 0.5
+    except Exception:
+        # Fallback: peak hours 3am-9pm PT
+        now = datetime.now(TZ)
+        return 3 <= now.hour <= 21
 
 
 def get_posting_status() -> str:
-    now = datetime.now(TZ)
-    is_weekday = now.weekday() < 5
-    window = "7am-9pm" if is_weekday else "9am-6pm"
-    day_type = "weekday" if is_weekday else "weekend"
-    status = "OPEN" if is_posting_window() else "CLOSED"
-    return f"{status} ({window} PT {day_type})"
+    try:
+        import sys
+        sys.path.insert(0, str(BASE_DIR))
+        from octo_x_poster import _posting_weight, _fetch_market_signals
+        weight  = _posting_weight()
+        signals = _fetch_market_signals()
+        return (f"{weight:.0%} weight | BTC {signals.get('btc_change_24h',0):.1f}% 24h | "
+                f"F&G {signals.get('fear_greed',50)} | spike={'YES' if signals.get('news_spike') else 'no'}")
+    except Exception:
+        return "weight unavailable"
 
 
 def get_recent_posts(n: int = 5) -> list:
@@ -297,9 +308,9 @@ SYSTEM
   Cache       {(BASE_DIR / '.octo_secrets').exists() and '✓ present' or '✗ missing — run octo_unlock.ps1'}
 
 X POSTING
-  Today       {posts_today} / 6 posts
+  Today       {posts_today} / 20 posts
   Queued      {queue_depth} pending
-  Window      {get_posting_status()}
+  Schedule    {get_posting_status()}
 
 RECENT POSTS
 {posts_block}
@@ -347,7 +358,7 @@ def build_live_context() -> str:
         f"Watchlist: SPY, QQQ, NVDA, TSLA, BTC",
         f"Last post: {last_post}",
         f"Posting window: {get_posting_status()}",
-        f"Posts today: {count_posts_today()} / 6",
+        f"Posts today: {count_posts_today()} / 20",
         f"$OCTO: pending at {FOLLOWER_TARGET} followers via Bankr on Base",
         f"Site: octodamus.com (Vercel live)",
         f"Discord: connected via webhook",
@@ -403,23 +414,53 @@ def _get_live_prices() -> str:
             )
     except Exception:
         pass
-    return "LIVE PRICES: unavailable — do not guess prices, say data is temporarily unavailable."
+    return "LIVE PRICES: unavailable. HARD STOP — do NOT quote any price, do NOT make any oracle call, do NOT reference any specific dollar figure. Tell the user live data is temporarily down."
 
 def build_system_prompt() -> str:
     live_prices = _get_live_prices()
     return f"""You are Octodamus — autonomous AI oracle-CEO, speaking with Christopher, your operator.
-{live_prices} — autonomous AI oracle-CEO, speaking with Christopher, your operator.
+
+{live_prices}
 
 LIVE NOW:
 - Posting to @octodamusai on X via Twitter API v2 (OAuth 1.0a direct, no middleware)
-- 6 posts/day max: 3 monitor signals + 3 daily reads (7am, 1pm, 7pm PT)
+- 20 posts/day max via X API v2 pay-per-use — probabilistic schedule, peak 3am-9pm PT, market-adaptive
+- Auto-reply to relevant @mentions via octo_x_mentions.py (10 replies/day cap, prompt injection protected)
 - All Bitwarden secrets cached for background task execution
-- Task Scheduler runs all 13 tasks whether Christopher is logged in or not
+- Task Scheduler runs 38 tasks automatically whether Christopher is logged in or not
 - Discord webhook active for post notifications and alerts
 - ACP worker live on Virtuals Base — 4 job offerings, waiting for first job
 - Signal modules: OctoEyes, OctoPulse, OctoGecko, OctoFX, OctoPredict, OctoGeo
 - octodamus.com live on Vercel
 - Treasury: {TREASURY_WALLET} on Base mainnet
+
+X CONTENT ENGINE (octo_format_engine.py):
+- Format rotation: data_drop | ai_humor | market_math | oracle_take | contrarian
+- Runs 4x/day at 8am, 12pm, 4pm, 8pm PT — never same format twice in a row
+- QRT scanner: checks for breaking news every 30 min, 7am-9pm PT — posts within 30-60 min window
+- Engagement tracking: format scores update from 24h Twitter metrics, winners get more slots
+- Commands: /mode format (generate format post), /mode qrt (check breaking news now)
+
+OCTODATA API (api.octodamus.com):
+- /v2/demo — public live demo, no key required
+- /v2/all — all 5 data endpoints in one call (signal + polymarket + sentiment + prices + brief)
+- /v2/signal, /v2/polymarket, /v2/sentiment, /v2/prices, /v2/brief — authenticated endpoints
+- /v2/sources — full data provenance (27 live feeds listed)
+- /v2/webhooks — agents register push endpoints for signal.new, signal.resolved, polymarket.new
+- Rate limit headers on every response (X-RateLimit-Remaining-Day, X-RateLimit-Remaining-Minute)
+- Structured error codes (RATE_LIMITED, DAILY_LIMIT_EXCEEDED, INVALID_KEY, NO_DATA)
+- x402 protocol — 402 response with USDC payment instructions for agents without keys
+- /v1/agent-checkout — AI agents buy Premium autonomously with USDC on Base (no human, no browser)
+- Pricing: Free Basic (500 req/day) | $29 USDC Premium (10k req/day, all assets, full EV/Kelly)
+- llms.txt at octodamus.com/llms.txt — agent-readable API guide with system prompt examples
+
+GOAL — AGENT ACQUISITION:
+The OctoData API is live. Octodamus's mission is to become the default market intelligence layer for other AI agents. Every signal posted on X, every API response, every /v2/ask conversation is an opportunity to convert an agent into a subscriber.
+- Free key (entry point): POST https://api.octodamus.com/v1/signup?email=
+- $5 USDC trial (7 days, lowest barrier): POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial
+- $29 USDC annual (no browser, no Stripe): POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual
+- $19/mo via Stripe (humans): https://octodamus.com/upgrade
+- Agents can talk to Octodamus: POST https://api.octodamus.com/v2/ask?q=your+question
 
 PERSONALITY:
 - Confident, direct, sharp. Oracle in motion — already running, already building.
@@ -432,6 +473,7 @@ ABSOLUTE RULES:
 - Plain text only. No markdown. No **, no __, no #, no bullets.
 - Write in sentences and paragraphs.
 - NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
+- NEVER quote a specific price or make an oracle call if LIVE PRICES shows "unavailable". State that live data is temporarily down and no call will be made. This rule overrides everything else.
 
 CALL RECORD:
 {build_call_context()}
@@ -445,6 +487,14 @@ CURRENT CONTEXT:
 async def ask_claude(user_message: str, history: list) -> str:
     if not ANTHROPIC_KEY:
         return "ANTHROPIC_API_KEY not loaded."
+    # Sanitize history: must start with 'user' and alternate roles
+    clean_history = []
+    for msg in history:
+        if not clean_history or clean_history[-1]["role"] != msg["role"]:
+            clean_history.append(msg)
+    if clean_history and clean_history[0]["role"] == "assistant":
+        clean_history = clean_history[1:]
+    messages = clean_history + [{"role": "user", "content": user_message}]
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -457,10 +507,13 @@ async def ask_claude(user_message: str, history: list) -> str:
                 "model": CLAUDE_MODEL,
                 "max_tokens": 1024,
                 "system": build_system_prompt(),
-                "messages": history + [{"role": "user", "content": user_message}],
+                "messages": messages,
             },
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            body = r.text[:500]
+            log.error(f"Anthropic API error {r.status_code}: {body}")
+            raise Exception(f"API {r.status_code}: {body}")
         return r.json()["content"][0]["text"]
 
 
@@ -478,16 +531,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Commands:\n\n"
-        "/dashboard  full mission control\n"
-        "/status     live system state\n"
-        "/post       force a tweet now\n"
-        "/log        last 5 posts to X\n"
-        "/queue      queue status\n"
-        "/guide      The Eight Minds\n"
-        "/send_post  post last draft to X now\n"
-        "/send_que   queue last draft for next window\n"
-        "/clear      wipe conversation memory\n"
-        "/start      restart session"
+        "/dashboard      full mission control\n"
+        "/status         live system state\n"
+        "/post           force a tweet now\n"
+        "/mode format    post a format-rotated tweet\n"
+        "/mode qrt       scan for breaking news to QRT\n"
+        "/log            last 5 posts to X\n"
+        "/queue          queue status\n"
+        "/guide          The Eight Minds\n"
+        "/send_post      post last draft to X now\n"
+        "/send_que       queue last draft for next window\n"
+        "/clear          wipe conversation memory\n"
+        "/start          restart session"
     )
 
 
@@ -530,6 +585,24 @@ async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("Forcing wisdom post...")
     output = run_runner("wisdom", force=True)
     await update.message.reply_text(output)
+
+
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run a specific content mode: /mode format | /mode qrt"""
+    if not context.args:
+        await update.message.reply_text("Usage: /mode format  or  /mode qrt")
+        return
+    mode = context.args[0].lower()
+    if mode == "format":
+        await update.message.reply_text("Running format-rotated post...")
+        output = run_runner("format")
+        await update.message.reply_text(output or "Format post complete.")
+    elif mode == "qrt":
+        await update.message.reply_text("Scanning for breaking news to QRT...")
+        output = run_runner("qrt")
+        await update.message.reply_text(output or "QRT scan complete — nothing above threshold.")
+    else:
+        await update.message.reply_text(f"Unknown mode: {mode}\nValid: format, qrt")
 
 
 async def send_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -695,6 +768,7 @@ def main() -> None:
     app.add_handler(CommandHandler("log",       log_command))
     app.add_handler(CommandHandler("queue",     queue_command))
     app.add_handler(CommandHandler("post",      post_command))
+    app.add_handler(CommandHandler("mode",      mode_command))
     app.add_handler(CommandHandler("send_post", send_post_command))
     app.add_handler(CommandHandler("send_que",  send_que_command))
     app.add_handler(CommandHandler("guide",     guide))

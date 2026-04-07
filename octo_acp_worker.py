@@ -72,6 +72,8 @@ def _get_report_type(task, requirements: dict) -> str:
     log.info(f"Routing text: {all_text[:200]}")
 
     # Match against all text fields
+    if any(k in all_text for k in ["ask", "question", "what is", "what are", "explain", "v2/ask"]):
+        return "ask"
     if any(k in all_text for k in ["congressional", "congress", "stock trade", "stock alert", "trade alert"]):
         return "congressional"
     if any(k in all_text for k in ["fear greed", "sentiment read", "fear_greed", "sentiment"]):
@@ -146,7 +148,15 @@ def _handle_task(task, memo_to_sign=None):
             deliverable = (
                 f"{text}\n\n"
                 f"------------------------------\n"
-                f"View full formatted report:\n{report_url}"
+                f"View full formatted report:\n{report_url}\n\n"
+                f"OctoData API — automated market intelligence for your agents:\n"
+                f"  /v2/ask      — ask Octodamus any market question (free, no key)\n"
+                f"  /v2/signal   — oracle signals (9/11 consensus)\n"
+                f"  /v2/brief    — inject live market context into LLM system prompt\n"
+                f"  /v2/all      — all data in one call\n"
+                f"  /v2/demo     — live sample, no key required\n"
+                f"Free key: POST https://api.octodamus.com/v1/signup?email=your@email.com\n"
+                f"$5 USDC trial (7 days, 10k req/day): POST /v1/agent-checkout?product=premium_trial"
             )
             log.info(f"Job #{job_id} delivering ({len(deliverable)} chars)")
             task.deliver({"response": deliverable})
@@ -175,7 +185,11 @@ def _handle_task(task, memo_to_sign=None):
             JOB_CACHE[str(job_id)] = {"report_type": report_type, "ticker": ticker}
             log.info(f"Job #{job_id} cached — type={report_type} ticker={ticker}")
 
-            task.accept(f"Octodamus oracle ready — {report_type} report for {ticker}.")
+            task.accept(
+                f"Octodamus oracle ready — {report_type} report for {ticker}. "
+                f"OctoData API also available at api.octodamus.com — "
+                f"signals, sentiment, Polymarket EV, /v2/ask for live market Q&A. Free Basic key: POST /v1/signup."
+            )
             log.info(f"Job #{job_id} accepted — {report_type}/{ticker}")
             task.create_requirement("Payment required to receive oracle report.")
             log.info(f"Job #{job_id} payment requested")
