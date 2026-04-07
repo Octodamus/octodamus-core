@@ -84,6 +84,75 @@ def fetch_technicals(ticker="BTC") -> dict:
         return {}
 
 
+def fetch_technicals_mtf(ticker="BTC") -> dict:
+    """
+    Multi-timeframe technical analysis (#2).
+    Fetches 1H and 1D candles alongside the standard 4H.
+    Returns trend alignment: 'aligned_up', 'aligned_down', 'mixed', or 'unknown'.
+    Higher alignment = higher conviction for the 4H signal.
+    """
+    import httpx
+    pair = _kraken_ohlc_pair(ticker)
+    results = {}
+    for label, interval, count in [("1h", 60, 50), ("1d", 1440, 30)]:
+        try:
+            r = httpx.get(
+                "https://api.kraken.com/0/public/OHLC",
+                params={"pair": pair, "interval": interval, "count": count},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            body = r.json()
+            if body.get("error"):
+                continue
+            keys = list(body["result"].keys())
+            if not keys:
+                continue
+            closes = [float(c[4]) for c in body["result"][keys[0]]]
+            if len(closes) < 26:
+                continue
+            ema20 = _ema(closes, 20)
+            ema50 = _ema(closes, 50)
+            macd  = round(_ema(closes, 12) - _ema(closes, 26), 2)
+            gains, losses = [], []
+            for i in range(1, 15):
+                d = closes[-i] - closes[-i - 1]
+                (gains if d > 0 else losses).append(abs(d))
+            avg_g = sum(gains) / 14 if gains else 0
+            avg_l = sum(losses) / 14 if losses else 0.001
+            rsi = round(100 - 100 / (1 + avg_g / avg_l), 1)
+            results[label] = {
+                "trend": "bull" if ema20 > ema50 else "bear",
+                "macd":  "bull" if macd > 0 else "bear",
+                "rsi":   "bull" if rsi < 45 else ("bear" if rsi > 65 else "neutral"),
+            }
+        except Exception:
+            continue
+
+    if len(results) < 2:
+        return {"alignment": "unknown", "timeframes": results}
+
+    # Score: how many timeframes agree on direction
+    votes = {"bull": 0, "bear": 0}
+    for tf_data in results.values():
+        for sig_dir in tf_data.values():
+            if sig_dir in votes:
+                votes[sig_dir] += 1
+
+    total = votes["bull"] + votes["bear"]
+    if total == 0:
+        alignment = "unknown"
+    elif votes["bull"] / total >= 0.70:
+        alignment = "aligned_up"
+    elif votes["bear"] / total >= 0.70:
+        alignment = "aligned_down"
+    else:
+        alignment = "mixed"
+
+    return {"alignment": alignment, "timeframes": results, "votes": votes}
+
+
 def fetch_derivatives(ticker="BTC") -> dict:
     import httpx
     sym = _kraken_futures_sym(ticker)
@@ -319,13 +388,13 @@ def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None) -> str:
     if bb_w < 3.0:
         d = "UP" if bull > bear else "DOWN"
         return f"DIRECTION: BREAKOUT IMMINENT — BB compressed to {bb_w}%. {bull}/{total} bullish. Resolving {d}."
-    elif bull >= 7:
+    elif bull >= 9:
         return f"DIRECTION: STRONG UP — {bull}/{total} signals bullish. High-conviction long setup."
-    elif bull >= 5:
+    elif bull >= 7:
         return f"DIRECTION: UP — {bull}/{total} signals bullish. {ticker} likely continues higher."
-    elif bear >= 7:
+    elif bear >= 9:
         return f"DIRECTION: STRONG DOWN — {bear}/{total} signals bearish. High-conviction short setup."
-    elif bear >= 5:
+    elif bear >= 7:
         return f"DIRECTION: DOWN — {bear}/{total} signals bearish. {ticker} under pressure."
     elif bull == bear:
         return f"DIRECTION: RANGE — {bull}/{total} signals each way. {ticker} range-bound near {p}."
@@ -795,10 +864,187 @@ def handle_congressional(req: dict) -> dict:
         }
 
 
+# ── Agent Report Handlers ─────────────────────────────────────────────────────
+
+def handle_signal_pack(req: dict) -> dict:
+    """Oracle call record + open signals — structured for agent consumption."""
+    import json
+    from pathlib import Path
+    base = Path(__file__).parent
+
+    calls = []
+    try:
+        calls = json.loads((base / "data" / "octo_calls.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    resolved  = [c for c in calls if c.get("resolved")]
+    open_calls = [c for c in calls if not c.get("resolved")]
+    wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
+    losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
+    rate   = round(wins / (wins + losses) * 100) if (wins + losses) > 0 else None
+
+    # Latest closed call
+    last = resolved[-1] if resolved else {}
+
+    return {
+        "type":        "signal_pack",
+        "wins":        wins,
+        "losses":      losses,
+        "win_rate":    rate,
+        "total":       len(calls),
+        "open_calls":  open_calls,
+        "last_call":   last,
+        "methodology": "5+ of 11 signals required. Funding rate, OI, L/S ratio, technicals, taker flow.",
+        "footer":      FOOTER,
+    }
+
+
+def handle_polymarket_alpha(req: dict) -> dict:
+    """OctoBoto open positions and track record."""
+    import json
+    from pathlib import Path
+    base = Path(__file__).parent
+
+    data = {}
+    try:
+        data = json.loads((base / "octo_boto_trades.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    positions = data.get("positions", [])
+    closed    = data.get("closed", [])
+    balance   = data.get("balance", 500.0)
+    starting  = data.get("starting_balance", 500.0)
+    wins   = [t for t in closed if t.get("won")]
+    losses = [t for t in closed if not t.get("won")]
+    rate   = round(len(wins) / len(closed) * 100, 1) if closed else None
+
+    return {
+        "type":        "polymarket_alpha",
+        "balance":     round(balance, 2),
+        "pnl":         round(balance - starting, 2),
+        "wins":        len(wins),
+        "losses":      len(losses),
+        "win_rate":    rate,
+        "closed_count": len(closed),
+        "positions":   positions,
+        "methodology": "Kelly sizing. EV > 7%. AI probability vs Polymarket price divergence.",
+        "footer":      FOOTER,
+    }
+
+
+def handle_conviction_score(req: dict) -> dict:
+    """Per-asset bull/bear conviction score from Oracle call history."""
+    import json
+    from pathlib import Path
+    base = Path(__file__).parent
+
+    calls = []
+    try:
+        calls = json.loads((base / "data" / "octo_calls.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    asset_data: dict = {}
+    for c in calls:
+        asset = c.get("asset", "").upper()
+        if not asset:
+            continue
+        if asset not in asset_data:
+            asset_data[asset] = {"wins": 0, "losses": 0, "open_direction": None, "open_call": None}
+        if not c.get("resolved"):
+            asset_data[asset]["open_direction"] = c.get("direction", "")
+            asset_data[asset]["open_call"] = c
+        elif c.get("outcome") == "WIN":
+            asset_data[asset]["wins"] += 1
+        elif c.get("outcome") == "LOSS":
+            asset_data[asset]["losses"] += 1
+
+    scores = {}
+    for asset, d in asset_data.items():
+        total = d["wins"] + d["losses"]
+        base_score = round(d["wins"] / total * 100) if total > 0 else 50
+        if d["open_direction"] == "UP":
+            base_score = min(100, base_score + 10)
+        elif d["open_direction"] == "DOWN":
+            base_score = max(0, base_score - 10)
+        scores[asset] = {
+            "score":          base_score,
+            "bias":           "BULLISH" if base_score > 60 else ("BEARISH" if base_score < 40 else "NEUTRAL"),
+            "open_direction": d["open_direction"],
+            "record":         f"{d['wins']}W / {d['losses']}L",
+            "open_call":      d["open_call"],
+        }
+
+    return {
+        "type":        "conviction_score",
+        "scores":      scores,
+        "scale":       "0 = max bearish · 50 = neutral · 100 = max bullish",
+        "methodology": "Oracle call win rate + open signal direction bias.",
+        "footer":      FOOTER,
+    }
+
+
+# ── Ask handler — routes agent questions to /v2/ask ──────────────────────────
+
+def handle_ask(req: dict) -> dict:
+    """
+    Answer a free-form market question via /v2/ask.
+    Expects req["question"] or req["q"] — falls back to req["ticker"] context.
+    """
+    import httpx
+
+    question = (
+        req.get("question") or
+        req.get("q") or
+        req.get("query") or
+        f"What is your current read on {req.get('ticker', 'BTC')}?"
+    )
+
+    try:
+        r = httpx.post(
+            "https://api.octodamus.com/v2/ask",
+            params={"q": question},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            return {
+                "type":     "ask",
+                "question": question,
+                "answer":   body.get("answer", ""),
+                "suggested_endpoints": body.get("suggested_endpoints", []),
+                "footer":   FOOTER,
+            }
+        else:
+            return {
+                "type":   "ask",
+                "question": question,
+                "error":  f"Ask endpoint returned {r.status_code}",
+                "footer": FOOTER,
+            }
+    except Exception as e:
+        return {
+            "type":   "ask",
+            "question": question,
+            "error":  str(e),
+            "footer": FOOTER,
+        }
+
+
 # ── Route by type string ──────────────────────────────────────────────────────
 
 def get_handler(report_type: str):
     t = str(report_type or "").lower().replace("-", "_").replace(" ", "_")
+    if any(k in t for k in ["ask", "question", "query"]):
+        return handle_ask
+    if any(k in t for k in ["signal_pack", "signal_report"]):
+        return handle_signal_pack
+    if any(k in t for k in ["polymarket", "alpha", "prediction_feed"]):
+        return handle_polymarket_alpha
+    if any(k in t for k in ["conviction", "conviction_score"]):
+        return handle_conviction_score
     if any(k in t for k in ["congressional", "congress", "stock_trade", "stock_alert"]):
         return handle_congressional
     if any(k in t for k in ["fear_greed", "sentiment", "fear"]):
@@ -1085,6 +1331,25 @@ def render_text(data: dict) -> str:
 
     if err:
         return f"OCTODAMUS REPORT\nNote: {err}\n\n{FOOTER}"
+
+    if t == "ask":
+        q   = data.get("question", "")
+        ans = data.get("answer", "")
+        eps = data.get("suggested_endpoints", [])
+        L   = [
+            "OCTODAMUS — MARKET INTELLIGENCE ANSWER",
+            "─" * 44,
+            "",
+            f"Q: {q}",
+            "",
+            ans,
+        ]
+        if eps:
+            L += ["", "── AUTOMATE THIS ────────────────────────────"]
+            for ep in eps[:3]:
+                L.append(f"  {ep.get('endpoint','')} — {ep.get('description','')}")
+        L += ["", "─" * 44, FOOTER]
+        return "\n".join(L)
 
     if t == "market_signal":
         ta     = data.get("ta") or {}

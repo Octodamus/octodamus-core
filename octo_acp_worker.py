@@ -172,10 +172,13 @@ def _handle_task(task, memo_to_sign=None):
                 log.warning(f"Job #{job_id} rejected — empty requirements")
                 return
 
-            if ticker and not ticker or not str(ticker).strip() or ticker not in VALID_TICKERS:
+            # Determine type early so we can skip ticker validation for ask jobs
+            early_type = _get_report_type(task, requirements)
+            if early_type != "ask" and (not str(ticker).strip() or ticker not in VALID_TICKERS):
                 task.reject(
                     f"Unsupported ticker: {ticker}. "
-                    f"Supported: BTC, ETH, SOL, NVDA, TSLA, AAPL, MSFT, AMZN, META, GOOGL"
+                    f"Supported: BTC, ETH, SOL, NVDA, TSLA, AAPL, MSFT, AMZN, META, GOOGL. "
+                    f"To ask a market question, include 'question' in your requirements."
                 )
                 log.warning(f"Job #{job_id} rejected — unsupported ticker {ticker}")
                 return
@@ -184,6 +187,22 @@ def _handle_task(task, memo_to_sign=None):
             report_type = _get_report_type(task, requirements)
             JOB_CACHE[str(job_id)] = {"report_type": report_type, "ticker": ticker}
             log.info(f"Job #{job_id} cached — type={report_type} ticker={ticker}")
+
+            # Ask jobs don't need a ticker — accept immediately
+            if report_type == "ask":
+                question = (
+                    requirements.get("question") or
+                    requirements.get("q") or
+                    requirements.get("query") or
+                    f"What is your current read on {ticker}?"
+                )
+                task.accept(
+                    f"Octodamus ready to answer: \"{question[:80]}{'...' if len(question) > 80 else ''}\". "
+                    f"OctoData API: api.octodamus.com — /v2/ask for live market Q&A."
+                )
+                log.info(f"Job #{job_id} accepted (ask) — question: {question[:60]}")
+                task.create_requirement("Payment required to receive oracle answer.")
+                return
 
             task.accept(
                 f"Octodamus oracle ready — {report_type} report for {ticker}. "
