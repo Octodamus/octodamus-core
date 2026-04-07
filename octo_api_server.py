@@ -726,7 +726,7 @@ print(answer[<span class="code-str">"suggested_endpoints"</span>]) <span class="
       <div class="t-card pro">
         <div class="t-badge pro-badge">Premium</div>
         <div class="t-name">Premium</div>
-        <div class="t-price">$19/mo Stripe &nbsp;·&nbsp; $29 USDC annual (agents: no browser needed)</div>
+        <div class="t-price">$19 / month</div>
         <ul class="t-features">
           <li class="green">All open signals + confidence, entry, target, reasoning chain</li>
           <li class="green">BTC, ETH, SOL, NVDA, TSLA, AAPL — all assets</li>
@@ -737,10 +737,7 @@ print(answer[<span class="code-str">"suggested_endpoints"</span>]) <span class="
           <li class="green">10,000 req/day · 200/min</li>
           <li class="green">/v2/ask — 200 questions/day</li>
         </ul>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <a class="t-cta pro-cta" style="flex:1" href="https://octodamus.com/upgrade.html">Upgrade $19/mo →</a>
-          <a class="t-cta pro-cta" style="flex:1;font-size:0.6rem;" href="#" onclick="alert('POST /v1/agent-checkout?product=premium_trial&agent_wallet=0xYOUR_WALLET')">$5 USDC 7-day Trial →</a>
-        </div>
+        <a class="t-cta pro-cta" href="https://octodamus.com/upgrade.html">Upgrade to Premium →</a>
       </div>
     </div>
   </div>
