@@ -664,13 +664,13 @@ market = httpx.get(
     headers={<span class="code-str">"X-OctoData-Key"</span>: OCTO_KEY}
 ).json()
 
-system_prompt = f<span class="code-str">"""You are a trading assistant with live market context.
+system_prompt = f<span class="code-str">\"\"\"You are a trading assistant with live market context.
 
 {market['brief']}
 
 Use this to ground your analysis. Do not speculate on prices you cannot verify.
 Source: OctoData API (api.octodamus.com)
-"""</span></div>
+\"\"\"</span></div>
         </div>
       </div>
 
