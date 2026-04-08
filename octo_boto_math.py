@@ -1,12 +1,12 @@
-"""
-octo_boto_math.py — OctoBoto Math Engine v2
+﻿"""
+octo_boto_math.py â€" OctoBoto Math Engine v2
 Fixes:
-  - Added composite_score() — ranks by EV × volume × liquidity, not just EV
-  - Added liquidity_adjusted_ev() — accounts for price impact of large positions
-  - Added days_to_resolution factor — closer deadline = harder to move price = better signal
+  - Added composite_score() â€" ranks by EV Ã— volume Ã— liquidity, not just EV
+  - Added liquidity_adjusted_ev() â€" accounts for price impact of large positions
+  - Added days_to_resolution factor â€" closer deadline = harder to move price = better signal
   - is_valid_market() now checks end_date and volume activity
-  - MAX_POSITION_PCT lowered to 4% ($20 on $500 bankroll — right size for paper)
-  - Tightened price band to 3%–97% (was 2%–98%)
+  - MAX_POSITION_PCT lowered to 4% ($20 on $500 bankroll â€" right size for paper)
+  - Tightened price band to 3%â€"97% (was 2%â€"98%)
 """
 
 import math
@@ -15,18 +15,50 @@ from typing import Optional
 
 import numpy as np
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# â"€â"€â"€ Constants â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 MIN_EV_THRESHOLD   = 0.12   # 6% edge required (raised from 5%)
 MIN_LIQUIDITY      = 10_000  # $3k min liquidity (lowered to find more markets)
 MIN_VOLUME_24H     = 2_000    # $500+ daily volume (screens out dead markets)
-KELLY_FRACTION     = 0.25   # Quarter-Kelly — proven safer for volatile markets
+KELLY_FRACTION     = 0.25   # Quarter-Kelly â€" proven safer for volatile markets
 MAX_POSITION_PCT   = 0.06   # 4% of bankroll max = $20 on $500 starting
 MIN_MARKET_PRICE   = 0.03   # Tighter band
 MAX_MARKET_PRICE   = 0.97
 MAX_POSITION_DAYS  = 90     # Don't enter markets resolving > 90 days out
 
 
-# ─── EV Functions ─────────────────────────────────────────────────────────────
+# â"€â"€â"€ EV Functions â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+# Longshot Bias Calibration
+# Source: Becker 2026, 72.1M trades / $18.26B volume on Kalshi/Polymarket.
+# Cheap YES contracts are systematically overpriced. Correct model probability
+# downward before computing EV. Correction only applied below 15c.
+
+_LONGSHOT_TABLE = [
+    (0.01, 0.43),   # 1c market: 0.43% actual win rate  (correction 0.43x)
+    (0.02, 0.60),
+    (0.03, 0.72),
+    (0.05, 0.836),  # 5c market: 4.18% actual win rate  (correction 0.836x)
+    (0.08, 0.90),
+    (0.10, 0.92),
+    (0.15, 0.97),   # above 15c bias is negligible
+]
+
+def longshot_calibrate(true_p: float, market_price: float) -> float:
+    """
+    Apply longshot bias correction to model probability when market price < 15c.
+    Interpolates correction factor from empirical table.
+    Returns corrected probability (always <= true_p for longshots).
+    """
+    if market_price >= 0.15:
+        return true_p
+    for i in range(len(_LONGSHOT_TABLE) - 1):
+        p0, c0 = _LONGSHOT_TABLE[i]
+        p1, c1 = _LONGSHOT_TABLE[i + 1]
+        if p0 <= market_price <= p1:
+            t = (market_price - p0) / (p1 - p0)
+            return round(true_p * (c0 + t * (c1 - c0)), 4)
+    return round(true_p * _LONGSHOT_TABLE[0][1], 4)
+
 
 def ev_yes(market_price: float, true_p: float) -> float:
     """
@@ -57,7 +89,7 @@ def liquidity_adjusted_ev(raw_ev: float, size: float, liquidity: float) -> float
     return round(raw_ev - impact, 4)
 
 
-# ─── Kelly Criterion ──────────────────────────────────────────────────────────
+# â"€â"€â"€ Kelly Criterion â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def kelly(market_price: float, true_p: float, side: str = "YES") -> float:
     """
@@ -95,50 +127,106 @@ def position_size(bankroll: float, kelly_frac: float) -> float:
     return round(max(size, 2.0), 2)
 
 
-# ─── Best Trade ───────────────────────────────────────────────────────────────
+# â"€â"€â"€ Best Trade â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def best_trade(market_price: float, true_p: float) -> dict:
     """
     Return the best tradeable side and key metrics.
     Returns NONE if no side clears MIN_EV_THRESHOLD.
+
+    Applies two empirical biases from Becker 2026 (72.1M trades):
+    1. Longshot calibration: corrects YES probability downward when market < 15c
+    2. NO preference: below 30c, NO outperforms YES at 69/99 price levels —
+       require YES to beat NO by >2pp before taking YES side in this range.
     """
     if not (MIN_MARKET_PRICE < market_price < MAX_MARKET_PRICE):
         return {"side": "NONE", "ev": 0.0, "kelly": 0.0, "price": 0.0}
 
-    ey = ev_yes(market_price, true_p)
-    en = ev_no(market_price, true_p)
+    # Apply longshot bias correction to model probability
+    calibrated_p = longshot_calibrate(true_p, market_price)
 
-    if ey >= en and ey >= MIN_EV_THRESHOLD:
+    ey = ev_yes(market_price, calibrated_p)
+    en = ev_no(market_price, calibrated_p)
+
+    # Below 30c: Optimism Tax means takers systematically overpay for YES.
+    # Require YES to clearly beat NO before choosing it over NO.
+    yes_bias_penalty = 0.02 if market_price < 0.30 else 0.0
+
+    if ey >= (en + yes_bias_penalty) and ey >= MIN_EV_THRESHOLD:
         return {
             "side":  "YES",
             "ev":    ey,
-            "kelly": kelly(market_price, true_p, "YES"),
+            "kelly": kelly(market_price, calibrated_p, "YES"),
             "price": market_price
         }
     elif en >= MIN_EV_THRESHOLD:
         return {
             "side":  "NO",
             "ev":    en,
-            "kelly": kelly(market_price, true_p, "NO"),
+            "kelly": kelly(market_price, calibrated_p, "NO"),
             "price": round(1.0 - market_price, 4)
         }
     else:
         return {"side": "NONE", "ev": max(ey, en), "kelly": 0.0, "price": 0.0}
 
 
-# ─── Composite Opportunity Score ──────────────────────────────────────────────
+# â"€â"€â"€ Composite Opportunity Score â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+def resolution_risk_score(question: str, description: str = "") -> float:
+    """
+    Score market resolution ambiguity. Returns 0.0 (clear) to 1.0 (very risky).
+
+    High-risk signals: vague modifiers, discretionary resolvers, multi-condition criteria.
+    Low-risk signals: specific source cited, binary binary date-based, official stat.
+    """
+    text = (question + " " + description).lower()
+
+    risk = 0.0
+
+    # Vague quantifiers — hard to objectively resolve
+    vague_terms = [
+        "substantially", "significantly", "roughly", "approximately", "around",
+        "most", "majority", "many", "few", "largely", "generally", "primarily",
+        "widespread", "major", "notable", "considerable",
+    ]
+    risk += sum(0.08 for t in vague_terms if t in text)
+
+    # Multi-condition AND/OR logic — resolution gets complicated
+    if " and " in text and " or " in text:
+        risk += 0.15
+    if text.count(" and ") >= 3:
+        risk += 0.10
+
+    # Discretionary resolver signals
+    discretionary = ["at the discretion", "as determined by", "in the opinion",
+                     "polymarket reserves", "admin", "moderator"]
+    risk += sum(0.20 for t in discretionary if t in text)
+
+    # Good signals: specific sources (lower risk)
+    clear_sources = ["according to", "as reported by", "per the official",
+                     "bureau of labor", "federal reserve", "cdc", "fda", "sec filing",
+                     "election results", "official count", "final score"]
+    risk -= sum(0.10 for t in clear_sources if t in text)
+
+    return round(max(0.0, min(1.0, risk)), 2)
+
 
 def composite_score(ev: float, liquidity: float, volume24h: float,
-                    confidence: str, days_to_close: Optional[int]) -> float:
+                    confidence: str, days_to_close: Optional[int],
+                    market_age_hours: Optional[float] = None,
+                    resolution_risk: float = 0.0) -> float:
     """
     Rank opportunities by more than just EV.
-    Score = EV × log(liquidity) × volume_bonus × conf_multiplier × time_factor
+    Score = EV x log(liquidity) x volume_bonus x conf_multiplier x time_factor
+            x freshness_bonus x resolution_risk_penalty
 
     Rationale:
     - High liquidity = less price impact, easier execution
     - High 24h volume = active market, price is live/accurate
     - Confidence bonus: AI high > medium > low
-    - Time factor: markets resolving in 1–14 days > further out
+    - Time factor: markets resolving in 1-14 days > further out
+    - Freshness bonus: new markets (<24h) often have stale creator prices
+    - Resolution risk penalty: ambiguous criteria -> discount score
     """
     if ev <= 0:
         return 0.0
@@ -152,7 +240,7 @@ def composite_score(ev: float, liquidity: float, volume24h: float,
     # Confidence multiplier
     conf_mult = {"high": 1.3, "medium": 1.0, "low": 0.6}.get(confidence, 0.8)
 
-    # Time factor: sweet spot is 1–14 days to resolution
+    # Time factor: sweet spot is 1-14 days to resolution
     time_factor = 1.0
     if days_to_close is not None:
         if 1 <= days_to_close <= 7:
@@ -164,11 +252,54 @@ def composite_score(ev: float, liquidity: float, volume24h: float,
         elif days_to_close > 60:
             time_factor = 0.7   # Too far out, uncertainty compounds
 
-    score = ev * liq_factor * vol_factor * conf_mult * time_factor
+    # Freshness bonus: new markets not yet corrected by arb traders
+    freshness = 1.0
+    if market_age_hours is not None:
+        if market_age_hours < 6:
+            freshness = 1.35   # Very fresh — creator price, almost no arb
+        elif market_age_hours < 24:
+            freshness = 1.20   # Early price discovery phase
+        elif market_age_hours < 72:
+            freshness = 1.05   # Recent, partially corrected
+
+    # Resolution risk penalty: max 50% reduction at risk=1.0
+    risk_penalty = 1.0 - (resolution_risk * 0.5)
+
+    score = ev * liq_factor * vol_factor * conf_mult * time_factor * freshness * risk_penalty
     return round(score, 4)
 
 
-# ─── Market Validation ────────────────────────────────────────────────────────
+# â"€â"€â"€ Market Validation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+SPORTS_KEYWORDS = [
+    # Tennis
+    "vs.", " vs ", "open:", "open —", "atp", "wta", "wimbledon", "roland garros",
+    "us open tennis", "australian open", "french open", "grand slam",
+    # Team sports
+    "yankees", "dodgers", "cubs", "mets", "red sox", "astros", "braves",
+    "royals", "twins", "cardinals", "giants mlb", "padres",
+    "lakers", "celtics", "warriors", "bucks", "heat", "nets", "knicks",
+    "chiefs", "eagles", "cowboys", "patriots", "49ers", "ravens",
+    "manchester", "arsenal", "chelsea", "liverpool", "real madrid", "barcelona",
+    # Generic sports signals
+    "win the match", "win the game", "win the series", "win the set",
+    "score more", "championship game", "playoff", "super bowl",
+    "world series", "nba finals", "stanley cup",
+    # Sport types
+    " nfl ", " nba ", " mlb ", " nhl ", " mls ", " ufc ",
+    "formula 1", "f1 race", "grand prix",
+    # Cricket
+    "indian premier league", " ipl ", "ipl:", "super kings", "punjab kings",
+    "rajasthan royals", "mumbai indians", "kolkata knight", "sunrisers",
+    "delhi capitals", "lucknow super", "gujarat titans", "royal challengers",
+    "cricket", " odi ", " t20 ", "test match", "innings",
+    # More tennis tournaments
+    "open:", "masters 1000", "copa ", "bucharest", "colsanitas",
+    "challenger", "davis cup", "billie jean", "fed cup",
+    # Horse racing / other
+    "horse racing", "kentucky derby", "preakness", "belmont",
+    "golf open", "pga tour", "masters golf", "ryder cup",
+]
 
 def is_valid_market(market: dict) -> bool:
     """
@@ -182,8 +313,13 @@ def is_valid_market(market: dict) -> bool:
     if not (MIN_MARKET_PRICE < float(price) < MAX_MARKET_PRICE):
         return False
 
-    # Must be binary YES/NO structure
-    if not market.get("is_binary", False):
+    # is_binary check disabled — Polymarket API does not set this flag
+
+
+    # Sports filter -- high variance, no Octodamus data edge, proven losing category
+    question_lower = (market.get("question", "") or "").lower()
+    description_lower = (market.get("description", "") or "").lower()
+    if any(kw in question_lower or kw in description_lower for kw in SPORTS_KEYWORDS):
         return False
 
     # Liquidity gate
@@ -191,16 +327,16 @@ def is_valid_market(market: dict) -> bool:
     if liq < MIN_LIQUIDITY:
         return False
 
-    # Activity gate — dead markets have no price discovery
+    # Activity gate â€" dead markets have no price discovery
     vol24 = float(market.get("volume24h", 0) or 0)
     if vol24 < MIN_VOLUME_24H:
         return False
 
-    # Already resolved — skip
+    # Already resolved â€" skip
     if market.get("resolved"):
         return False
 
-    # Days-to-close gate — don't enter markets expiring in < 1 day or > 90 days
+    # Days-to-close gate â€" don't enter markets expiring in < 1 day or > 90 days
     dtc = market.get("days_to_close")
     if dtc is not None:
         if dtc < 1 or dtc > MAX_POSITION_DAYS:
@@ -223,10 +359,10 @@ def days_until(end_date: str) -> Optional[int]:
         return None
 
 
-# ─── Portfolio Stats ──────────────────────────────────────────────────────────
+# â"€â"€â"€ Portfolio Stats â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def compute_sharpe(pnl_pcts: list) -> float:
-    """Sharpe from per-trade % returns. Not annualised — relative ranking only."""
+    """Sharpe from per-trade % returns. Not annualised â€" relative ranking only."""
     if len(pnl_pcts) < 3:
         return 0.0
     arr = np.array(pnl_pcts, dtype=float)

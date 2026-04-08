@@ -21,10 +21,177 @@ from typing import Optional
 
 import anthropic
 
-from octo_boto_math import best_trade, composite_score, is_valid_market
+from octo_boto_math import best_trade, composite_score, is_valid_market, resolution_risk_score
+
+try:
+    from octo_boto_brain import get_brain_context
+except ImportError:
+    def get_brain_context(**k): return ""
+
+try:
+    from octo_boto_mcp import orderbook_context_str
+    _MCP_AVAILABLE = True
+except ImportError:
+    _MCP_AVAILABLE = False
+    def orderbook_context_str(market): return ""
+
+try:
+    from octo_boto_consensus import get_consensus_context
+    _CONSENSUS_AVAILABLE = True
+except ImportError:
+    _CONSENSUS_AVAILABLE = False
+    def get_consensus_context(question): return ""
+
+try:
+    from octo_boto_calibration import get_calibration_context
+    _CALIB_AVAILABLE = True
+except ImportError:
+    _CALIB_AVAILABLE = False
+    def get_calibration_context(): return ""
+
+try:
+    from octo_tv_brief import get_tv_brief as _get_tv_brief
+    _TV_AVAILABLE = True
+except ImportError:
+    _TV_AVAILABLE = False
+    def _get_tv_brief(): return ""
+
+# Cache TV brief for 15 min — expensive subprocess call, share across all estimates
+_tv_brief_cache: tuple = ("", 0.0)
+_tv_brief_lock = threading.Lock()
+
+def _cached_tv_brief() -> str:
+    global _tv_brief_cache
+    with _tv_brief_lock:
+        text, ts = _tv_brief_cache
+        if text and (time.time() - ts) < 900:   # 15 min TTL
+            return text
+        try:
+            text = _get_tv_brief()
+            _tv_brief_cache = (text, time.time())
+        except Exception:
+            text = ""
+        return text
+
+
+# ─── Octodamus Signal Feed ─────────────────────────────────────────────────────
+
+def _get_octodamus_signal_context(question: str) -> str:
+    """
+    Pull live directional signal from the Octodamus 11-signal engine.
+    Only runs for crypto/macro questions where Octodamus has data edge.
+    Injects as directional prior into the OctoBoto estimate prompt.
+    """
+    q = question.lower()
+
+    # Determine which asset to pull signal for
+    asset = None
+    if any(k in q for k in ["bitcoin", "btc"]):
+        asset = "BTC"
+    elif any(k in q for k in ["ethereum", "eth"]):
+        asset = "ETH"
+    elif any(k in q for k in ["solana", "sol"]):
+        asset = "SOL"
+    elif any(k in q for k in ["nasdaq", "qqq", "s&p", "spy", "stock market", "equities"]):
+        asset = "MACRO"
+
+    if asset is None:
+        return ""
+
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from octo_report_handlers import (
+            fetch_technicals, fetch_derivatives, directional_call,
+            _fetch_coinglass_compact,
+        )
+        import httpx
+
+        if asset == "MACRO":
+            # For macro, pull BTC as primary market barometer
+            pull_asset = "BTC"
+        else:
+            pull_asset = asset
+
+        ta    = fetch_technicals(pull_asset)
+        deriv = fetch_derivatives(pull_asset)
+        cg    = _fetch_coinglass_compact(pull_asset)
+
+        price   = 0.0
+        chg_24h = 0.0
+        cg_prices = cg.get("prices", {})
+        if cg_prices.get(pull_asset):
+            price   = cg_prices[pull_asset]["price"]
+            chg_24h = cg_prices[pull_asset].get("chg_24h", 0)
+        else:
+            try:
+                coin_id = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}.get(pull_asset, "bitcoin")
+                r = httpx.get(
+                    "https://api.coingecko.com/api/v3/simple/price",
+                    params={"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"},
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    d = r.json().get(coin_id, {})
+                    price   = float(d.get("usd", 0) or 0)
+                    chg_24h = float(d.get("usd_24h_change", 0) or 0)
+            except Exception:
+                pass
+
+        if not price:
+            return ""
+
+        fng = 50
+        try:
+            r = httpx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+            if r.status_code == 200:
+                fng = int(r.json()["data"][0]["value"])
+        except Exception:
+            pass
+
+        call_str = directional_call(pull_asset, price, chg_24h, ta, deriv, fng, cg)
+
+        # Parse direction from call string
+        if "STRONG UP" in call_str:
+            direction = "STRONG UP"
+            weight = "Weight significantly toward YES on bullish price milestones."
+        elif "DIRECTION: UP" in call_str:
+            direction = "UP"
+            weight = "Lean toward YES on bullish price milestones."
+        elif "STRONG DOWN" in call_str:
+            direction = "STRONG DOWN"
+            weight = "Weight significantly toward NO on bullish price milestones / YES on bearish ones."
+        elif "DIRECTION: DOWN" in call_str:
+            direction = "DOWN"
+            weight = "Lean toward NO on bullish price milestones."
+        else:
+            direction = "NEUTRAL"
+            weight = "No strong directional prior from Octodamus signals."
+
+        # TradingView live chart data (4H technicals)
+        tv_section = ""
+        if _TV_AVAILABLE:
+            tv_brief = _cached_tv_brief()
+            if tv_brief:
+                tv_section = f"\n\nTRADINGVIEW CHART DATA (4H live):\n{tv_brief}"
+
+        return (
+            f"\n\nOCTODAMUS SIGNAL ENGINE ({pull_asset} @ ${price:,.0f}):\n"
+            f"  11-signal consensus: {direction}\n"
+            f"  24h change: {chg_24h:+.1f}%\n"
+            f"  Fear & Greed: {fng}/100\n"
+            f"  Trading instruction: {weight}\n"
+            f"  Raw signal: {call_str[:120]}"
+            f"{tv_section}\n"
+            f"NOTE: Octodamus signal is your PRIMARY directional prior. "
+            f"Only override it with very strong contrary evidence."
+        )
+
+    except Exception:
+        return ""
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-MODEL      = "claude-sonnet-4-20250514"
+MODEL      = "claude-sonnet-4-6"
 MAX_TOKENS = 800    # Raised — web search responses can be verbose
 WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 
@@ -66,7 +233,20 @@ Compounding: Small edges compound massively — 55% win, 1% risk, 2R turns
 $10k into $81,597 over 500 trades. Protect the bankroll above all else.
 
 Sizing rule: Max 4% per trade (quarter-Kelly). The edge only works with
-enough capital to survive drawdowns and reach expectancy."""
+enough capital to survive drawdowns and reach expectancy.
+
+LONGSHOT BIAS (Becker 2026, 72.1M trades):
+Cheap YES contracts are systematically overpriced by the crowd.
+- A contract priced at 1c wins only 0.43% of the time (not 1%)
+- A contract priced at 5c wins only 4.18% of the time (not 5%)
+When estimating probability for a market priced below 15c, shade your
+estimate DOWN from the naive base rate — the crowd overpays for cheap YES.
+
+NO BIAS BELOW 30c (Becker 2026):
+NO outperforms YES at 69 of 99 price levels. Below 30c, takers
+disproportionately buy YES (rooting for their team/bags/candidate).
+When a market is priced below 30c and both sides appear close in edge,
+lean toward NO — the structural Optimism Tax makes NO the better bet."""
 
 
 
@@ -115,14 +295,15 @@ def _get_crypto_context(question: str) -> str:
 
 
 def estimate(
-    market_id:    str,
-    question:     str,
-    description:  str,
-    market_price: float,
-    api_key:      str,
-    end_date:     str = "",
-    use_search:   bool = True,
-    min_ev:       float = 0.06
+    market_id:        str,
+    question:         str,
+    description:      str,
+    market_price:     float,
+    api_key:          str,
+    end_date:         str = "",
+    use_search:       bool = True,
+    min_ev:           float = 0.06,
+    orderbook_ctx_str: str = "",
 ) -> dict:
     """
     Estimate true probability for a Polymarket binary market.
@@ -149,12 +330,16 @@ def estimate(
     # Fetch Coinglass futures data for crypto markets
     futures_context = _get_crypto_context(question)
     futures_section = f"\n\nFUTURES INTELLIGENCE (use this data to inform your estimate):\n{futures_context}" if futures_context else ""
+    # Fetch Octodamus 11-signal directional context (primary prior for crypto/macro)
+    octo_signal = _get_octodamus_signal_context(question)
+    ob_section       = orderbook_ctx_str if orderbook_ctx_str else ""
+    consensus_section = get_consensus_context(question)
 
     prompt = f"""PREDICTION MARKET ANALYSIS
 
 Question: {question}
 Additional context: {description[:300] if description else "None provided"}{date_hint}
-Current crowd price (implied YES probability): {market_price:.1%}{futures_section}
+Current crowd price (implied YES probability): {market_price:.1%}{futures_section}{octo_signal}{ob_section}{consensus_section}
 
 TASK: Estimate the TRUE probability this resolves YES.
 
@@ -182,7 +367,7 @@ Confidence guide:
         kwargs = {
             "model":      MODEL,
             "max_tokens": MAX_TOKENS,
-            "system":     SYSTEM_PROMPT,
+            "system":     SYSTEM_PROMPT + get_brain_context() + get_calibration_context(),
             "messages":   [{"role": "user", "content": prompt}],
         }
         if use_search:
@@ -281,6 +466,23 @@ def batch_estimate(
 
     def process(m: dict) -> Optional[dict]:
         price = m["yes_price"]
+
+        # Resolution risk — skip markets with very ambiguous criteria
+        risk = resolution_risk_score(m.get("question", ""), m.get("description", ""))
+        if risk >= 0.6:
+            return None
+
+        # Market age in hours (for freshness scoring)
+        age_hours = None
+        created_at = m.get("created_at") or m.get("createdAt")
+        if created_at:
+            try:
+                from datetime import datetime, timezone
+                ct = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                age_hours = (datetime.now(timezone.utc) - ct).total_seconds() / 3600
+            except Exception:
+                pass
+
         ai    = estimate(
             market_id=m["id"],
             question=m["question"],
@@ -289,7 +491,8 @@ def batch_estimate(
             api_key=api_key,
             end_date=m.get("end_date", ""),
             use_search=True,
-            min_ev=min_ev
+            min_ev=min_ev,
+            orderbook_ctx_str=orderbook_context_str(m),
         )
         trade = best_trade(price, ai["probability"])
         if trade["side"] == "NONE":
@@ -300,10 +503,13 @@ def batch_estimate(
             liquidity=m.get("liquidity", 0),
             volume24h=m.get("volume24h", 0),
             confidence=ai.get("confidence", "low"),
-            days_to_close=m.get("days_to_close")
+            days_to_close=m.get("days_to_close"),
+            market_age_hours=age_hours,
+            resolution_risk=risk,
         )
 
-        return {"market": m, "ai": ai, "trade": trade, "score": score}
+        return {"market": m, "ai": ai, "trade": trade, "score": score,
+                "resolution_risk": risk, "market_age_hours": age_hours}
 
     with ThreadPoolExecutor(max_workers=min(concurrency, len(candidates))) as ex:
         futures = {ex.submit(process, m): m for m in candidates}
