@@ -842,6 +842,75 @@ def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+# ── ERC-8004 Agent Discovery ───────────────────────────────────────────────────
+
+_ERC8004_CARD = {
+    "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+    "name": "Octodamus Market Intelligence API",
+    "description": (
+        "Real-time market intelligence for autonomous AI agents: Oracle trading signals "
+        "(9/11 system consensus), Fear & Greed index, Polymarket prediction market edge plays, "
+        "crypto sentiment, and macro data. x402 native — agents pay $5 USDC on Base, "
+        "receive API key, no human required. 27 live data feeds. No synthetic data."
+    ),
+    "image": "https://octodamus.com/octo_logo.png",
+    "url":   "https://octodamus.com",
+    "services": [
+        {
+            "name":     "AgentSignal",
+            "endpoint": "https://api.octodamus.com/v2/agent-signal",
+            "version":  "2.0.0",
+            "protocol": "x402",
+            "description": "Single-call decision endpoint: action/confidence/signal/fear_greed/BTC/Polymarket edge. Poll every 15 min.",
+        },
+        {
+            "name":     "Web",
+            "endpoint": "https://api.octodamus.com",
+            "version":  "3.0.0",
+        },
+        {
+            "name":     "Docs",
+            "endpoint": "https://api.octodamus.com/docs",
+            "version":  "3.0.0",
+        },
+    ],
+    "payment": {
+        "x402":         True,
+        "network":      "base-mainnet",
+        "chain_id":     8453,
+        "asset":        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "pay_to":       "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "trial_usdc":   5,
+        "annual_usdc":  29,
+        "checkout":     "POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial&agent_wallet=0xYOUR",
+        "key_status":   "GET https://api.octodamus.com/v1/key/status",
+    },
+    "category":    ["market-intelligence", "crypto-signals", "prediction-markets", "macro-data"],
+    "x402Support": True,
+    "active":      True,
+    "supportedTrust": ["reputation"],
+}
+
+@app.get("/.well-known/agent-registration.json", tags=["ERC-8004"], include_in_schema=False)
+def erc8004_well_known():
+    """
+    ERC-8004 domain verification endpoint.
+    After on-chain registration, fill in agentId below to link this domain to the on-chain identity.
+    """
+    return {
+        "registrations": [
+            # Fill in agentId after registering at agentarena.site
+            # {"agentId": 12345, "agentRegistry": "eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"}
+        ],
+        "agent_card": _ERC8004_CARD,
+    }
+
+@app.get("/agent-registration.json", tags=["ERC-8004"], include_in_schema=False)
+def erc8004_root():
+    """ERC-8004 agent card — root fallback for registries that don't use .well-known."""
+    return _ERC8004_CARD
+
+
 # â"€â"€ ACP Resource endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 @app.get("/api/fear-greed", tags=["ACP Resources"])
