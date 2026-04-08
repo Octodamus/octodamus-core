@@ -44,6 +44,13 @@ try:
 except Exception as _e:
     print(f"[API] Bitwarden load skipped: {_e}")
 
+# Start renewal reminder scheduler (checks every 6h, emails at 30/7/1 days before expiry)
+try:
+    from octo_agent_pay import start_renewal_scheduler
+    start_renewal_scheduler()
+except Exception as _e:
+    print(f"[API] Renewal scheduler skipped: {_e}")
+
 import httpx
 
 from fastapi import FastAPI, HTTPException, Security, Depends, Query, Request

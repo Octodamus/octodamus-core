@@ -789,3 +789,143 @@ def get_payment_status(payment_id: str) -> dict:
             response["download_url"] = p["download_url"]
 
     return response
+
+
+# ─────────────────────────────────────────────
+# RENEWAL REMINDERS
+# ─────────────────────────────────────────────
+
+_RENEWAL_SENT_FILE = Path(__file__).parent / "data" / "renewal_reminders_sent.json"
+_RENEWAL_WINDOWS   = [30, 7, 1]   # days before expiry to send reminders
+
+
+def _load_renewal_sent() -> dict:
+    if _RENEWAL_SENT_FILE.exists():
+        try:
+            return json.loads(_RENEWAL_SENT_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_renewal_sent(data: dict) -> None:
+    _RENEWAL_SENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _RENEWAL_SENT_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(_RENEWAL_SENT_FILE)
+
+
+def _send_renewal_reminder(email: str, key: str, label: str, days_left: int) -> None:
+    """Send a renewal reminder email via Gmail SMTP."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    gmail_user = os.environ.get("GMAIL_USER", "")
+    gmail_pass = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not gmail_user or not gmail_pass:
+        print("[Renewal] Gmail credentials not set — skipping reminder")
+        return
+
+    if days_left <= 1:
+        urgency = "expires tomorrow"
+        color   = "#ff2d55"
+    elif days_left <= 7:
+        urgency = f"expires in {days_left} days"
+        color   = "#ffc800"
+    else:
+        urgency = f"expires in {days_left} days"
+        color   = "#00c8ff"
+
+    short_key = key[:16] + "..."
+    subject   = f"Your Octodamus API key {urgency}"
+    body_html = f"""
+<div style="background:#000810;color:#8ab8d4;font-family:'Courier New',monospace;padding:40px;max-width:580px;margin:0 auto;">
+  <div style="font-size:1.4rem;letter-spacing:0.2em;color:#00c8ff;margin-bottom:8px;">OCTODAMUS</div>
+  <div style="font-size:0.7rem;letter-spacing:0.2em;color:#3d6e8a;margin-bottom:32px;">DATA STREAMS · API ACCESS</div>
+  <p style="color:{color};font-size:1rem;margin-bottom:8px;font-weight:bold;">Your API key {urgency}.</p>
+  <p style="margin-bottom:8px;">Key: <span style="color:#00c8ff;">{short_key}</span></p>
+  <p style="margin-bottom:24px;color:#3d6e8a;">Label: {label}</p>
+  <p style="margin-bottom:20px;">Renew now for another 365 days of full Premium access — $29 USDC on Base.</p>
+  <a href="https://octodamus.com/buy.html" style="display:inline-block;background:#00c8ff;color:#000810;padding:14px 32px;font-weight:700;letter-spacing:0.1em;text-decoration:none;font-size:0.85rem;">RENEW NOW — $29 USDC →</a>
+  <p style="margin-top:32px;font-size:0.72rem;color:#3d6e8a;">Questions? X: @octodamusai</p>
+</div>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"Octodamus <{gmail_user}>"
+    msg["To"]      = email
+    msg.attach(MIMEText(body_html, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_pass)
+        server.sendmail(gmail_user, email, msg.as_string())
+
+    print(f"[Renewal] Reminder sent → {email} ({days_left}d left, key {short_key})")
+
+
+def check_renewal_reminders() -> None:
+    """
+    Scan all API keys for upcoming expiry. Send reminder emails at 30, 7, and 1 day windows.
+    Skips keys with no email, no expiry (admin/never-expire), or already-sent reminders.
+    """
+    keys_file = Path(__file__).parent / "data" / "api_keys.json"
+    if not keys_file.exists():
+        return
+
+    keys    = json.loads(keys_file.read_text())
+    sent    = _load_renewal_sent()
+    now     = datetime.utcnow()
+    changed = False
+
+    for key, meta in keys.items():
+        expires_str = meta.get("expires")
+        email       = meta.get("email", "").strip()
+        if not expires_str or not email:
+            continue
+        try:
+            expires   = datetime.fromisoformat(expires_str)
+            days_left = (expires - now).days
+        except Exception:
+            continue
+
+        if days_left < 0 or days_left > 35:
+            continue
+
+        for window in _RENEWAL_WINDOWS:
+            if days_left > window:
+                continue
+            sent_key = f"{key}_{window}d"
+            if sent_key in sent:
+                continue
+            try:
+                _send_renewal_reminder(email=email, key=key, label=meta.get("label", ""), days_left=days_left)
+                sent[sent_key] = datetime.utcnow().isoformat()
+                changed = True
+                break   # send only the most urgent unsent reminder per run
+            except Exception as e:
+                print(f"[Renewal] Email failed for {key[:16]}...: {e}")
+
+    if changed:
+        _save_renewal_sent(sent)
+
+
+def start_renewal_scheduler() -> None:
+    """
+    Start a background thread that checks for renewal reminders every 6 hours.
+    Safe to call from FastAPI startup — runs as daemon thread.
+    """
+    import threading
+
+    def _loop():
+        time.sleep(120)   # 2-minute delay after startup
+        while True:
+            try:
+                check_renewal_reminders()
+            except Exception as e:
+                print(f"[Renewal] Scheduler error: {e}")
+            time.sleep(6 * 3600)
+
+    t = threading.Thread(target=_loop, daemon=True, name="renewal-scheduler")
+    t.start()
+    print("[Renewal] Scheduler started — checking every 6 hours")
