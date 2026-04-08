@@ -301,6 +301,52 @@ SPORTS_KEYWORDS = [
     "golf open", "pga tour", "masters golf", "ryder cup",
 ]
 
+WAR_KEYWORDS = [
+    # Active conflicts
+    "ukraine", "russia", "nato", "putin", "zelensky",
+    "israel", "gaza", "hamas", "hezbollah", "west bank", "idf",
+    "iran", "tehran", "irgc", "nuclear deal",
+    "north korea", "kim jong", "dprk",
+    "taiwan", "pla ", "strait of taiwan", "china invade",
+    "yemen", "houthi", "red sea attack",
+    "sudan", "syria", "lebanon war",
+    # Conflict event types
+    "ceasefire", "peace deal", "peace talks", "invasion", "offensive",
+    "airstrike", "missile strike", "ground invasion", "troop withdrawal",
+    "war crimes", "sanctions", "arms deal", "military aid",
+    "coup", "regime change", "assassination",
+    # Nuclear / WMD
+    "nuclear weapon", "nuclear test", "dirty bomb",
+]
+
+# Markets where Octodamus has live data feed advantage.
+# OctoBoto should ONLY trade these categories.
+DATA_EDGE_KEYWORDS = [
+    # Crypto price / on-chain
+    "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
+    "crypto", "altcoin", "defi", "stablecoin", "usdt", "usdc",
+    "binance", "coinbase", "coinbase ipo", "kraken", "bybit",
+    "bnb", "xrp", "doge", "dogecoin", "ada", "avax", "link", "matic",
+    "100k", "200k", "50k", "80k", "price", "ath", "all-time high",
+    "market cap", "dominance", "halving", "etf", "spot etf",
+    "liquidat", "funding rate", "open interest",
+    # Macro economic data — Octodamus pulls these live
+    "cpi", "inflation", "fed rate", "federal reserve", "fomc",
+    "interest rate", "rate cut", "rate hike", "basis point",
+    "gdp", "recession", "unemployment", "jobs report", "nonfarm",
+    "treasury", "yield", "10-year", "2-year", "bond",
+    "s&p", "sp500", "nasdaq", "dow jones", "vix",
+    "oil price", "crude", "gold price", "silver",
+    # Prediction market / sentiment
+    "polymarket", "kalshi", "fear and greed", "fear & greed",
+    "prediction market", "crowd probability",
+    # Trump / US political — proven edge per backtest
+    "trump", "tariff", "trade war", "sec ", "gensler",
+    "election", "approval rating", "congress", "senate vote",
+    "debt ceiling", "government shutdown",
+]
+
+
 def is_valid_market(market: dict) -> bool:
     """
     Gate keeper before spending AI tokens.
@@ -313,13 +359,23 @@ def is_valid_market(market: dict) -> bool:
     if not (MIN_MARKET_PRICE < float(price) < MAX_MARKET_PRICE):
         return False
 
-    # is_binary check disabled — Polymarket API does not set this flag
-
-
-    # Sports filter -- high variance, no Octodamus data edge, proven losing category
-    question_lower = (market.get("question", "") or "").lower()
+    question_lower    = (market.get("question", "") or "").lower()
     description_lower = (market.get("description", "") or "").lower()
-    if any(kw in question_lower or kw in description_lower for kw in SPORTS_KEYWORDS):
+    text = question_lower + " " + description_lower
+
+    # Sports filter -- no Octodamus data edge, proven losing category
+    if any(kw in text for kw in SPORTS_KEYWORDS):
+        return False
+
+    # War/conflict/geopolitical filter -- no live data feed, pure guessing,
+    # resolution criteria vague, news-driven flips. Responsible for most losses.
+    if any(kw in text for kw in WAR_KEYWORDS):
+        return False
+
+    # Data-edge filter -- only trade markets where Octodamus has a live feed.
+    # If the market doesn't touch crypto, macro data, or prediction markets,
+    # OctoBoto is just guessing with no information advantage — skip it.
+    if not any(kw in text for kw in DATA_EDGE_KEYWORDS):
         return False
 
     # Liquidity gate

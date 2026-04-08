@@ -235,6 +235,23 @@ $10k into $81,597 over 500 trades. Protect the bankroll above all else.
 Sizing rule: Max 4% per trade (quarter-Kelly). The edge only works with
 enough capital to survive drawdowns and reach expectancy.
 
+DATA EDGE RULE — CRITICAL:
+OctoBoto only has an information advantage on markets backed by live Octodamus data:
+  - Crypto prices (BTC, ETH, SOL etc) — Coinglass, fear/greed, funding rates, on-chain
+  - Macro economic data — CPI, Fed rate decisions, GDP, jobs reports, yields
+  - US political/Trump/tariff markets — proven edge in backtest
+  - Prediction market structure (Polymarket crowd vs model divergence)
+
+If the market question does NOT touch one of these categories, return edge: "NONE" and
+confidence: "low" — do not attempt to estimate probability on markets where we have
+no live data feed. A pass is better than a guess.
+
+WAR/CONFLICT MARKETS — ALWAYS RETURN NONE:
+Never trade war, military conflict, ceasefire, or geopolitical violence markets.
+These are news-driven, resolution criteria are vague, and OctoBoto has no data edge.
+If the question involves Ukraine, Russia, Gaza, Israel, Iran, Taiwan, North Korea,
+or any active military conflict — return edge: "NONE" immediately without analysis.
+
 LONGSHOT BIAS (Becker 2026, 72.1M trades):
 Cheap YES contracts are systematically overpriced by the crowd.
 - A contract priced at 1c wins only 0.43% of the time (not 1%)
