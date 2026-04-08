@@ -2354,11 +2354,12 @@ def guide_download(token: str = Query(..., description="Download token from fulf
         raise HTTPException(status_code=404, detail="Invalid download token")
     if _time.time() > t.get("expires", 0):
         raise HTTPException(status_code=410, detail="Download token expired. Contact @octodamusai")
-    # Return the actual guide URL — host on GitHub releases or GDrive
+    # Redirect browser directly to the actual file (GDrive / GitHub release)
     guide_url = os.environ.get("GUIDE_DOWNLOAD_URL", "")
     if not guide_url:
         raise HTTPException(status_code=503, detail="Guide URL not configured")
-    return {"download_url": guide_url, "expires_in_seconds": int(t["expires"] - _time.time())}
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=guide_url, status_code=302)
 
 
 # -- V2 Ask — Agent-to-Octodamus conversation (no auth required) -------------
