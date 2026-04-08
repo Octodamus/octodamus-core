@@ -297,13 +297,20 @@ Ideas:
 Rules:
 - CRITICAL: All numbers must be arithmetically correct. Do NOT fabricate results.
   If step A → step B, verify B follows from A with real math before including it.
-- 3-5 line format: state the goal, break into verified steps, land the insight
-- Use real numbers from live data where possible
-- End with a short punchy closer ("Simple." or "Compounding is patient." or silence)
-- Under 260 characters.
+  BEFORE writing, mentally compute every result: 1.015^52 = 2.169 (not 2.05).
+  If you cannot verify a number, use a simpler example you can verify.
+- STRICT LENGTH: The entire post must be under 220 characters total. Count before writing.
+  This means 3-4 SHORT lines max. Cut mercilessly. One idea, one chain, one closer.
 - No hashtags. No emoji.
+- End with a single punchy closer (4 words max): "Simple." / "Compounding is patient." / silence.
 
-Example (correct math): "Turn $10k into $100k:\\n- Find a market with 15% EV\\n- Kelly size every trade\\n- Win 60% of 50 trades\\n- Expected value: +$127k\\n\\nThe math works. The discipline doesn't."
+Example (correct math, correct length):
+"1.5% weekly edge. 52 weeks.
+1.015^52 = 2.17x your money.
+Pay 30% tax: keep 1.52x.
+Tax-sheltered: keep 2.17x.
+Same edge. 43% more money."
+(count: 99 chars — good)
 """
 
     if fmt == "oracle_take":
