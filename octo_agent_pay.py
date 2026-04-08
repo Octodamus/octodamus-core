@@ -490,6 +490,14 @@ def _fulfill_payment(payment_id: str, tx_hash: str, block: int) -> dict:
 
     print(f"[AgentPay] Fulfilled {payment_id} | {product} | tx {tx_hash[:16]}...")
 
+    # Email delivery
+    email_addr = payment.get("email", "").strip()
+    if email_addr:
+        try:
+            _send_fulfillment_email(email_addr, product, result)
+        except Exception as e:
+            print(f"[AgentPay] Email send failed (non-critical): {e}")
+
     # Discord alert
     try:
         import httpx
@@ -518,6 +526,69 @@ def _fulfill_payment(payment_id: str, tx_hash: str, block: int) -> dict:
         pass
 
     return result
+
+
+def _send_fulfillment_email(to_addr: str, product: str, result: dict) -> None:
+    """Send delivery email via Gmail SMTP using credentials from Bitwarden/env."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    gmail_user = os.environ.get("GMAIL_USER", "")
+    gmail_pass = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not gmail_user or not gmail_pass:
+        print("[AgentPay] Gmail credentials not set — skipping email")
+        return
+
+    is_guide   = product in ("guide_early", "guide_standard")
+    is_trial   = product == "premium_trial"
+    is_api     = product in ("premium_annual", "premium_trial")
+
+    if is_guide:
+        download_url = result.get("download_url", "")
+        subject = "Your Octodamus Guide — Download Link Inside"
+        body_html = f"""
+<div style="background:#000810;color:#8ab8d4;font-family:'Courier New',monospace;padding:40px;max-width:580px;margin:0 auto;">
+  <div style="font-size:1.4rem;letter-spacing:0.2em;color:#00c8ff;margin-bottom:8px;">OCTODAMUS</div>
+  <div style="font-size:0.7rem;letter-spacing:0.2em;color:#3d6e8a;margin-bottom:32px;">BUILD THE HOUSE · 2026</div>
+  <p style="color:#c8e8f8;font-size:1rem;margin-bottom:8px;">Your guide is ready.</p>
+  <p style="margin-bottom:24px;">Payment confirmed on-chain. Click below to download — link is valid for 30 days.</p>
+  <a href="{download_url}" style="display:inline-block;background:#00c8ff;color:#000810;padding:14px 32px;font-weight:700;letter-spacing:0.1em;text-decoration:none;font-size:0.85rem;">DOWNLOAD GUIDE →</a>
+  <p style="margin-top:32px;font-size:0.75rem;color:#3d6e8a;">Or copy this link:<br><span style="color:#00c8ff;">{download_url}</span></p>
+  <p style="margin-top:32px;font-size:0.72rem;color:#3d6e8a;">Questions? X: @octodamusai</p>
+</div>"""
+    elif is_api:
+        api_key    = result.get("api_key", "")
+        expire_note = f"<p style='color:#ffc800;font-size:0.8rem;margin-top:8px;'>Trial expires: {result.get('expires_at','7 days from now')}. Upgrade anytime at octodamus.com/buy.html</p>" if is_trial else ""
+        subject = "Your Octodamus API Key"
+        body_html = f"""
+<div style="background:#000810;color:#8ab8d4;font-family:'Courier New',monospace;padding:40px;max-width:580px;margin:0 auto;">
+  <div style="font-size:1.4rem;letter-spacing:0.2em;color:#00c8ff;margin-bottom:8px;">OCTODAMUS</div>
+  <div style="font-size:0.7rem;letter-spacing:0.2em;color:#3d6e8a;margin-bottom:32px;">DATA STREAMS · API ACCESS</div>
+  <p style="color:#c8e8f8;font-size:1rem;margin-bottom:8px;">Your API key is ready.</p>
+  <p style="margin-bottom:16px;">Add this header to every request:</p>
+  <div style="background:#020d1a;border:1px solid rgba(0,140,255,0.2);padding:16px;margin-bottom:16px;word-break:break-all;">
+    <span style="color:#00ffb3;">X-OctoData-Key: {api_key}</span>
+  </div>
+  {expire_note}
+  <p style="margin-top:24px;font-size:0.8rem;">10,000 req/day · 200 req/min</p>
+  <p style="margin-top:8px;font-size:0.8rem;"><a href="https://api.octodamus.com/docs" style="color:#00c8ff;">api.octodamus.com/docs</a> — full endpoint reference</p>
+  <p style="margin-top:32px;font-size:0.72rem;color:#3d6e8a;">Questions? X: @octodamusai</p>
+</div>"""
+    else:
+        return  # nothing to send
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"Octodamus <{gmail_user}>"
+    msg["To"]      = to_addr
+    msg.attach(MIMEText(body_html, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_pass)
+        server.sendmail(gmail_user, to_addr, msg.as_string())
+
+    print(f"[AgentPay] Email sent → {to_addr} ({product})")
 
 
 def _provision_api_key(payment: dict) -> str:
@@ -699,10 +770,10 @@ def get_payment_status(payment_id: str) -> dict:
         }
 
     response = {
-        "status":     p["status"],
-        "payment_id": payment_id,
-        "product":    p["product"],
-        "amount_usdc": p["amount_usdc"],
+        "status":      p["status"],
+        "payment_id":  payment_id,
+        "product":     p["product"],
+        "amount_usd":  p.get("amount_usd") or p.get("amount_usdc"),
     }
 
     if p["status"] == "fulfilled":
