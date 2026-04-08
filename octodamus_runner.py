@@ -1,4 +1,4 @@
-"""
+﻿"""
 octodamus_runner.py
 Octodamus — Main Runner
 
@@ -16,14 +16,37 @@ Scheduled tasks (Task Scheduler, runs whether logged in or not):
     Octodamus-DeepDive-Mon    9:00 AM  Monday    --mode deep_dive --ticker NVDA
     Octodamus-DeepDive-Wed    9:00 AM  Wednesday --mode deep_dive --ticker BTC
 
-Daily post budget: 6 posts max (3 monitor + 3 daily). Enforced in octo_x_poster.py.
+Daily post budget: 20 posts max. Enforced in octo_x_poster.py.
 """
 
 import argparse
 import json
+import logging
 import random
 import sys
 from datetime import datetime
+from pathlib import Path
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+_LOG_DIR = Path(r"C:\Users\walli\octodamus\logs")
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_log_file = _LOG_DIR / f"runner_{datetime.now().strftime('%Y-%m-%d')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_log_file, encoding="utf-8"),
+    ],
+)
+log = logging.getLogger("Runner")
+
+# Redirect print() to log so all existing prints land in the file too
+_orig_print = print
+def print(*args, **kwargs):
+    msg = " ".join(str(a) for a in args)
+    log.info(msg)
 
 # ── Secrets — must load before any other imports that use os.environ ──────────
 from bitwarden import load_all_secrets, verify_session
@@ -46,6 +69,39 @@ except ImportError:
     def build_call_context(): return ""
     def parse_call_from_post(*a, **k): return None
     def build_template_prompt_context(): return ""
+try:
+    from nunchi import run_postmortems, get_brain_context
+    _NUNCHI_ACTIVE = True
+except ImportError:
+    _NUNCHI_ACTIVE = False
+    def run_postmortems(**k): return []
+    def get_brain_context(**k): return ""
+try:
+    from octo_deribit import deribit as _deribit
+    def _get_deribit_context(currency: str = "BTC") -> str:
+        try:
+            return _deribit.build_oracle_context(currency)
+        except Exception as e:
+            log.warning(f"[Deribit] context failed: {e}")
+            return ""
+    _DERIBIT_ACTIVE = True
+except ImportError:
+    _DERIBIT_ACTIVE = False
+    def _get_deribit_context(currency: str = "BTC") -> str:
+        return ""
+try:
+    from octo_cot import cot as _cot
+    def _get_cot_context(currency: str = "BTC") -> str:
+        try:
+            return _cot.build_oracle_context(currency)
+        except Exception as e:
+            log.warning(f"[COT] context failed: {e}")
+            return ""
+    _COT_ACTIVE = True
+except ImportError:
+    _COT_ACTIVE = False
+    def _get_cot_context(currency: str = "BTC") -> str:
+        return ""
 from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
@@ -122,72 +178,175 @@ except ImportError:
         return ""
 
 try:
-    from octo_scorecard import mode_scorecard
-    from octo_calls import build_call_context, parse_call_from_post, autoresolve
-    from octo_post_templates import build_template_prompt_context
+    from octo_calls import build_call_context, parse_call_from_post, autoresolve, get_stats
     _SCORECARD_ACTIVE = True
 except ImportError:
     _SCORECARD_ACTIVE = False
-    def mode_scorecard(**k): pass
+    def autoresolve(): return []
+    def get_stats(): return {"wins": 0, "losses": 0, "win_rate": "N/A", "streak": "—", "open": 0, "all_calls": []}
     def build_call_context(): return ""
     def parse_call_from_post(*a, **k): return None
+
+try:
+    from octo_post_templates import build_template_prompt_context
+except ImportError:
     def build_template_prompt_context(): return ""
+
+try:
+    from octo_youtube import build_youtube_context, scan_channels as youtube_scan_channels
+    _YOUTUBE_ACTIVE = True
+except ImportError:
+    _YOUTUBE_ACTIVE = False
+    def build_youtube_context(**k): return ""
+    def youtube_scan_channels(): return []
+    def generate_post_from_intel(e): return None
+
+try:
+    from octo_builders import build_builders_context
+    _BUILDERS_ACTIVE = True
+except ImportError:
+    _BUILDERS_ACTIVE = False
+    def build_builders_context(): return ""
 
 claude = anthropic.Anthropic()
 
+try:
+    from octo_tv_brief import get_tv_brief
+    _TV_ACTIVE = True
+except ImportError:
+    _TV_ACTIVE = False
+    def get_tv_brief(): return ""
+
+_COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
 
 def _check_smart_call():
     """
-    Check if the 11-signal engine shows a high-conviction setup.
-    Only makes a call when >=7 signals agree (STRONG UP or STRONG DOWN).
-    This protects the 75%+ win rate by staying silent on weak signals.
+    Check all three assets (BTC, ETH, SOL) for high-conviction setups.
+    Requires STRONG (7+ of 11 signals) — never lower this threshold.
+    One open oracle call per asset maximum.
+    Target: 100 verified calls at 80%+ win rate for institutional track record.
+
+    All 15 intelligence upgrades applied:
+      #1  On-chain data (exchange netflow, active address trend)
+      #2  Multi-timeframe alignment (1H + 4H + 1D confluence)
+      #3  Edge score stored per call
+      #4  Volatility regime (DVOL adjusts WIN threshold)
+      #5  Stablecoin flow signal
+      #6  Liquidation cluster nearest level
+      #7  Coinbase premium vs Binance
+      #8  Historical pattern win rate lookup
+      #9  Engagement timing context
+      #10 Post timing optimization
+      #11 Pre-call news validation (NewsAPI invalidating headlines)
+      #12 Chart generation on STRONG call Discord alert
+      #13 Rolling threshold advisory in notes
+      #14 Congress trade signal vote
+      #15 Post-mortem auto-trigger on loss (in autoresolve)
+    Plus prior upgrades: GPT, cross-platform, circuit breaker, direction correlation, calibration
     """
+    results = []
     try:
         from octo_report_handlers import (
             fetch_technicals, fetch_derivatives, directional_call,
-            _fetch_coinglass_compact,
+            _fetch_coinglass_compact, fetch_technicals_mtf,
         )
-        from octo_calls import record_call, _load
+        from octo_calls import (
+            record_call, _load,
+            get_recent_win_rate, get_direction_concentration, time_quality_score,
+        )
+        try:
+            from octo_reputation import log_call as rep_log_call
+            _rep_ok = True
+        except ImportError:
+            _rep_ok = False
+            def rep_log_call(*a, **kw): return ""
         import httpx
 
-        # Check if we already have an open call — don't stack
+        # ── Win rate circuit breaker ──────────────────────────────────────────
+        recent_wr = get_recent_win_rate(n=5)
+        if recent_wr is not None and recent_wr < 0.50:
+            print(f"[SmartCall] CIRCUIT BREAKER: last 5 calls at {recent_wr:.0%} win rate — pausing oracle calls.")
+            discord_alert(
+                f"Octodamus circuit breaker: {recent_wr:.0%} on last 5 calls. "
+                f"Smart calls paused until win rate recovers. Review signal quality."
+            )
+            return []
+
+        # ── #3: Macro calendar gate ───────────────────────────────────────────
+        try:
+            from octo_macro_calendar import is_event_blocked
+            _mac_blocked, _mac_reason, _mac_next = is_event_blocked()
+            if _mac_blocked:
+                print(f"[SmartCall] MACRO GATE: {_mac_reason} — skipping all calls.")
+                return []
+        except Exception as _me:
+            print(f"[SmartCall] Macro calendar unavailable: {_me}")
+            _mac_reason = ""
+
+        # ── #4: Volatility regime ─────────────────────────────────────────────
+        vol_regime = {}
+        try:
+            from octo_vol_regime import get_vol_regime
+            vol_regime = get_vol_regime()
+        except Exception:
+            pass
+
+        # ── #5: Stablecoin flow ───────────────────────────────────────────────
+        stablecoin_sig = {}
+        try:
+            from octo_stablecoin import get_stablecoin_signal
+            stablecoin_sig = get_stablecoin_signal()
+        except Exception:
+            pass
+
+        # ── #9/#10: Engagement timing ─────────────────────────────────────────
+        engagement_ctx = ""
+        try:
+            from octo_engagement_tracker import get_best_post_time, engagement_context_str
+            engagement_ctx = engagement_context_str()
+        except Exception:
+            pass
+
+        # ── #13: Threshold advisory ────────────────────────────────────────────
+        threshold_note = ""
+        try:
+            from octo_threshold_optimizer import threshold_advisory_str
+            threshold_note = threshold_advisory_str()
+        except Exception:
+            pass
+
+        # ── #14: Congress signal ──────────────────────────────────────────────
+        congress_bias = {}  # {"NVDA": "bull", "BTC": "bull", ...}
+        try:
+            from octo_congress import run_congress_scan
+            cscan = run_congress_scan(days_back=14)
+            for trade in cscan.get("recent_trades", []):
+                tx = trade.get("Transaction", "").lower()
+                ticker = trade.get("Ticker", "")
+                if not ticker:
+                    continue
+                direction = "bull" if "purchase" in tx or "buy" in tx else "bear" if "sale" in tx or "sell" in tx else None
+                if direction:
+                    congress_bias[ticker.upper()] = direction
+        except Exception:
+            pass
+
+        # ── #2: Time quality ──────────────────────────────────────────────────
+        tq = time_quality_score()
+        if tq == "weekend":
+            print("[SmartCall] Weekend — thin liquidity. Raising signal bar to 8+ for all assets.")
+
+        # ── #7: Direction concentration ───────────────────────────────────────
+        dir_conc = get_direction_concentration()
+
         calls = _load()
-        open_calls = [c for c in calls if not c["resolved"]]
-        if len(open_calls) >= 2:
-            print("[SmartCall] Already have 2+ open calls — skipping.")
-            return None
+        open_oracle = {
+            c["asset"].upper(): c
+            for c in calls
+            if not c["resolved"] and c.get("call_type", "oracle") != "polymarket"
+        }
 
-        # Gather data for BTC (primary asset)
-        ta = fetch_technicals("BTC")
-        deriv = fetch_derivatives("BTC")
-        cg = _fetch_coinglass_compact("BTC")
-
-        # Get current price + 24h change
-        price = 0.0
-        chg_24h = 0.0
-        cg_prices = cg.get("prices", {})
-        if cg_prices.get("BTC"):
-            price = cg_prices["BTC"]["price"]
-            chg_24h = cg_prices["BTC"].get("chg_24h", 0)
-        else:
-            try:
-                r = httpx.get(
-                    "https://api.coingecko.com/api/v3/simple/price",
-                    params={"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true"},
-                    timeout=10,
-                )
-                if r.status_code == 200:
-                    d = r.json().get("bitcoin", {})
-                    price = d.get("usd", 0)
-                    chg_24h = float(d.get("usd_24h_change", 0) or 0)
-            except Exception:
-                pass
-
-        if not price:
-            print("[SmartCall] No price data — skipping.")
-            return None
-
-        # Get Fear & Greed
+        # Fear & Greed (shared across assets)
         fng = 50
         try:
             r = httpx.get("https://api.alternative.me/fng/?limit=1", timeout=8)
@@ -196,31 +355,327 @@ def _check_smart_call():
         except Exception:
             pass
 
-        # Run the 11-signal engine
-        call_str = directional_call("BTC", price, chg_24h, ta, deriv, fng, cg)
+        # ── Optional: cross-platform + GPT modules ───────────────────────────
+        try:
+            from octo_boto_consensus import (
+                get_consensus_context, gpt_second_opinion, _binance_distance_signal,
+            )
+            _consensus_mod = True
+        except ImportError:
+            _consensus_mod = False
 
-        # Only act on STRONG signals (>=7 agreement)
-        if "STRONG UP" in call_str:
-            direction = "UP"
-            target = round(price * 1.05, 0)  # 5% target for conservative calls
-            timeframe = "48h"
-        elif "STRONG DOWN" in call_str:
-            direction = "DOWN"
-            target = round(price * 0.95, 0)
-            timeframe = "48h"
-        else:
-            print(f"[SmartCall] Signal not strong enough for a call: {call_str[:80]}")
-            return None
+        openai_key = secrets.get("OPENAI_API_KEY", "")
 
-        # Record the call
-        print(f"[SmartCall] HIGH CONVICTION: BTC {direction} from ${price:,.0f} to ${target:,.0f}")
-        note = f"Auto-call from 11-signal engine. {call_str[:100]}"
-        result = record_call("BTC", direction, price, timeframe, target, note=note)
-        return result
+        import re as _re
+
+        for asset in ("BTC", "ETH", "SOL"):
+            if asset in open_oracle:
+                print(f"[SmartCall] {asset}: open call exists — skipping.")
+                continue
+
+            try:
+                ta    = fetch_technicals(asset)
+                deriv = fetch_derivatives(asset)
+                cg    = _fetch_coinglass_compact(asset)
+
+                # Price from Coinglass or CoinGecko fallback
+                price, chg_24h = 0.0, 0.0
+                cg_prices = cg.get("prices", {})
+                if cg_prices.get(asset):
+                    price   = cg_prices[asset]["price"]
+                    chg_24h = cg_prices[asset].get("chg_24h", 0)
+                else:
+                    cg_id = _COINGECKO_IDS.get(asset, asset.lower())
+                    r = httpx.get(
+                        "https://api.coingecko.com/api/v3/simple/price",
+                        params={"ids": cg_id, "vs_currencies": "usd",
+                                "include_24hr_change": "true"},
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        d = r.json().get(cg_id, {})
+                        price   = d.get("usd", 0)
+                        chg_24h = float(d.get("usd_24h_change", 0) or 0)
+
+                if not price:
+                    print(f"[SmartCall] {asset}: no price data — skipping.")
+                    continue
+
+                call_str = directional_call(asset, price, chg_24h, ta, deriv, fng, cg)
+
+                # Parse bull/bear counts for edge score
+                _bull_m = _re.search(r'(\d+)\s*(?:BULL|bull)', call_str)
+                _bear_m = _re.search(r'(\d+)\s*(?:BEAR|bear)', call_str)
+                bull_count = int(_bull_m.group(1)) if _bull_m else 0
+                bear_count = int(_bear_m.group(1)) if _bear_m else 0
+                # Fallback: parse from "8/11 signals"
+                if bull_count == 0 and bear_count == 0:
+                    _sig_m = _re.search(r'(\d+)/11', call_str)
+                    if _sig_m:
+                        if "UP" in call_str:
+                            bull_count = int(_sig_m.group(1))
+                            bear_count = 11 - bull_count
+                        elif "DOWN" in call_str:
+                            bear_count = int(_sig_m.group(1))
+                            bull_count = 11 - bear_count
+                edge_score = (bull_count - bear_count) / 11.0
+
+                # Direction gate — STRONG only
+                if "STRONG UP" in call_str:
+                    direction = "UP"
+                elif "STRONG DOWN" in call_str:
+                    direction = "DOWN"
+                else:
+                    print(f"[SmartCall] {asset}: not STRONG — no call. ({call_str[:60]})")
+                    continue
+
+                # Direction correlation guard (prior upgrade)
+                already_same_dir = dir_conc.get(direction, 0)
+                if already_same_dir >= 2:
+                    if max(bull_count, bear_count) < 9:
+                        print(f"[SmartCall] {asset}: {direction} correlated — requires 9+ signals. Skipping.")
+                        continue
+
+                # Weekend: raise bar to 8+
+                if tq == "weekend" and max(bull_count, bear_count) < 8:
+                    print(f"[SmartCall] {asset}: weekend requires 8+ signals — skipping.")
+                    continue
+
+                # ── #2: Multi-timeframe alignment ────────────────────────────
+                mtf = {}
+                try:
+                    mtf = fetch_technicals_mtf(asset)
+                    alignment = mtf.get("alignment", "unknown")
+                    if alignment == "mixed":
+                        # MTF disagrees — require 9+ for conviction
+                        if max(bull_count, bear_count) < 9:
+                            print(f"[SmartCall] {asset}: MTF mixed ({alignment}) — requires 9+. Skipping.")
+                            continue
+                    elif alignment in ("aligned_up", "aligned_down"):
+                        # Check alignment matches direction
+                        if (alignment == "aligned_up" and direction == "DOWN") or \
+                           (alignment == "aligned_down" and direction == "UP"):
+                            print(f"[SmartCall] {asset}: MTF {alignment} contradicts {direction} — skipping.")
+                            continue
+                        print(f"[SmartCall] {asset}: MTF {alignment} — confirmed.")
+                except Exception as mtf_e:
+                    print(f"[SmartCall] {asset}: MTF check failed: {mtf_e}")
+
+                # ── #4: Volatility regime adjustment ─────────────────────────
+                regime = vol_regime.get("regime", "MEDIUM")
+                win_threshold = vol_regime.get("win_threshold_pct", 1.0)
+                if regime in ("HIGH", "EXTREME") and max(bull_count, bear_count) < 9:
+                    print(f"[SmartCall] {asset}: {regime} vol regime requires 9+ signals — skipping.")
+                    continue
+
+                # ── #1: On-chain signal ───────────────────────────────────────
+                onchain_ctx = ""
+                try:
+                    from octo_onchain import get_onchain_signal, onchain_context_str
+                    oc = get_onchain_signal(asset)
+                    oc_sig = oc.get("signal", "neutral")
+                    onchain_ctx = onchain_context_str(asset)
+                    # On-chain contradicts direction strongly → skip
+                    if (oc_sig == "bear" and direction == "UP") or \
+                       (oc_sig == "bull" and direction == "DOWN"):
+                        if max(bull_count, bear_count) < 9:
+                            print(f"[SmartCall] {asset}: on-chain contradicts {direction} — skipping.")
+                            continue
+                except Exception:
+                    pass
+
+                # ── #5: Stablecoin flow signal ────────────────────────────────
+                stable_ctx = ""
+                try:
+                    from octo_stablecoin import stablecoin_context_str
+                    stable_ctx = stablecoin_context_str()
+                    sc_sig = stablecoin_sig.get("signal", "neutral")
+                    # Strong contra-signal: stablecoin burn + UP call → flag only
+                    if sc_sig == "bear" and direction == "UP":
+                        print(f"[SmartCall] {asset}: stablecoin outflow despite UP signal — noting in call.")
+                    elif sc_sig == "bull" and direction == "DOWN":
+                        print(f"[SmartCall] {asset}: stablecoin inflow despite DOWN signal — noting in call.")
+                except Exception:
+                    pass
+
+                # ── #6 / #7: Coinbase premium ─────────────────────────────────
+                cb_ctx = ""
+                try:
+                    from octo_coinbase_premium import get_coinbase_premium, coinbase_premium_context_str
+                    cb = get_coinbase_premium(asset)
+                    cb_ctx = coinbase_premium_context_str(asset)
+                    cb_sig = cb.get("signal", "neutral")
+                    if (cb_sig == "bear" and direction == "UP") or \
+                       (cb_sig == "bull" and direction == "DOWN"):
+                        print(f"[SmartCall] {asset}: Coinbase premium ({cb.get('premium_pct',0):+.2f}%) contra {direction}.")
+                except Exception:
+                    pass
+
+                # ── #8: Pattern DB lookup ──────────────────────────────────────
+                pattern_ctx = ""
+                try:
+                    from octo_pattern_db import get_pattern_win_rate, pattern_context_str
+                    pat = get_pattern_win_rate(bull_count, bear_count, asset)
+                    pattern_ctx = pattern_context_str(bull_count, bear_count, asset)
+                    hist_wr = pat.get("win_rate")
+                    if hist_wr is not None and hist_wr < 0.50 and pat.get("similar_calls", 0) >= 5:
+                        print(f"[SmartCall] {asset}: historical pattern win rate {hist_wr:.0%} on {pat['similar_calls']} calls — skipping.")
+                        continue
+                except Exception:
+                    pass
+
+                # ── #11: Pre-call news validation ─────────────────────────────
+                news_flag = ""
+                try:
+                    newsapi_key = secrets.get("NEWSAPI_API_KEY", "")
+                    if newsapi_key:
+                        import requests as _nreq
+                        query = f"{asset} {'crash OR bear OR sell' if direction == 'UP' else 'rally OR bull OR buy'}"
+                        nr = _nreq.get(
+                            "https://newsapi.org/v2/everything",
+                            params={"q": query, "sortBy": "publishedAt",
+                                    "pageSize": 3, "language": "en",
+                                    "apiKey": newsapi_key},
+                            timeout=8,
+                        )
+                        if nr.status_code == 200:
+                            articles = nr.json().get("articles", [])
+                            if articles:
+                                headlines = " | ".join(a.get("title", "")[:60] for a in articles[:3])
+                                news_flag = f"Contra-news: {headlines[:150]}"
+                                print(f"[SmartCall] {asset} contra-news: {headlines[:100]}")
+                except Exception:
+                    pass
+
+                # ── #14: Congress signal vote ──────────────────────────────────
+                congress_note = ""
+                # Map congress trades to crypto context
+                crypto_proxies = {
+                    "BTC": ["MSTR", "COIN", "IBIT", "FBTC", "GBTC"],
+                    "ETH": ["ETH", "ETHA"],
+                    "SOL": ["SOL", "HOOD"],
+                }
+                for proxy in crypto_proxies.get(asset, []):
+                    if proxy in congress_bias:
+                        c_dir = congress_bias[proxy]
+                        congress_note = f"Congress traded {proxy} ({c_dir.upper()})"
+                        print(f"[SmartCall] {asset}: congress signal via {proxy} = {c_dir}")
+                        break
+
+                # ── Discord alert on every STRONG signal ─────────────────────
+                discord_alert(
+                    f"STRONG {asset} {direction} @ ${price:,.0f} | "
+                    f"edge={edge_score:+.2f} | {bull_count}B/{bear_count}Br | "
+                    f"tq={tq} | mtf={mtf.get('alignment','?')} | vol={regime}"
+                )
+
+                # ── #12: Chart generation for Discord alert ────────────────────
+                try:
+                    from octo_charts import charts as _charts
+                    chart_path = _charts.market_dashboard(asset)
+                    if chart_path:
+                        print(f"[SmartCall] Chart generated: {chart_path}")
+                        discord_alert(f"Chart for {asset} STRONG call: {chart_path}")
+                except Exception as ce:
+                    print(f"[SmartCall] Chart generation failed: {ce}")
+
+                # GPT second opinion (prior upgrade)
+                gpt_agreed = True
+                if openai_key and _consensus_mod:
+                    try:
+                        gpt_q = (
+                            f"Based on these signals — {bull_count} bullish, {bear_count} bearish "
+                            f"out of 11 indicators — {asset} at ${price:,.0f}, "
+                            f"{chg_24h:+.1f}% 24h, F&G {fng}/100, vol regime {regime}: "
+                            f"will {asset} move {direction} by at least {win_threshold:.1f}% in 48h? "
+                            f"Answer YES or NO with brief reasoning."
+                        )
+                        gpt = gpt_second_opinion(gpt_q, 0.5, openai_key)
+                        if gpt:
+                            gpt_p = gpt.get("probability", 0.5)
+                            if direction == "UP" and gpt_p < 0.45:
+                                print(f"[SmartCall] {asset}: GPT disagrees ({gpt_p:.0%}) — skipping.")
+                                gpt_agreed = False
+                            elif direction == "DOWN" and gpt_p > 0.55:
+                                print(f"[SmartCall] {asset}: GPT disagrees ({gpt_p:.0%}) — skipping.")
+                                gpt_agreed = False
+                    except Exception as ge:
+                        print(f"[SmartCall] GPT failed: {ge}")
+
+                if not gpt_agreed:
+                    continue
+
+                # Build signal breakdown for calibration
+                signal_breakdown = {
+                    "macd":       "UP" if ta.get("macd", 0) > 0 else "DOWN",
+                    "ema_trend":  "UP" if ta.get("ema20", 0) > ta.get("ema50", 0) else "DOWN",
+                    "rsi":        "UP" if ta.get("rsi", 50) < 45 else ("DOWN" if ta.get("rsi", 50) > 65 else "NEUTRAL"),
+                    "fear_greed": "UP" if fng < 25 else ("DOWN" if fng > 75 else "NEUTRAL"),
+                    "funding_kr": "UP" if deriv.get("funding_rate", 0) < 0 else ("DOWN" if deriv.get("funding_rate", 0) > 0.005 else "NEUTRAL"),
+                    "price_chg":  "UP" if chg_24h > 2 else ("DOWN" if chg_24h < -2 else "NEUTRAL"),
+                    "cg_funding": "UP" if cg.get("funding_avg", 0) < -0.005 else ("DOWN" if cg.get("funding_avg", 0) > 0.01 else "NEUTRAL"),
+                    "ls_ratio":   "DOWN" if cg.get("long_pct", 50) > 65 else ("UP" if cg.get("long_pct", 50) < 40 else "NEUTRAL"),
+                    "top_traders":"UP" if cg.get("top_long_pct", 50) > 55 else ("DOWN" if cg.get("top_long_pct", 50) < 45 else "NEUTRAL"),
+                    "taker_flow": "UP" if cg.get("taker_buy_pct", 50) > 55 else ("DOWN" if cg.get("taker_buy_pct", 50) < 45 else "NEUTRAL"),
+                    "liq_skew":   "UP" if (cg.get("liq_long", 0) or 0) > (cg.get("liq_short", 0) or 0) * 2 else "DOWN",
+                }
+
+                # Build enriched note
+                note_parts = [f"Auto-call. {bull_count}B/{bear_count}Br. edge={edge_score:+.2f}. tq={tq}. mtf={mtf.get('alignment','?')}. vol={regime}."]
+                if onchain_ctx:
+                    note_parts.append(f"Onchain: {oc.get('note','')[:60]}")
+                if stable_ctx:
+                    note_parts.append(f"Stable: {stablecoin_sig.get('note','')[:60]}")
+                if cb_ctx:
+                    note_parts.append(f"CB prem: {cb.get('premium_pct',0):+.2f}%")
+                if pattern_ctx:
+                    note_parts.append(f"Pattern: {pat.get('note','')[:60]}")
+                if congress_note:
+                    note_parts.append(congress_note)
+                if news_flag:
+                    note_parts.append(news_flag[:80])
+                if threshold_note:
+                    note_parts.append(f"Threshold: {threshold_note[:60]}")
+                note = " | ".join(note_parts)
+
+                # Adjust target based on vol regime
+                target_pct = max(win_threshold / 100, 0.01)
+                target = round(price * (1 + target_pct), 0) if direction == "UP" else round(price * (1 - target_pct), 0)
+
+                print(f"[SmartCall] STRONG {asset} {direction} @ ${price:,.2f} | edge={edge_score:+.2f} | mtf={mtf.get('alignment','?')} | vol={regime}")
+                rec = record_call(
+                    asset, direction, price, "48h", target,
+                    note=note,
+                    signals=signal_breakdown,
+                    edge_score=edge_score,
+                    time_quality=tq,
+                )
+                if rec:
+                    results.append(rec)
+                    # Log call onchain for verifiable reputation (#1)
+                    if _rep_ok:
+                        bull_count = signal_breakdown.count("BULL") if signal_breakdown else 0
+                        bear_count = signal_breakdown.count("BEAR") if signal_breakdown else 0
+                        sig_count = bull_count if direction == "UP" else bear_count
+                        try:
+                            rep_log_call(
+                                asset=asset, direction=direction,
+                                signals=sig_count, total_signals=11,
+                                edge_score=edge_score,
+                                win_threshold_pct=target if target else 1.0,
+                                timeframe="48h", note=note[:100] if note else "",
+                            )
+                        except Exception:
+                            pass
+
+            except Exception as asset_e:
+                print(f"[SmartCall] {asset} error: {asset_e}")
+                continue
 
     except Exception as e:
         print(f"[SmartCall] Error: {e}")
-        return None
+
+    return results or None
 
 
 def _get_recent_posts(n: int = 5) -> str:
@@ -258,6 +713,10 @@ Max 480 chars per post. No hashtags. No engagement bait. Never sycophantic.
 CRITICAL: Every post must reveal something SPECIFIC and true — a real number, a real
 contradiction, a real pattern. Vague sea metaphors alone are NOT enough. Ground every
 post in an actual data point before reaching for the metaphor.
+
+CRITICAL: Only use prices, levels, and statistics from the LIVE DATA provided in each
+prompt. Do NOT cite historical prices, all-time highs, or any figures from your training
+data. If a price is not in the live data provided, do not reference it.
 
 Your voice rotates — pick the one that fits the data best:
   ORACLE      - Bored certainty. You already knew. The tide was obvious.
@@ -378,7 +837,7 @@ def format_headlines_for_prompt(headlines: dict) -> str:
 # ─────────────────────────────────────────────
 
 def mode_monitor() -> None:
-    print(f"\n[{datetime.now().strftime('%H:%M')}] 🐙 OctoEyes scanning...")
+    print(f"\n[{datetime.now().strftime('%H:%M')}] OctoEyes scanning...")
     try:
         signals_and_posts = run_market_monitor()
         for item in signals_and_posts:
@@ -395,6 +854,52 @@ def mode_monitor() -> None:
 
         posted = process_queue(max_posts=1)
         print(f"[Runner] Posted {posted} item(s) to X.")
+
+        # Auto-resolve expired oracle calls and post outcomes to X + Discord
+        if _CALLS_ACTIVE:
+            try:
+                from octo_x_poster import post_oracle_outcome
+                newly_resolved = autoresolve()
+                if newly_resolved:
+                    # Compute current record after all resolutions
+                    from octo_calls import get_stats
+                    stats = get_stats()
+                    for resolved_call in newly_resolved:
+                        if resolved_call.get("call_type", "oracle") == "oracle":
+                            post_oracle_outcome(
+                                resolved_call,
+                                record_wins=stats["wins"],
+                                record_losses=stats["losses"],
+                            )
+                    print(f"[Runner] Auto-resolved {len(newly_resolved)} call(s) and posted outcomes.")
+                else:
+                    print("[Runner] No expired calls to resolve.")
+            except Exception as ar_e:
+                print(f"[Runner] Autoresolve failed: {ar_e}")
+
+        # Check if signals warrant a directional call
+        try:
+            _check_smart_call()
+        except Exception as ce:
+            print(f"[SmartCall] Error: {ce}")
+
+        # Run Nunchi post-mortems on any newly resolved oracle calls
+        if _NUNCHI_ACTIVE and _CALLS_ACTIVE:
+            try:
+                newly = run_postmortems(claude_client=claude, verbose=True)
+                if newly:
+                    print(f"[Nunchi] Wrote {len(newly)} new lesson(s) to brain.md.")
+            except Exception as ne:
+                print(f"[Nunchi] Post-mortem failed: {ne}")
+
+        # Run OctoBoto post-mortems on any newly closed Polymarket trades
+        try:
+            from octo_boto_brain import run_postmortems as boto_postmortems
+            boto_newly = boto_postmortems(claude_client=claude, verbose=True)
+            if boto_newly:
+                print(f"[OctoBrain] Wrote {len(boto_newly)} new lesson(s) to octo_boto_brain.md.")
+        except Exception as be:
+            print(f"[OctoBrain] Post-mortem failed: {be}")
     except Exception as e:
         print(f"[Runner] mode_monitor failed: {e}")
         discord_alert(f"monitor mode failed: {e}")
@@ -409,7 +914,7 @@ DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA"]
 
 
 def mode_daily() -> None:
-    print(f"\n[Runner] 🌊 Generating daily oracle read...")
+    print(f"\n[Runner] Generating daily oracle read...")
     try:
         snapshots = {}
         for ticker in DAILY_TICKERS:
@@ -439,8 +944,11 @@ def mode_daily() -> None:
         news_context = format_headlines_for_prompt(headlines)
         news_section = f"\n\nLatest news:\n{news_context}" if news_context else ""
 
+        tv_brief = get_tv_brief()
+        tv_section = f"\n\nChart Technical Data (TradingView live):\n{tv_brief}" if tv_brief else ""
+
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=350,
             system=OCTO_SYSTEM,
             messages=[{
@@ -449,11 +957,17 @@ def mode_daily() -> None:
                     "Generate the morning oracle market read for @octodamusai.\n"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
                     f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
+                    f"\n\nOptions Intelligence:\n{_get_deribit_context('BTC')}"
+                    f"\n\nCME Institutional Positioning (COT):\n{_get_cot_context('BTC')}"
+                    f"{tv_section}"
                     f"{news_section}\n\n"
+                    f"{build_youtube_context()}\n\n"
+                    f"{build_builders_context()}\n\n"
                     f"{build_call_context()}\n\n"
+                    f"{get_brain_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
-                    "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed divergence, cross-market correlation, OI shifts, liquidation patterns, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
+                    "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed ecosystem, cross-market correlation, OI shifts, liquidation patterns, options max pain, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
                     "If a headline reveals something ironic or contradictory — use it.\n"
                     "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the market read."
                 ),
@@ -463,7 +977,13 @@ def mode_daily() -> None:
         post = response.content[0].text.strip()
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
-            parse_call_from_post(post)
+            try:
+                recorded = parse_call_from_post(post)
+                if ("Oracle call:" in post or "oracle call:" in post) and not recorded:
+                    print(f"[Runner] WARNING: Oracle call in post but parse_call_from_post returned None — not recorded!")
+                    print(f"[Runner] Post tail: {post[-200:]}")
+            except Exception as _ce:
+                print(f"[Runner] ERROR recording oracle call: {_ce}")
 
         # Wrap in Oracle Signal Card — but skip if post contains an Oracle call
         # Oracle calls need full text, card format truncates them
@@ -505,7 +1025,7 @@ _DEEP_DIVE_MAX_POSTS = 4
 
 
 def mode_deep_dive(ticker: str) -> None:
-    print(f"\n[Runner] 🔱 Deep dive: {ticker}...")
+    print(f"\n[Runner] Deep dive: {ticker}...")
     try:
         headlines = get_top_headlines([ticker], max_per_symbol=5)
         ticker_headlines = headlines.get(ticker, [])
@@ -571,7 +1091,7 @@ def mode_wisdom() -> None:
         news_section = f"\n\nToday's headlines:\n{news_context}" if news_context else ""
 
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=150,
             system=OCTO_SYSTEM,
             messages=[{
@@ -579,6 +1099,8 @@ def mode_wisdom() -> None:
                 "content": (
                     f"Oracle post: {prompt}"
                     f"{news_section}\n\n"
+                    f"{build_youtube_context()}\n\n"
+                    f"{build_builders_context()}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
@@ -662,8 +1184,8 @@ def mode_soul() -> None:
 
 def mode_journal() -> None:
     try:
-        from octo_journal import run_journal_distillation
-        run_journal_distillation()
+        from octo_journal import run_journal
+        run_journal()
     except Exception as e:
         print(f"[Runner] mode_journal failed: {e}")
         sys.exit(1)
@@ -678,30 +1200,192 @@ def mode_journal() -> None:
 # ─────────────────────────────────────────────
 
 def mode_scorecard() -> None:
-    print(f"\n[Runner] 📊 Running scorecard resolution...")
+    print(f"\n[Runner] Running scorecard resolution...")
     try:
-        # Resolve open predictions
-        summary = resolve_predictions()
-        print(f"[Runner] Resolved {summary['resolved']} predictions: {summary['hits']} hits, {summary['misses']} misses")
+        # Auto-resolve expired oracle calls from live prices
+        resolved = autoresolve()
+        if resolved:
+            for r in resolved:
+                print(f"[Runner] #{r['id']} {r['asset']} {r['direction']} → {r['outcome']} "
+                      f"(${r['entry_price']:,.2f} → ${r['exit_price']:,.2f})")
+        else:
+            print("[Runner] No calls ready to resolve.")
+
+        # Fetch X engagement metrics for posts older than 24h that haven't been rated
+        try:
+            from octo_skill_log import fetch_engagement_for_pending
+            updated = fetch_engagement_for_pending(max_fetch=20)
+            if updated:
+                print(f"[Runner] Engagement metrics updated for {updated} post(s).")
+        except Exception as e:
+            print(f"[Runner] Engagement fetch skipped: {e}")
 
         # Generate and post weekly scorecard on Sundays
         from datetime import datetime
         if datetime.now().weekday() == 6:  # Sunday
-            post = generate_scorecard_post()
+            post = _build_scorecard_post()
             if post:
                 queue_post(post, post_type="scorecard", priority=1)
-                posted = process_queue(max_posts=1)
+                process_queue(max_posts=1)
                 print(f"[Runner] Scorecard posted to X.")
             else:
-                print("[Runner] No scorecard data to post yet.")
+                print("[Runner] No resolved calls to post scorecard yet.")
         else:
-            print(f"[Runner] Predictions resolved. Scorecard posts on Sundays.")
+            stats = get_stats()
+            print(f"[Runner] Scorecard runs on Sundays. Current record: "
+                  f"{stats['wins']}W / {stats['losses']}L ({stats['win_rate']}), streak: {stats['streak']}")
     except Exception as e:
         print(f"[Runner] mode_scorecard failed: {e}")
         discord_alert(f"scorecard mode failed: {e}")
 
 
+def _build_scorecard_post() -> str | None:
+    """Generate weekly scorecard post from octo_calls.json data."""
+    from datetime import datetime, timezone, timedelta
+    stats = get_stats()
+    wins = stats["wins"]
+    losses = stats["losses"]
+    total = wins + losses
+    if total == 0:
+        return None
+
+    win_rate = wins / total * 100
+    all_calls = stats["all_calls"]
+
+    # Best and worst resolved calls this week
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    recent_resolved = []
+    for c in all_calls:
+        if not c.get("resolved") or not c.get("resolved_at"):
+            continue
+        try:
+            resolved_dt = datetime.strptime(c["resolved_at"], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if resolved_dt >= week_ago:
+            recent_resolved.append(c)
+
+    if not recent_resolved:
+        # Fall back to all resolved calls if nothing resolved this week
+        recent_resolved = [c for c in all_calls if c.get("resolved")]
+
+    wins_this_week = [c for c in recent_resolved if c.get("outcome") == "WIN"]
+    losses_this_week = [c for c in recent_resolved if c.get("outcome") == "LOSS"]
+    week_total = len(wins_this_week) + len(losses_this_week)
+    week_rate = f"{len(wins_this_week)/week_total*100:.0f}%" if week_total > 0 else "N/A"
+
+    best = max(
+        wins_this_week,
+        key=lambda c: abs((c.get("exit_price", 0) - c["entry_price"]) / c["entry_price"]),
+        default=None
+    )
+    best_line = ""
+    if best:
+        pct = (best["exit_price"] - best["entry_price"]) / best["entry_price"] * 100
+        best_line = f"Best: {best['asset']} {best['direction']} {pct:+.1f}%."
+
+    post = (
+        f"Oracle weekly scorecard. {len(wins_this_week)}/{week_total} calls correct. "
+        f"Win rate: {week_rate}. All-time: {wins}W/{losses}L. "
+        f"{best_line} "
+        f"Streak: {stats['streak']}. Receipts posted. The ocean doesn't lie."
+    )
+    if len(post) > 280:
+        post = post[:277] + "..."
+    print(f"[Runner] Scorecard post: {post}")
+    return post
+
+
+def mode_youtube() -> None:
+    """
+    Scan watched channels for new videos.
+    Only generates and queues a post if the content scores 8+/10.
+    The post never mentions the video source — it reads as Octodamus's own thought.
+    """
+    print(f"\n[Runner] Scanning YouTube channels for new intel...")
+    try:
+        from octo_youtube import generate_post_from_intel
+        post_worthy = youtube_scan_channels()  # returns only 8+/10 entries
+
+        if not post_worthy:
+            print("[Runner] No post-worthy content found today.")
+            return
+
+        # Take the single highest-relevance entry
+        best = max(post_worthy, key=lambda e: e["summary"].get("relevance", 0))
+        relevance = best["summary"].get("relevance", 0)
+        pillar = best["summary"].get("pillar", "?")
+        print(f"[Runner] Best entry: [{best['channel']}] {best['title']} — {relevance}/10 ({pillar})")
+
+        post = generate_post_from_intel(best)
+        if not post:
+            print("[Runner] Post generation returned nothing.")
+            return
+
+        print(f"[Runner] Generated post:\n  {post}")
+        queue_post(post, post_type="youtube", priority=2)
+        posted = process_queue(max_posts=1)
+        if posted:
+            print(f"[Runner] YouTube-inspired post published.")
+            discord_alert(
+                f"YouTube post published ({relevance}/10, {pillar}):\n{post}"
+            )
+        else:
+            print("[Runner] Post queued (posting hours or limit reached).")
+
+    except Exception as e:
+        print(f"[Runner] mode_youtube failed: {e}")
+        discord_alert(f"youtube mode failed: {e}")
+
+
+def mode_moonshot() -> None:
+    """
+    Weekly scan of 10 Moonshots Podcast 2026 predictions.
+    Rotates through predictions 3 at a time, finds the most interesting
+    current signal, posts as Octodamus.
+    """
+    print("\n[Runner] Scanning Moonshot predictions...")
+    try:
+        from moonshot_tracker import build_moonshot_context
+        moonshot_ctx = build_moonshot_context(max_predictions=3)
+        print(moonshot_ctx)
+
+        call_ctx = build_call_context() if _CALLS_ACTIVE else ""
+
+        system = OCTO_SYSTEM + """
+
+You track 10 major technology predictions for 2026 from leading futurists.
+Your job: find ONE prediction that has the most interesting real-world signal RIGHT NOW.
+Write one oracle post about it — what's actually happening, what does it signal?
+Be specific. Use data if you have it. Connect it to the bigger picture.
+Do NOT write Oracle call: — this is analysis, not a directional trade call.
+Under 480 chars. No hashtags."""
+
+        prompt = (
+            f"{moonshot_ctx}\n\n"
+            f"{call_ctx}\n\n"
+            "Pick the single most interesting prediction signal happening RIGHT NOW. "
+            "What has changed? What data point or event confirms or challenges this prediction? "
+            "Write one sharp oracle post for @octodamusai. Under 480 chars."
+        )
+
+        response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=200,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        post = response.content[0].text.strip()
+        queue_post(post, post_type="moonshot", priority=3)
+        posted = process_queue(max_posts=1)
+        print(f"[Runner] Moonshot post {'posted' if posted else 'queued'}:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_moonshot failed: {e}")
+        discord_alert(f"moonshot mode failed: {e}")
+
+
 def mode_congress() -> None:
+    import re as _re
     print(f"\n[Runner] Scanning congressional trades...")
     try:
         data = run_congress_scan(days_back=45)
@@ -713,25 +1397,128 @@ def mode_congress() -> None:
             return
         context = format_congress_for_prompt(data)
         print(context)
+
+        # Build ground-truth sets for validation
+        valid_tickers = {t["ticker"].upper() for t in data.get("trades", [])}
+        valid_names   = {t["politician"].split()[-1] for t in data.get("trades", [])}
+
+        from datetime import date
+        today = date.today().strftime("%B %d, %Y")
         response = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
             system=OCTO_SYSTEM,
             messages=[{"role": "user", "content": (
-                f"Congressional trading alert for @octodamusai.\n{context}\n\n"
+                f"Today is {today}. Congressional trading alert for @octodamusai.\n{context}\n\n"
+                "STRICT RULE: Only reference tickers, politician names, dates, and dollar amounts "
+                "that appear verbatim in the data above. Do NOT invent tickers, companies, or trade "
+                "details not present. If you mention a stock, it must be one of: "
+                f"{', '.join(sorted(valid_tickers))}.\n\n"
                 "CONTRARIAN voice. One post under 280 chars.\n"
                 "Core belief: Congress members don't predict markets — they front-run them. "
                 "They trade on what they know is coming. Follow the money, not the narrative.\n"
                 "Name the politician and ticker. Call out the timing. "
-                "What do they know that the market doesn't yet? End with a price call. No hashtags."
+                "What do they know that the market doesn't yet? No price targets. No hashtags."
             )}],
         )
         post = response.content[0].text.strip()
+
+        # Validate: any $TICKER in post must be in actual congress data
+        mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
+        hallucinated = mentioned - valid_tickers
+        if hallucinated:
+            print(f"[Runner] BLOCKED congress post — hallucinated tickers: {hallucinated}")
+            print(f"[Runner] Blocked post was:\n  {post}")
+            discord_alert(f"Congress post blocked: hallucinated {hallucinated} — not in data {valid_tickers}")
+            return
+
         queue_post(post, post_type="congress_signal", priority=2)
         posted = process_queue(max_posts=1)
         print(f"[Runner] Congress signal posted:\n  {post}")
     except Exception as e:
         print(f"[Runner] mode_congress failed: {e}")
+
+
+# ─────────────────────────────────────────────
+# MODE: FORMAT — viral format rotation post
+# ─────────────────────────────────────────────
+
+def mode_format() -> None:
+    """
+    Generate a post using the viral format rotation engine.
+    Formats: data_drop | ai_humor | market_math | oracle_take | contrarian
+    Never posts same format twice in a row. Learns from engagement data.
+    """
+    try:
+        from octo_format_engine import run_format_post, format_engine_status
+        print(format_engine_status())
+
+        # Build extra context from call record
+        call_ctx = build_call_context() if _CALLS_ACTIVE else ""
+        result   = run_format_post(context=call_ctx)
+
+        if not result:
+            print("[Runner] Format engine returned no post.")
+            return
+
+        post = result["text"]
+        fmt  = result["format"]
+
+        queue_post(post, post_type=fmt, priority=4)
+        posted = process_queue(max_posts=1)
+
+        if posted:
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                _last = list(_plog.values())[-1]
+                log_post(_last["text"], fmt, fmt, False, _last.get("url", ""))
+            except Exception:
+                log_post(post, fmt, fmt, False)
+
+        print(f"[Runner] Format post [{fmt}] {'posted' if posted else 'queued'}:\n  {post}")
+
+    except Exception as e:
+        print(f"[Runner] mode_format failed: {e}")
+        discord_alert(f"format mode failed: {e}")
+
+
+# ─────────────────────────────────────────────
+# MODE: QRT — breaking news quote-tweet
+# ─────────────────────────────────────────────
+
+def mode_qrt() -> None:
+    """
+    Scan for breaking news headlines and generate QRT captions.
+    Window: 30-60 min after headline drops. Posts immediately if worthy.
+    """
+    try:
+        from octo_format_engine import run_qrt_scan
+
+        qrts = run_qrt_scan()
+
+        if not qrts:
+            print("[Runner] No QRT-worthy headlines right now.")
+            return
+
+        for qrt in qrts[:1]:   # post max 1 QRT per run
+            post     = qrt["text"]
+            headline = qrt.get("headline", "")
+            source   = qrt.get("source", "")
+
+            # Prepend headline as context line if it fits
+            full_post = post
+            queue_post(full_post, post_type="qrt", priority=2,
+                       metadata={"headline": headline, "source": source})
+            posted = process_queue(max_posts=1)
+            print(f"[Runner] QRT {'posted' if posted else 'queued'}:")
+            print(f"  Headline: {headline[:70]}")
+            print(f"  Caption:  {post[:80]}")
+
+    except Exception as e:
+        print(f"[Runner] mode_qrt failed: {e}")
+        discord_alert(f"qrt mode failed: {e}")
 
 
 if __name__ == "__main__":
@@ -740,7 +1527,8 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress",
+            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "moonshot",
+            "mentions", "youtube", "format", "qrt",
         ],
         default="monitor",
     )
@@ -785,3 +1573,14 @@ if __name__ == "__main__":
     elif args.mode == "engage":
         from octo_engage import run as engage_run
         engage_run()
+    elif args.mode == "moonshot":
+        mode_moonshot()
+    elif args.mode == "mentions":
+        from octo_x_mentions import poll_and_reply
+        poll_and_reply(claude_client=claude)
+    elif args.mode == "youtube":
+        mode_youtube()
+    elif args.mode == "format":
+        mode_format()
+    elif args.mode == "qrt":
+        mode_qrt()

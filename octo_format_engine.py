@@ -238,6 +238,8 @@ Write a DATA DROP post. Post raw market numbers that traders care about but most
 Ideas: funding rate direction, OI change, F&G at extreme, volume anomaly, specific price level holding or breaking.
 
 Rules:
+- CRITICAL: Only use prices and figures from LIVE DATA above. Do NOT cite historical
+  prices, ATHs, or any numbers from your training data.
 - Lead with the number. Specific beats vague. "$82,400" beats "near ATH".
 - 1-2 sentences max. No fluff.
 - End with what the data implies — one short phrase. Not a question.
@@ -352,6 +354,7 @@ LIVE DATA: {market_line}
 {context}
 
 Write a sharp market signal post. One clear observation. One implied direction.
+CRITICAL: Only use prices from LIVE DATA above. Do not cite historical prices or ATHs.
 Under 240 characters. No hashtags. No emoji. Dry and precise.
 """
 

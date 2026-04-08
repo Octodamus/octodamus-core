@@ -3,11 +3,11 @@ octo_engage.py — Octodamus Engagement Engine
 
 Fetches news on tracked assets (stocks, crypto, oil, macro).
 Generates Carlin-voice commentary with occasional directional calls.
-Posts via OpenTweet with article link.
+Posts via X API v2 (tweepy, pay-per-use).
 
 Run:
- python octo_engage.py      # post 3 tweets
- python octo_engage.py --count 5 # post 5
+ python octo_engage.py      # post 1 tweet
+ python octo_engage.py --count 3
 """
 
 import argparse
@@ -23,11 +23,9 @@ import httpx
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-OPENTWEET_BASE = "https://opentweet.io/api/v1"
 NEWSAPI_BASE  = "https://newsapi.org/v2/everything"
-SECRETS_FILE  = Path(r"C:\Users\walli\octodamus\.octo_secrets")
-CALLS_FILE   = Path(r"C:\Users\walli\octodamus\data\octo_calls.json")
-STATE_FILE   = Path(r"C:\Users\walli\octodamus\octo_engage_state.json")
+CALLS_FILE    = Path(r"C:\Users\walli\octodamus\data\octo_calls.json")
+STATE_FILE    = Path(r"C:\Users\walli\octodamus\octo_engage_state.json")
 DEFAULT_COUNT = 1
 
 # Assets Octodamus tracks — drives what news gets fetched
@@ -75,12 +73,15 @@ def _is_trusted(url: str) -> bool:
 # ── Secrets ───────────────────────────────────────────────────────────────────
 
 def load_secrets():
-  raw = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
-  data = raw.get("secrets", raw)
-  for key in ("OPENTWEET_API_KEY", "ANTHROPIC_API_KEY", "NEWSAPI_API_KEY"):
-    if data.get(key):
-      os.environ[key] = data[key]
-  missing = [k for k in ("OPENTWEET_API_KEY", "ANTHROPIC_API_KEY", "NEWSAPI_API_KEY")
+  """Load secrets via bitwarden (replaces old .octo_secrets file approach)."""
+  try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    import bitwarden
+    bitwarden.load_all_secrets()
+  except Exception as e:
+    print(f"[Engage] Bitwarden load warning: {e}")
+  missing = [k for k in ("ANTHROPIC_API_KEY", "NEWSAPI_API_KEY")
         if not os.environ.get(k)]
   if missing:
     raise RuntimeError(f"Missing secrets: {missing}")
@@ -184,39 +185,17 @@ def gather_articles(max_total: int = 30) -> list:
 
   return unique[:max_total]
 
-# ── OpenTweet ─────────────────────────────────────────────────────────────────
+# ── X API v2 (tweepy) ─────────────────────────────────────────────────────────
 
-def _ot_headers():
-  return {
-    "Authorization": f"Bearer {os.environ['OPENTWEET_API_KEY']}",
-    "Content-Type": "application/json",
-  }
+def _daily_remaining() -> int:
+  """Return remaining posts allowed today based on octo_x_poster daily limit."""
+  from octo_x_poster import _DAILY_LIMIT, _posts_today
+  return max(0, _DAILY_LIMIT - _posts_today())
 
-def _ot_remaining() -> int:
-  r = httpx.get(f"{OPENTWEET_BASE}/me", headers=_ot_headers(), timeout=10)
-  r.raise_for_status()
-  return r.json().get("limits", {}).get("remaining_posts_today", 0)
-
-def post_tweet(text: str):
-  r = httpx.post(
-    f"{OPENTWEET_BASE}/posts",
-    headers=_ot_headers(),
-    json={"text": text},
-    timeout=15,
-  )
-  r.raise_for_status()
-  result = r.json()
-  posts = result.get("posts", [])
-  post_id = (posts[0].get("id") if posts else None) or result.get("id")
-  if not post_id:
-    raise ValueError(f"No post ID in response: {result}")
-  pub = httpx.post(
-    f"{OPENTWEET_BASE}/posts/{post_id}/publish",
-    headers=_ot_headers(),
-    timeout=10,
-  )
-  pub.raise_for_status()
-  return pub.json()
+def post_tweet(text: str) -> dict:
+  """Post a single tweet via tweepy. Returns dict with id and url."""
+  from octo_x_poster import _post_single
+  return _post_single(text)
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 
@@ -242,7 +221,10 @@ RULES:
 - No hashtags
 - No emoji unless it's the closing or 🔮 and it actually earns it
 - Never "Great point" or any opener filler
-- Specific beats vague — use the actual price, percentage, or name
+- Specific beats vague — use the actual price, percentage, or name from LIVE DATA only
+- CRITICAL: Only use prices from the live data injected into this prompt. Do NOT cite
+  historical prices, ATHs, or any figures from your training data. If a price is not
+  in the live data provided, do not reference it.
 - If the headline has no angle worth taking, reply: SKIP
 - Never make a directional call on an asset that already has an open call listed below
 
@@ -301,10 +283,10 @@ def generate_take(article: dict, open_calls_text: str, live_prices: str = "") ->
 def run(count: int = DEFAULT_COUNT):
   load_secrets()
 
-  remaining = _ot_remaining()
-  print(f"[Engage] OpenTweet quota: {remaining} remaining today.")
+  remaining = _daily_remaining()
+  print(f"[Engage] X API budget: {remaining} posts remaining today.")
   if remaining <= 0:
-    print("[Engage] Quota exhausted. Exiting.")
+    print("[Engage] Daily post limit reached. Exiting.")
     return
 
   count = min(count, remaining)
@@ -320,7 +302,7 @@ def run(count: int = DEFAULT_COUNT):
     print("[Engage] No fresh articles found.")
     return
 
-  print(f"[Engage] {len(articles)} fresh articles. Generating {count} tweets...")
+  print(f"[Engage] {len(articles)} fresh articles. Generating {count} tweet(s)...")
 
   state = load_state()
   posted_titles = state.get("posted_titles", [])
@@ -338,15 +320,27 @@ def run(count: int = DEFAULT_COUNT):
       continue
 
     try:
-      # Append article URL — X counts URLs as 23 chars
+      # Append article URL — X counts t.co links as ~23 chars
       url = article.get("url", "")
       trimmed = take[:256].rstrip()
       tweet_text = f"{trimmed}\n{url}" if url else trimmed
 
-      post_tweet(tweet_text)
+      result = post_tweet(tweet_text)
+      tweet_url = result.get("url", "")
       posted += 1
       posted_titles.append(article["title"])
       print(f"[Engage] ✓ [{article['ticker']}] {trimmed[:80]}...")
+      if tweet_url:
+        print(f"[Engage]   → {tweet_url}")
+
+      # Log to skill system for engagement tracking
+      try:
+        from octo_skill_log import log_post
+        tweet_id = result.get("id", "")
+        log_post(tweet_text, "engage", "carlin", False, tweet_url, tweet_id)
+      except Exception:
+        pass
+
       time.sleep(4)
 
     except Exception as e:
@@ -356,7 +350,7 @@ def run(count: int = DEFAULT_COUNT):
     "posted_titles": posted_titles[-500:],
     "last_run": datetime.now(timezone.utc).isoformat(),
   })
-  print(f"[Engage] Done. Posted {posted}/{count} tweets.")
+  print(f"[Engage] Done. Posted {posted}/{count} tweet(s).")
 
 
 if __name__ == "__main__":
