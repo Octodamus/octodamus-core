@@ -165,13 +165,55 @@ def _check_rate_limit(api_key: str, tier: str) -> dict:
             "minute_remaining": limits["req_per_minute"] - minute_used - 1,
         }
 
+_X402_TREASURY = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
+_X402_USDC     = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC on Base
+
+def _x402_header(amount_usdc: float = 29.0) -> dict:
+    """
+    Build the x402/1 payment descriptor for the X-Payment-Required header.
+    amount_usdc in whole dollars → converted to USDC micro-units (6 decimals).
+    """
+    micro = str(int(amount_usdc * 1_000_000))
+    return {
+        "version": "x402/1",
+        "accepts": [
+            {
+                "scheme":            "exact",
+                "network":           "base-mainnet",
+                "maxAmountRequired": micro,
+                "payTo":             _X402_TREASURY,
+                "asset":             _X402_USDC,
+                "extra": {
+                    "description": "OctoData Premium API — annual access (365 days, 10k req/day)",
+                    "mimeType":    "application/json",
+                    "checkout":    "POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual",
+                    "docs":        "https://api.octodamus.com/docs",
+                },
+            },
+            {
+                "scheme":            "exact",
+                "network":           "base-mainnet",
+                "maxAmountRequired": "5000000",
+                "payTo":             _X402_TREASURY,
+                "asset":             _X402_USDC,
+                "extra": {
+                    "description": "OctoData Premium API — 7-day trial",
+                    "mimeType":    "application/json",
+                    "checkout":    "POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial",
+                    "docs":        "https://api.octodamus.com/docs",
+                },
+            },
+        ],
+    }
+
+
 async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADER)):
     """
     Require valid key + enforce tier rate limits.
     Also supports x402 crypto payment flow for AI agents:
       - No key + X-PAYMENT header → verify on-chain payment, provision key
-      - No key, no payment → 402 with payment instructions
-    Returns (api_key, entry) tuple.
+      - No key, no payment → 402 with x402/1 X-Payment-Required header
+    Returns (api_key, entry, rl) tuple.
     """
     # x402: agent already paid and sent X-PAYMENT proof header
     x_payment = request.headers.get("X-PAYMENT", "")
@@ -186,6 +228,7 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
             else:
                 raise HTTPException(
                     status_code=402,
+                    headers={"X-Payment-Required": json.dumps(_x402_header())},
                     detail={
                         "error":    "payment_required",
                         "message":  "X-PAYMENT token not yet fulfilled. Poll /v1/agent-checkout/status first.",
@@ -198,15 +241,21 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
             pass
 
     if not api_key:
-        # x402 Payment Required — agent-native response
+        # x402 Payment Required — fully spec-compliant (x402/1) + human-readable body
         raise HTTPException(
             status_code=402,
+            headers={"X-Payment-Required": json.dumps(_x402_header())},
             detail={
+                "x402":            "x402/1",
                 "error":           "payment_required",
-                "message":         "This endpoint requires an API key. Get a free Basic key or pay with USDC on Base.",
+                "message":         "This endpoint requires an API key. Get a free Basic key or pay $29 USDC on Base.",
                 "free_key":        "POST https://api.octodamus.com/v1/signup?email=your@email.com",
                 "crypto_checkout": "POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual&agent_wallet=0xYOUR_WALLET",
-                "usdc_price":      "$29 USDC on Base (chain_id=8453)",
+                "trial_checkout":  "POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial&agent_wallet=0xYOUR_WALLET",
+                "usdc_price":      "$29 USDC on Base (chain_id=8453) | $5 USDC 7-day trial",
+                "pay_to":          _X402_TREASURY,
+                "asset":           _X402_USDC,
+                "network":         "base-mainnet",
                 "header_name":     "X-OctoData-Key",
                 "docs":            "https://api.octodamus.com/docs",
             }
@@ -1771,6 +1820,160 @@ def v2_signal(auth=Depends(require_key_v2)):
             "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
 
 
+@app.get("/v2/agent-signal", tags=["Agent Data v2"])
+def v2_agent_signal(auth=Depends(require_key_v2)):
+    """
+    **Structured signal pack for AI agents — poll every 15 minutes.**
+
+    Returns the single most actionable piece of intelligence Octodamus has right now:
+    top Oracle signal, Fear & Greed index, BTC price + trend, and top Polymarket edge plays.
+
+    Designed for autonomous agents on Virtuals, x402, and Base that need a one-call
+    decision input without parsing multiple endpoints.
+
+    ```json
+    {
+      "action": "BUY",
+      "confidence": "high",
+      "signal": {"asset": "BTC", "direction": "LONG", "timeframe": "1W"},
+      "fear_greed": {"value": 17, "label": "Extreme Fear"},
+      "btc": {"price_usd": 82400, "change_24h": 4.1, "trend": "UP"},
+      "polymarket_edge": [
+        {"question": "Will BTC hit $90k before May?", "side": "NO", "ev": 0.18, "confidence": "high"}
+      ],
+      "reasoning": "Extreme fear + LONG signal + macro dip = accumulation zone.",
+      "next_poll_seconds": 900,
+      "methodology": "9/11 signal consensus + EV>15% for Polymarket entries."
+    }
+    ```
+    """
+    _, key, rl = auth
+    ts = datetime.utcnow().isoformat()
+
+    # ── Oracle signal ─────────────────────────────────────────────────────────
+    calls      = _load_calls()
+    open_calls = [c for c in calls if not c.get("resolved")]
+    stats      = _call_stats(calls)
+
+    top_signal = None
+    if open_calls:
+        c = open_calls[-1]
+        top_signal = {
+            "asset":       c.get("asset", ""),
+            "direction":   c.get("direction", ""),
+            "timeframe":   c.get("timeframe", ""),
+            "opened_at":   c.get("opened_at", ""),
+            "confidence":  c.get("confidence"),
+            "entry_price": c.get("entry_price"),
+            "target_price": c.get("target_price"),
+        }
+
+    # ── Fear & Greed ──────────────────────────────────────────────────────────
+    fng = {}
+    try:
+        snap = load_snapshot("prices")
+        fng_raw = snap.get("fear_greed") or {}
+        fng = {"value": fng_raw.get("value"), "label": fng_raw.get("label")}
+    except Exception:
+        pass
+
+    # ── BTC price ─────────────────────────────────────────────────────────────
+    btc_out = {}
+    try:
+        snap = load_snapshot("prices")
+        prices = snap.get("prices", {})
+        btc = prices.get("BTC", {})
+        chg = btc.get("change_24h", 0) or 0
+        btc_out = {
+            "price_usd": btc.get("price"),
+            "change_24h": round(chg, 2),
+            "trend": "UP" if chg > 0.5 else ("DOWN" if chg < -0.5 else "FLAT"),
+        }
+    except Exception:
+        pass
+
+    # ── Polymarket edge ───────────────────────────────────────────────────────
+    poly_edge = []
+    try:
+        boto_data = _load_boto_trades()
+        positions = boto_data.get("positions", [])
+        # Sort by EV descending, take top 3
+        sorted_pos = sorted(positions, key=lambda p: p.get("ev", 0) or 0, reverse=True)
+        for p in sorted_pos[:3]:
+            poly_edge.append({
+                "question":   p.get("question", "")[:100],
+                "side":       p.get("side", ""),
+                "entry_price": p.get("entry_price"),
+                "ev":         p.get("ev"),
+                "confidence": p.get("confidence", ""),
+                "url":        p.get("url", ""),
+            })
+    except Exception:
+        pass
+
+    # ── Derive action + reasoning ─────────────────────────────────────────────
+    action     = "HOLD"
+    confidence = "low"
+    reasoning  = "Insufficient data for a directional call."
+
+    fng_val = fng.get("value") or 50
+    btc_trend = btc_out.get("trend", "FLAT")
+
+    if top_signal:
+        direction = top_signal.get("direction", "")
+        sig_conf  = top_signal.get("confidence") or "medium"
+        asset     = top_signal.get("asset", "BTC")
+
+        if direction in ("LONG", "BUY"):
+            action     = "BUY"
+            confidence = sig_conf
+            if fng_val <= 30:
+                reasoning = (
+                    f"Oracle LONG on {asset} + Extreme/Fear sentiment (F&G {fng_val}) = "
+                    f"high-conviction accumulation zone. Trend: {btc_trend}."
+                )
+            else:
+                reasoning = (
+                    f"Oracle LONG on {asset} (F&G {fng_val}). "
+                    f"Trend: {btc_trend}. Wait for better fear entry if possible."
+                )
+        elif direction in ("SHORT", "SELL"):
+            action     = "SELL"
+            confidence = sig_conf
+            if fng_val >= 70:
+                reasoning = (
+                    f"Oracle SHORT on {asset} + Greed/Extreme Greed (F&G {fng_val}) = "
+                    f"distribution zone. Trend: {btc_trend}."
+                )
+            else:
+                reasoning = (
+                    f"Oracle SHORT on {asset} (F&G {fng_val}). Trend: {btc_trend}."
+                )
+    elif fng_val <= 15:
+        action     = "WATCH"
+        confidence = "medium"
+        reasoning  = f"No open Oracle signal but Extreme Fear (F&G {fng_val}) — watch for entry."
+    elif fng_val >= 80:
+        action     = "WATCH"
+        confidence = "medium"
+        reasoning  = f"No open Oracle signal but Extreme Greed (F&G {fng_val}) — watch for exit."
+
+    return _resp({
+        "action":          action,
+        "confidence":      confidence,
+        "signal":          top_signal,
+        "fear_greed":      fng,
+        "btc":             btc_out,
+        "polymarket_edge": poly_edge,
+        "track_record":    _track_record(stats),
+        "reasoning":       reasoning,
+        "next_poll_seconds": 900,
+        "methodology":     "9/11 signal consensus + EV>15% for Polymarket entries.",
+        "timestamp":       ts,
+        "source":          _SOURCE_BLOCK,
+    }, rl)
+
+
 @app.get("/v2/polymarket", tags=["Agent Data v2"])
 def v2_polymarket(auth=Depends(require_key_v2)):
     """
@@ -2233,6 +2436,68 @@ def webhook_unsubscribe(auth=Depends(require_key_v2)):
     del wh[api_key_val]
     _save_webhooks(wh)
     return _resp({"status": "unsubscribed", "timestamp": datetime.utcnow().isoformat()}, rl)
+
+
+@app.get("/v1/key/status", tags=["Agent Commerce"])
+def key_status(auth=Depends(require_key_v2)):
+    """
+    **Check API key status, tier, expiry, and renewal instructions.**
+
+    AI agents can poll this to self-renew before expiry — no human required.
+
+    ```json
+    {
+      "status": "active",
+      "tier": "premium",
+      "expires": "2027-04-08T00:00:00",
+      "days_remaining": 365,
+      "renew": {
+        "instructions": "POST /v1/agent-checkout?product=premium_annual&agent_wallet=0xYOUR",
+        "price_usdc": 29,
+        "network": "base-mainnet"
+      }
+    }
+    ```
+    """
+    api_key_val, key, rl = auth
+    expires_str = key.get("expires")
+    days_remaining = None
+    status = "active"
+
+    if expires_str:
+        try:
+            exp = datetime.fromisoformat(expires_str)
+            delta = exp - datetime.utcnow()
+            days_remaining = max(0, delta.days)
+            if days_remaining == 0:
+                status = "expiring_soon"
+        except Exception:
+            pass
+
+    wallet = key.get("agent_wallet", "")
+    renew_url = (
+        f"POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual"
+        + (f"&agent_wallet={wallet}" if wallet else "&agent_wallet=0xYOUR_WALLET")
+    )
+
+    return _resp({
+        "status":         status,
+        "tier":           key.get("tier", "basic"),
+        "label":          key.get("label", ""),
+        "expires":        expires_str,
+        "days_remaining": days_remaining,
+        "renew": {
+            "instructions":  renew_url,
+            "price_usdc":    29,
+            "trial_usdc":    5,
+            "network":       "base-mainnet",
+            "pay_to":        _X402_TREASURY,
+            "asset_usdc":    _X402_USDC,
+            "note":          "Send exact amount → poll /v1/agent-checkout/status → receive new key.",
+            "x402_header":   "X-Payment-Required header on any 402 response contains machine-readable payment descriptor.",
+        },
+        "timestamp": datetime.utcnow().isoformat(),
+    }, rl)
 
 
 @app.get("/v2/webhooks/status", tags=["Webhooks"])
