@@ -16,7 +16,17 @@ from typing import Optional
 import numpy as np
 
 # â"€â"€â"€ Constants â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-MIN_EV_THRESHOLD   = 0.12   # 6% edge required (raised from 5%)
+_DEFAULT_EV_THRESHOLD = 0.12
+
+def _get_ev_threshold() -> float:
+    """Read dynamic threshold from calibration system. Falls back to default."""
+    try:
+        from octo_boto_calibration import get_dynamic_threshold
+        return get_dynamic_threshold()
+    except Exception:
+        return _DEFAULT_EV_THRESHOLD
+
+MIN_EV_THRESHOLD = _DEFAULT_EV_THRESHOLD  # startup default; overridden per-call below
 MIN_LIQUIDITY      = 10_000  # $3k min liquidity (lowered to find more markets)
 MIN_VOLUME_24H     = 2_000    # $500+ daily volume (screens out dead markets)
 KELLY_FRACTION     = 0.25   # Quarter-Kelly â€" proven safer for volatile markets
@@ -130,6 +140,9 @@ def position_size(bankroll: float, kelly_frac: float) -> float:
 # â"€â"€â"€ Best Trade â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def best_trade(market_price: float, true_p: float) -> dict:
+    global MIN_EV_THRESHOLD
+    MIN_EV_THRESHOLD = _get_ev_threshold()
+
     """
     Return the best tradeable side and key metrics.
     Returns NONE if no side clears MIN_EV_THRESHOLD.
