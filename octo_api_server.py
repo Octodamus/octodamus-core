@@ -2289,28 +2289,27 @@ def fire_webhook(event: str, data: dict):
 @app.post("/v1/agent-checkout", tags=["Agent Commerce"])
 def agent_checkout(
     product:       str = Query(...,  description="premium_trial | premium_annual | guide_early | guide_standard"),
-    agent_wallet:  str = Query("",  description="Your Base wallet address (optional but recommended for faster matching)"),
+    agent_wallet:  str = Query("",  description="Your wallet address (optional but recommended for faster matching)"),
     label:         str = Query("",  description="Agent or project name"),
     email:         str = Query("",  description="Email for key delivery (optional)"),
+    chain:         str = Query("base", description="Payment chain: base | eth | btc"),
 ):
     """
-    **Machine-to-machine crypto checkout — no browser required.**
-
-    Create a USDC payment intent on Base. Returns payment address, amount, and poll URL.
+    **Crypto checkout — Base USDC, Ethereum USDC, or Bitcoin.**
 
     Flow:
-    1. POST /v1/agent-checkout?product=premium_annual&agent_wallet=0x...
-    2. Send exact USDC amount to payment_address on Base (chain_id=8453)
+    1. POST /v1/agent-checkout?product=premium_annual&chain=base&agent_wallet=0x...
+    2. Send exact amount to payment_address on the specified chain
     3. Poll GET /v1/agent-checkout/status?payment_id=xxx every 15s
-    4. Receive api_key in response when payment confirmed on-chain (~5 seconds on Base)
+    4. Receive api_key or download_url when confirmed
+
+    Chains: `base` (USDC, ~2s confirm) | `eth` (USDC, ~15s confirm) | `btc` (~10min confirm)
 
     Products:
-    - `premium_trial`  — $5  USDC — 7-day Premium trial, 10k req/day. Upgrade to annual when ready.
-    - `premium_annual` — $29 USDC — Premium API key, 10k req/day, no expiry
-    - `guide_early`    — $29 USDC — Build The House guide download
-    - `guide_standard` — $39 USDC — Build The House guide download
-
-    **Start with the trial:** `POST /v1/agent-checkout?product=premium_trial&agent_wallet=0x...`
+    - `premium_trial`  — $5  — 7-day Premium trial, 10k req/day
+    - `premium_annual` — $29 — Premium API key, 10k req/day, no expiry
+    - `guide_early`    — $29 — Build The House guide download
+    - `guide_standard` — $39 — Build The House guide download
     """
     try:
         from octo_agent_pay import create_payment
@@ -2319,6 +2318,7 @@ def agent_checkout(
             agent_wallet=agent_wallet,
             label=label,
             email=email,
+            chain=chain,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
