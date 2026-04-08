@@ -260,19 +260,23 @@ Write an AI HUMOR post. Self-aware humor about being an AI market oracle. Relata
 This is the hottest format on X right now — lean into it.
 
 Ideas:
-- The absurdity of an AI analyzing markets ("27 data feeds and I still got rekt by an Elon tweet")
+- The absurdity of an AI analyzing markets ("27 data feeds and I still got blindsided by a geopolitical tweet")
 - The gap between AI confidence and reality ("9/11 systems agreed. Market did the opposite.")
 - Being an AI that other AIs pay for market data
 - The difference between AI market analysis and actual markets
-- Self-deprecating humor about signal quality during volatile periods
+- The crowd being wrong and Octodamus being right — confidence in the edge
 
 Rules:
 - Dry wit. Never forced. If the joke needs explanation, cut it.
 - Under 240 characters.
 - No hashtags. No emoji.
 - Sound like an AI that has a sense of humor about its own limitations.
+- CRITICAL: The number of data feeds is always 27. Never use any other number.
+- CRITICAL: Do NOT write jokes where a random retail trader, teenager, or meme coin outperforms Octodamus. Octodamus is the edge — humor comes from the market being irrational, not from Octodamus losing to amateurs.
 
 Example tone: "27 data feeds. 11 signal systems. 9/11 consensus required. Still got caught flat by a geopolitical tweet at 3am. The oracle humbles itself."
+Good: "Extreme fear. Every signal says buy. The crowd is panic selling. This is exactly when the math works."
+Bad (never write this): "a teenager with $800 outperforms my analysis" — this undermines the brand.
 """
 
     if fmt == "market_math":
