@@ -370,6 +370,78 @@ def build_live_context() -> str:
 
 # ── System Prompt ───────────────────────────────────────────────────────────────
 
+def _get_live_btc_price() -> float | None:
+    """Return live BTC price as a float, or None if unavailable."""
+    try:
+        from octo_market_feed import feed as _mf
+        if _mf:
+            p = _mf.get_price("BTC")
+            if p:
+                return float(p)
+    except Exception:
+        pass
+    try:
+        import httpx as _hx3
+        r = _hx3.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin", "vs_currencies": "usd"},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return float(r.json()["bitcoin"]["usd"])
+    except Exception:
+        pass
+    return None
+
+
+def _check_price_hallucination(text: str, live_btc: float | None) -> str | None:
+    """
+    Scan response text for BTC price mentions that don't match live price.
+    Returns a warning string if a hallucination is detected, else None.
+    Looks for patterns like $80k, $80,000, 80k, 80,000 near BTC references.
+    Tolerance: ±$3,000 from live price.
+    """
+    if live_btc is None:
+        return None
+    import re
+    # Match $XX,XXX or $XXk or plain XXk or XX,XXX near btc keyword
+    price_patterns = [
+        r'\$(\d{2,3})[kK]',           # $80k, $80K
+        r'\$(\d{2,3}),(\d{3})',        # $80,000
+        r'\b(\d{2,3})[kK]\b',          # 80k standalone
+    ]
+    mentioned_prices = []
+    for pat in price_patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            groups = m.groups()
+            if len(groups) == 1:
+                # Either $80k or 80k — multiply by 1000
+                try:
+                    val = float(groups[0]) * 1000
+                    mentioned_prices.append((val, m.group(0)))
+                except ValueError:
+                    pass
+            elif len(groups) == 2:
+                # $80,000 format
+                try:
+                    val = float(groups[0] + groups[1])
+                    mentioned_prices.append((val, m.group(0)))
+                except ValueError:
+                    pass
+
+    tolerance = 3_000
+    hallucinations = [
+        display for val, display in mentioned_prices
+        if abs(val - live_btc) > tolerance and 20_000 < val < 500_000
+    ]
+    if hallucinations:
+        return (
+            f"\n\n[PRICE CORRECTION: Response mentioned {', '.join(set(hallucinations))} "
+            f"but live BTC is ${live_btc:,.0f}. Disregard any prices that differ from live data.]"
+        )
+    return None
+
+
 def _get_live_prices() -> str:
     """Fetch live crypto prices for system prompt injection."""
     # Try shared Binance WebSocket feed first (instant, no rate limits)
@@ -474,6 +546,7 @@ ABSOLUTE RULES:
 - Write in sentences and paragraphs.
 - NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
 - NEVER quote a specific price or make an oracle call if LIVE PRICES shows "unavailable". State that live data is temporarily down and no call will be made. This rule overrides everything else.
+- PRICE ACCURACY IS MANDATORY: Every specific dollar figure you write for BTC, ETH, or SOL MUST match the LIVE PRICES section above. If news or your training data suggests a different price, discard it. The only valid prices are the ones in LIVE PRICES. If you are unsure, describe the direction and percentage move only — never invent an absolute dollar figure. Writing "$80k" when LIVE PRICES shows $72,157 is a factual error and is not permitted.
 
 CALL RECORD:
 {build_call_context()}
@@ -514,7 +587,16 @@ async def ask_claude(user_message: str, history: list) -> str:
             body = r.text[:500]
             log.error(f"Anthropic API error {r.status_code}: {body}")
             raise Exception(f"API {r.status_code}: {body}")
-        return r.json()["content"][0]["text"]
+        response_text = r.json()["content"][0]["text"]
+
+        # Price hallucination guard — catch wrong BTC prices in narrative text
+        live_btc = _get_live_btc_price()
+        correction = _check_price_hallucination(response_text, live_btc)
+        if correction:
+            log.warning(f"[PriceGuard] Hallucinated price detected in response. Live BTC: ${live_btc:,.0f}")
+            response_text += correction
+
+        return response_text
 
 
 # ── Handlers ────────────────────────────────────────────────────────────────────
