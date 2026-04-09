@@ -401,18 +401,26 @@ def estimate(
     prompt = f"""PREDICTION MARKET ANALYSIS
 
 Question: {question}
-Additional context: {description[:300] if description else "None provided"}{date_hint}{vol_section}{velocity_section}
-Current crowd price (implied YES probability): {market_price:.1%}{futures_section}{octo_signal}{ob_section}{consensus_section}{cat_context}
+Context: {description[:300] if description else "None provided"}{date_hint}
 
-TASK: Determine if the current market price is WRONG given Octodamus's live data signals.
+━━━ SIGNAL DATA — form your raw probability estimate from THIS first ━━━
+(Institutional best practice: anchor on data, NOT on market price.
+ Do not look at the crowd price yet. Build your independent view first.)
+{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{consensus_section}{cat_context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STEP 1 — SEARCH: Find the most recent relevant news, data, polls, or expert estimates.
-STEP 2 — BASE RATE: What is the historical base rate for this type of event?
-STEP 3 — BAYESIAN UPDATE: Adjust base rate with evidence found.
-STEP 4 — COMPARE: Is your estimate meaningfully different from {market_price:.1%}?
-STEP 5 — CATEGORY CHECK: If this market falls in a category with payout_ratio < 1.5 above, return NONE.
+TASK: Determine if the market is mispriced. Form your estimate from signals alone, then compare.
 
-Edge threshold: flag only if |your_estimate - {market_price:.1%}| > {min_ev:.0%}
+STEP 1 — SEARCH: Find recent relevant news, data, polls, or expert estimates.
+STEP 2 — BASE RATE: Historical base rate for this event type — before looking at market price.
+STEP 3 — INDEPENDENT ESTIMATE: Your raw probability based on steps 1-2 and the signal data above.
+         Lock this number before proceeding to Step 4.
+STEP 4 — COMPARE TO MARKET: Current crowd price is {market_price:.1%}.
+         Edge = |your_estimate - {market_price:.1%}|. Required: > {min_ev:.0%}.
+         If edge < {min_ev:.0%}, return NONE — noise threshold not cleared.
+STEP 5 — CATEGORY CHECK: If this market's category has payout_ratio < 1.5 above, return NONE.
+
+Edge threshold: {min_ev:.0%} minimum (if |estimate - {market_price:.1%}| < {min_ev:.0%}: NONE)
 
 OUTPUT: Respond ONLY with valid JSON, no markdown, no prose:
 {{"probability": 0.XX, "confidence": "high|medium|low", "edge": "YES_BUY|NO_BUY|NONE", "reasoning": "2-3 sentences citing specific evidence"}}
