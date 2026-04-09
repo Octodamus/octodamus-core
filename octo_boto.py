@@ -28,7 +28,7 @@ Commands:
  /close <n>  — manually exit position #N at 50% value
  /resolve   — check open positions for resolutions
  /auto    — show auto-scan status
- /autoon   — enable 30-min auto-scan
+ /autoon   — enable 4-hour auto-scan
  /autooff   — disable auto-scan
  /wallet   — wallet info
  /newwallet  — generate new Polygon wallet
@@ -55,14 +55,94 @@ from telegram.ext import (
 sys.path.insert(0, r"C:\Users\walli\octodamus")
 
 from octo_boto_math    import best_trade, is_valid_market, position_size, MIN_EV_THRESHOLD
+try:
+    from octo_boto_mcp import enrich_markets_with_orderbook
+    _MCP_ENRICH = True
+except ImportError:
+    _MCP_ENRICH = False
+    def enrich_markets_with_orderbook(markets, **kw): return markets
+
+try:
+    from octo_boto_consensus import gpt_second_opinion, consensus_str
+    _CONSENSUS_AVAILABLE = True
+except ImportError:
+    _CONSENSUS_AVAILABLE = False
+    def gpt_second_opinion(*a, **kw): return None
+    def consensus_str(*a, **kw): return ""
+
+try:
+    from octo_boto_calibration import record_estimate, record_outcome
+    _CALIB_AVAILABLE = True
+except ImportError:
+    _CALIB_AVAILABLE = False
+    def record_estimate(*a, **kw): pass
+    def record_outcome(*a, **kw): pass
 from octo_boto_polymarket import GammaClient
 from octo_boto_ai     import batch_estimate, clear_cache
 from octo_boto_wallet   import load_address, generate_wallet, save_address
+try:
+  from octo_boto_clob import (
+    place_order, cancel_order, cancel_all, get_open_orders,
+    get_usdc_balance, get_token_ids, clob_status_str,
+    set_live_mode, is_live,
+  )
+  _CLOB_AVAILABLE = True
+except ImportError:
+  _CLOB_AVAILABLE = False
+  def place_order(*a, **kw): return {"status": "clob_unavailable"}
+  def cancel_order(*a, **kw): return False
+  def cancel_all(): return False
+  def get_open_orders(): return []
+  def get_usdc_balance(): return 0.0
+  def get_token_ids(*a, **kw): return {"yes": None, "no": None}
+  def clob_status_str(): return "CLOB unavailable"
+  def set_live_mode(e): pass
+  def is_live(): return False
+try:
+  from octo_bankr import bankr_status_str, venice_chat
+  _BANKR_AVAILABLE = True
+except ImportError:
+  _BANKR_AVAILABLE = False
+  def bankr_status_str(): return ""
+  def venice_chat(*a, **kw): return None
+try:
+  from octo_boto_exit import check_exit_signals, clear_trail, exit_summary_str
+  _EXIT_AVAILABLE = True
+except ImportError:
+  _EXIT_AVAILABLE = False
+  def check_exit_signals(*a, **kw): return []
+  def clear_trail(*a): pass
+  def exit_summary_str(*a): return ""
+try:
+  from octo_boto_mm import place_mm_pair, cancel_all_mm, mm_status_str, is_mm_eligible, active_mm_count
+  _MM_AVAILABLE = True
+except ImportError:
+  _MM_AVAILABLE = False
+  def place_mm_pair(*a, **kw): return None
+  def cancel_all_mm(): return 0
+  def mm_status_str(): return ""
+  def is_mm_eligible(*a, **kw): return False
+  def active_mm_count(): return 0
+try:
+  from octo_reputation import log_call as rep_log_call, log_outcome as rep_log_outcome, reputation_str
+  _REP_AVAILABLE = True
+except ImportError:
+  _REP_AVAILABLE = False
+  def rep_log_call(*a, **kw): return ""
+  def rep_log_outcome(*a, **kw): return None
+  def reputation_str(): return ""
 from octo_boto_tracker  import PaperTracker, age_str, STARTING_BALANCE
 from octo_boto_upgrades import (
   init_upgrades, check_kill_switch_sync, get_binance_context,
   apply_reflection_to_batch, price_feed, kill_switch, alerts as upgrade_alerts,
 )
+try:
+  from octo_boto_oracle_bridge import on_position_opened, on_position_closed
+  _ORACLE_BRIDGE = True
+except ImportError:
+  _ORACLE_BRIDGE = False
+  def on_position_opened(pos): pass
+  def on_position_closed(closed, balance): pass
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -79,12 +159,12 @@ logging.basicConfig(
 log = logging.getLogger("OctoBoto")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-AUTO_SCAN_INTERVAL = 4 * 60 * 60  # 30 minutes between auto scans
+AUTO_SCAN_INTERVAL = 4 * 60 * 60  # 4 hours between auto scans
 SCAN_LIMIT     = 150    # Markets to fetch per scan (paginated)
 AI_BATCH_LIMIT   = 15     # Max markets sent to AI per scan
 AUTO_MIN_EV    = 0.12    # Stricter 7% threshold in auto mode
-AUTO_MAX_ENTER   = 1
-MAX_TRADES_PER_WEEK = 2     # Hard cap — quality over quantity
+AUTO_MAX_ENTER   = 3
+MAX_TRADES_PER_WEEK = 999     # Hard cap — quality over quantity
      # Max new positions per auto-scan
 SCAN_COOLDOWN   = 3 * 60   # Prevent /scan spam — 3 min cooldown
 MIN_CONF_AUTO   = {"high"}  # confidence levels that trigger auto-entry
@@ -95,34 +175,91 @@ TRACKER = PaperTracker()
 auto_enabled: bool = False
 _last_scan_time: float = 0.0
 
+# ── Price Velocity Tracker (Markov state change detection) ────────────────
+# Stores {market_id: (price, timestamp)} from last scan.
+# If price moves >5% between scans, new information just entered the market.
+_price_snapshot: dict = {}
+
+def _compute_velocity(market_id: str, current_price: float) -> float:
+    """
+    Returns % price change since last scan for this market.
+    Positive = price moved up. Negative = moved down. 0 = no prior data.
+    Updates snapshot in place.
+    """
+    import time as _time
+    prev = _price_snapshot.get(market_id)
+    _price_snapshot[market_id] = (current_price, _time.time())
+    if prev is None:
+        return 0.0
+    prev_price, _ = prev
+    if prev_price <= 0:
+        return 0.0
+    return round(((current_price - prev_price) / prev_price) * 100, 2)
+
+CONFIG_FILE = Path(r"C:\Users\walli\octodamus\octo_boto_config.json")
+
+
+def _load_config() -> dict:
+  import json
+  if CONFIG_FILE.exists():
+    try:
+      return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+      pass
+  return {}
+
+
+def _save_config(data: dict) -> None:
+  import json
+  existing = _load_config()
+  existing.update(data)
+  CONFIG_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
 
 # ─── Secrets ──────────────────────────────────────────────────────────────────
 
 def load_secrets() -> dict:
   import json
   secrets = {}
+  all_keys = ("OCTOBOTO_TELEGRAM_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OCTOBOTO_WALLET_KEY")
+
+  # Primary: .octo_secrets cache (written by boot script from Bitwarden)
   cache = Path(r"C:\Users\walli\octodamus\.octo_secrets")
   if cache.exists():
     try:
       raw = json.loads(cache.read_text(encoding="utf-8"))
       data = raw.get("secrets", raw)
-      for key in ("OCTOBOTO_TELEGRAM_TOKEN", "ANTHROPIC_API_KEY"):
+      for key in all_keys:
         if data.get(key):
           secrets[key] = data[key]
           log.info(f"[Secrets] {key} loaded from cache")
-        else:
-          log.warning(f"[Secrets] {key} not found in cache")
     except Exception as e:
       log.warning(f"[Secrets] Cache read failed: {e}")
-  for key in ("OCTOBOTO_TELEGRAM_TOKEN", "ANTHROPIC_API_KEY"):
+
+  # Supplement: octo_extra_secrets.json — persists keys not synced from Bitwarden
+  extra = Path(r"C:\Users\walli\octodamus\octo_extra_secrets.json")
+  if extra.exists():
+    try:
+      data = json.loads(extra.read_text(encoding="utf-8"))
+      for key, val in data.items():
+        if val and key not in secrets:
+          secrets[key] = val
+          log.info(f"[Secrets] {key} loaded from extra secrets")
+    except Exception as e:
+      log.warning(f"[Secrets] Extra secrets read failed: {e}")
+
+  # Fallback: environment variables
+  for key in all_keys:
     if key not in secrets and os.getenv(key):
       secrets[key] = os.getenv(key)
+
   return secrets
 
 
-SECRETS    = load_secrets()
-BOT_TOKEN   = SECRETS.get("OCTOBOTO_TELEGRAM_TOKEN", "")
+SECRETS      = load_secrets()
+BOT_TOKEN    = SECRETS.get("OCTOBOTO_TELEGRAM_TOKEN", "")
 ANTHROPIC_KEY = SECRETS.get("ANTHROPIC_API_KEY", "")
+OPENAI_KEY   = SECRETS.get("OPENAI_API_KEY", "")
 
 if not BOT_TOKEN:
   log.error("OCTOBOTO_TELEGRAM_TOKEN missing. Add to Bitwarden or set env var.")
@@ -130,6 +267,73 @@ if not BOT_TOKEN:
 
 if not ANTHROPIC_KEY:
   log.warning("ANTHROPIC_API_KEY missing — /scan will be unavailable.")
+
+
+# ─── Sector Correlation (#7) ──────────────────────────────────────────────────
+
+_SECTOR_MAP = {
+    "crypto":   ["bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto",
+                 "defi", "nft", "blockchain", "altcoin", "stablecoin"],
+    "politics": ["election", "president", "congress", "senate", "vote", "poll",
+                 "democrat", "republican", "ballot", "trump", "biden", "harris",
+                 "governor", "parliament", "prime minister"],
+    "macro":    ["fed", "federal reserve", "interest rate", "cpi", "inflation",
+                 "gdp", "recession", "unemployment", "s&p", "nasdaq", "dow",
+                 "treasury", "yield curve"],
+    "ai_tech":  ["openai", "gpt", "claude", "gemini", "ai model", "llm",
+                 "artificial intelligence", "nvidia", "microsoft", "google",
+                 "apple", "meta", "amazon", "tech stock"],
+    "geopolitics": ["war", "conflict", "ceasefire", "sanctions", "nato",
+                    "ukraine", "russia", "china", "taiwan", "middle east",
+                    "iran", "israel", "north korea"],
+}
+MAX_SECTOR_POSITIONS = 2   # max open positions per sector before skipping
+
+
+def get_market_sector(question: str) -> str:
+    """Return the primary sector for a market question."""
+    q = question.lower()
+    for sector, keywords in _SECTOR_MAP.items():
+        if any(kw in q for kw in keywords):
+            return sector
+    return "other"
+
+
+def count_sector_positions(sector: str) -> int:
+    """Count open positions in a given sector."""
+    return sum(
+        1 for p in TRACKER.open_positions()
+        if get_market_sector(p.get("question", "")) == sector
+    )
+
+
+# ─── Drawdown Pause (#8) ──────────────────────────────────────────────────────
+
+DRAWDOWN_PAUSE_THRESHOLD = 0.15   # Pause new entries if balance drops 15% from peak
+
+def is_drawdown_pause_active() -> tuple:
+    """
+    Soft circuit breaker: return (paused, message) if balance is 15%+ below peak.
+    Distinct from the hard kill switch (fires at -40%).
+    """
+    try:
+        import octo_boto_upgrades as _upg
+        ks = _upg.kill_switch
+        if ks is None:
+            return False, ""
+        balance  = TRACKER.balance()
+        peak     = ks.peak_balance
+        if peak <= 0:
+            return False, ""
+        drawdown = (balance - peak) / peak
+        if drawdown <= -DRAWDOWN_PAUSE_THRESHOLD:
+            return True, (
+                f"Drawdown pause: {drawdown:.1%} from peak ${peak:.2f}. "
+                f"New entries paused until recovery. Use /ksreset to override."
+            )
+    except Exception:
+        pass
+    return False, ""
 
 
 # ─── Format Helpers ───────────────────────────────────────────────────────────
@@ -215,7 +419,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     "`/pnl`     Full P&L stats\n"
     "`/close <n>`  Exit position #n at 50% value\n"
     "`/resolve`   Check open positions for resolution\n"
-    "`/autoon`    Enable 30-min auto-scan\n"
+    "`/autoon`    Enable 4-hour auto-scan\n"
     "`/autooff`   Disable auto-scan\n"
     "`/auto`     Auto-scan status\n"
     "`/wallet`    Wallet address + balance\n"
@@ -266,10 +470,41 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
       await update.message.reply_text("❌ Gamma API returned no markets. Try again in 1 minute.")
       return
 
+    # Crypto-specific pass — fetches BTC/ETH/SOL markets separately so
+    # they don't get crowded out by high-volume event markets.
+    # Coinglass futures context activates automatically for these in the AI estimator.
+    crypto_markets = GAMMA.get_crypto_markets()
+    seen_ids = {m["id"] for m in markets}
+    crypto_new = [m for m in crypto_markets if m["id"] not in seen_ids]
+    markets = markets + crypto_new
+
     valid = [m for m in markets if is_valid_market(m)]
+
+    # Inject price velocity into each market dict (Markov state change detection)
+    velocity_alerts = []
+    for m in valid:
+        vel = _compute_velocity(m["id"], float(m.get("yes_price", 0.5)))
+        m["_velocity_pct"] = vel
+        if abs(vel) >= 5.0:
+            direction = "↑" if vel > 0 else "↓"
+            velocity_alerts.append(f"{direction}{abs(vel):.1f}% — {m['question'][:60]}")
+
+    # Enrich with orderbook depth + liquidity; filter thin/wide-spread markets
+    if _MCP_ENRICH:
+        pre_enrich = len(valid)
+        valid = enrich_markets_with_orderbook(valid, max_markets=AI_BATCH_LIMIT * 2)
+        enrich_note = f" | {len(valid)}/{pre_enrich} pass orderbook filter"
+    else:
+        enrich_note = ""
+
+    vel_str = ""
+    if velocity_alerts:
+        vel_str = "\n⚡ *Velocity alerts* (new info entered):\n" + "\n".join(f"  {a}" for a in velocity_alerts[:5])
+
     await update.message.reply_text(
-      f"📊 {len(markets)} fetched → {len(valid)} pass filters\n"
-      f"Running AI on up to {AI_BATCH_LIMIT}..."
+      f"📊 {len(markets)} fetched ({len(crypto_new)} crypto) → {len([m for m in markets if is_valid_market(m)])} pass filters{enrich_note}\n"
+      f"Running AI on up to {AI_BATCH_LIMIT}...{vel_str}",
+      parse_mode=ParseMode.MARKDOWN
     )
 
     opps = batch_estimate(valid, ANTHROPIC_KEY, max_markets=AI_BATCH_LIMIT)
@@ -290,16 +525,45 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
       parse_mode=ParseMode.MARKDOWN
     )
 
+    # Drawdown pause check (#8) — soft circuit breaker at -15%
+    _dd_paused, _dd_reason = is_drawdown_pause_active()
+    if _dd_paused:
+      await update.message.reply_text(
+        f"⚠️ {_dd_reason}\nShowing opportunities but NOT entering positions.",
+        parse_mode=ParseMode.MARKDOWN
+      )
+
     for i, opp in enumerate(opps[:5], 1):
       m, ai, trade, score = opp["market"], opp["ai"], opp["trade"], opp["score"]
+      sector = get_market_sector(m.get("question", ""))
+
+      # GPT second opinion (#4) for top 3 opportunities
+      gpt_result = None
+      if i <= 3 and OPENAI_KEY and _CONSENSUS_AVAILABLE:
+        gpt_result = gpt_second_opinion(m["question"], m["yes_price"], OPENAI_KEY)
+        # If models strongly disagree (>15% gap), demote to display-only
+        if gpt_result:
+          gap = abs(ai["probability"] - gpt_result.get("probability", ai["probability"]))
+          if gap > 0.15:
+            gpt_result["_disagree"] = True
+
+      # Build display with freshness tag and resolution risk note
+      opp_text = fmt_opportunity(m, trade, ai, i, score)
+      age_h = opp.get("market_age_hours")
+      if age_h is not None and age_h < 24:
+        opp_text += f"\n  NEW market ({age_h:.0f}h old) — freshness bonus applied"
+      risk = opp.get("resolution_risk", 0)
+      if risk >= 0.3:
+        opp_text += f"\n  Resolution risk: {risk:.0%} — criteria somewhat ambiguous"
+      if gpt_result:
+        opp_text += consensus_str(ai["probability"], gpt_result)
 
       await update.message.reply_text(
-        fmt_opportunity(m, trade, ai, i, score),
+        opp_text,
         parse_mode=ParseMode.MARKDOWN,
         disable_web_page_preview=True
       )
 
-      # Enter position if confidence and EV good, and not already in market
       # Kill switch check before entry
       _ks_hit, _ks_reason = check_kill_switch_sync(TRACKER.balance())
       if _ks_hit:
@@ -309,8 +573,26 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         break
 
+      # Sector correlation gate (#7) — max 2 open per sector
+      sector_count = count_sector_positions(sector)
+      if sector_count >= MAX_SECTOR_POSITIONS:
+        await update.message.reply_text(
+          f"⏭️ Skipping #{i} — already {sector_count} open in *{sector}* sector (max {MAX_SECTOR_POSITIONS})",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
+
+      # GPT disagreement gate — skip entry if models strongly disagree
+      if gpt_result and gpt_result.get("_disagree"):
+        await update.message.reply_text(
+          f"⏭️ Skipping #{i} — Claude/GPT disagree by >{15}%. Not entering.",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
+
       if (
-        ai.get("confidence") in MIN_CONF_AUTO
+        not _dd_paused
+        and ai.get("confidence") in MIN_CONF_AUTO
         and trade["ev"] >= MIN_EV_THRESHOLD
         and not TRACKER.has_position(m["id"])
       ):
@@ -328,10 +610,31 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if pos:
           entered += 1
+          on_position_opened(pos)
+          # Record for calibration tracking (#10)
+          record_estimate(
+            market_id=m["id"], question=m["question"],
+            claude_p=ai["probability"], market_price=m["yes_price"],
+            confidence=ai["confidence"], side=side,
+          )
+          # CLOB execution — place real order if live
+          clob_result = None
+          if _CLOB_AVAILABLE and is_live():
+            tokens = get_token_ids(m.get("conditionId", m["id"]))
+            token_id = tokens["yes"] if side == "YES" else tokens["no"]
+            if token_id:
+              clob_result = place_order(
+                token_id=token_id, side="BUY",
+                price=ep, amount_usdc=size,
+                market_question=m["question"],
+              )
+          mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
+          order_note = f"\nOrder: `{clob_result['order_id']}`" if clob_result and clob_result.get("order_id") else ""
           await update.message.reply_text(
-            f"📥 *Paper position opened #{entered}*\n"
+            f"📥 *{mode_label} position opened #{entered}*\n"
             f"Side: *{side}* | Size: `${size:.2f}` | @ `{ep:.3f}`\n"
-            f"Kelly: `{trade['kelly']:.1%}` | EV: `{trade['ev']:+.1%}` | Score: `{score:.3f}`",
+            f"Kelly: `{trade['kelly']:.1%}` | EV: `{trade['ev']:+.1%}` | Score: `{score:.3f}`\n"
+            f"Sector: *{sector}*{order_note}",
             parse_mode=ParseMode.MARKDOWN
           )
           if upgrade_alerts:
@@ -481,6 +784,7 @@ async def cmd_resolve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not resolution:
       continue
     closed_list = TRACKER.close_position(mid, resolution)
+    record_outcome(mid, resolved_yes=(resolution == "YES"))
     for closed in closed_list:
       closed_count += 1
       total_pnl  += closed["pnl"]
@@ -492,6 +796,7 @@ async def cmd_resolve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Resolved: *{resolution}* | Side: {closed['side']}",
         parse_mode=ParseMode.MARKDOWN
       )
+      on_position_closed(closed, TRACKER.balance())
       if upgrade_alerts:
         await upgrade_alerts.trade_closed(closed, TRACKER.balance())
 
@@ -511,7 +816,7 @@ async def cmd_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
   status = "🟢 ENABLED" if auto_enabled else "⚫ DISABLED"
   await update.message.reply_text(
     f"*Auto-Scan Status:* {status}\n\n"
-    f"Interval:  30 minutes\n"
+    f"Interval:  4 hours\n"
     f"Min EV:   {AUTO_MIN_EV:.0%}\n"
     f"Min conf:  medium or high\n"
     f"Max enter: {AUTO_MAX_ENTER} per scan\n\n"
@@ -526,16 +831,25 @@ async def cmd_autoon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Can't enable auto-scan without ANTHROPIC_API_KEY.")
     return
   auto_enabled = True
+  chat_id = update.effective_chat.id
+  _save_config({"auto_enabled": True, "auto_chat_id": chat_id})
   # PTB v20+ job_queue signature: run_repeating(callback, interval, chat_id=...)
   ctx.job_queue.run_repeating(
     _auto_scan_job,
     interval=AUTO_SCAN_INTERVAL,
     first=15,
     name="auto_scan",
-    chat_id=update.effective_chat.id,
+    chat_id=chat_id,
+  )
+  ctx.job_queue.run_repeating(
+    _new_market_alert_job,
+    interval=NEW_MARKET_SCAN_INTERVAL,
+    first=30,
+    name="new_market_alerts",
+    chat_id=chat_id,
   )
   await update.message.reply_text(
-    "🟢 *Auto-scan enabled*\nFirst scan in 15 seconds, then every 30 minutes.",
+    "🟢 *Auto-scan enabled*\nFirst scan in 15 seconds, then every 4 hours.\nNew market alerts every 10 min.",
     parse_mode=ParseMode.MARKDOWN
   )
 
@@ -543,24 +857,172 @@ async def cmd_autoon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_autooff(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
   global auto_enabled
   auto_enabled = False
+  _save_config({"auto_enabled": False})
   for job in ctx.job_queue.get_jobs_by_name("auto_scan"):
+    job.schedule_removal()
+  for job in ctx.job_queue.get_jobs_by_name("new_market_alerts"):
     job.schedule_removal()
   await update.message.reply_text("⚫ Auto-scan disabled.")
 
 
 async def cmd_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
   address = load_address()
-  s    = TRACKER.pnl_summary()
+  s = TRACKER.pnl_summary()
+  mode = "🟢 LIVE" if (_CLOB_AVAILABLE and is_live()) else "📋 PAPER"
+  live_bal = ""
+  if _CLOB_AVAILABLE and is_live():
+    usdc = get_usdc_balance()
+    live_bal = f"\n💵 On-chain USDC: `${usdc:.2f}`"
   await update.message.reply_text(
     f"*OctoBoto Wallet*\n\n"
-    f"📄 Mode:   Paper Trading\n"
+    f"📄 Mode:    {mode}\n"
     f"💰 Balance: `${s['balance']:.2f}` paper USDC\n"
     f"💼 Deployed: `${s['deployed']:.2f}`\n"
-    f"💸 Fees:   `${s['fees_paid']:.2f}` (simulated 0.5%)\n"
-    f"🔑 Address: `{address}`\n\n"
-    f"_Fund with USDC on Polygon when you're ready to go live._",
+    f"💸 Fees:    `${s['fees_paid']:.2f}` (simulated 0.5%)\n"
+    f"🔑 Address: `{address}`{live_bal}\n\n"
+    f"_Use /golive to switch to real execution (requires funded wallet)._",
     parse_mode=ParseMode.MARKDOWN
   )
+
+
+async def cmd_golive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  if not _CLOB_AVAILABLE:
+    await update.message.reply_text("❌ CLOB module not available.")
+    return
+  bal = get_usdc_balance()
+  if bal < 10.0:
+    await update.message.reply_text(
+      f"❌ Wallet has only ${bal:.2f} USDC on Polygon.\n"
+      f"Fund with at least $10 USDC before going live."
+    )
+    return
+  set_live_mode(True)
+  await update.message.reply_text(
+    f"🟢 *LIVE MODE ENABLED*\n\n"
+    f"💵 On-chain balance: `${bal:.2f}` USDC\n"
+    f"Orders will now be submitted to Polymarket CLOB.\n\n"
+    f"⚠️ Real money at risk. Use /gopaper to revert.",
+    parse_mode=ParseMode.MARKDOWN
+  )
+
+
+async def cmd_gopaper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  if _CLOB_AVAILABLE:
+    set_live_mode(False)
+  await update.message.reply_text("📋 *PAPER MODE* — No real orders will be placed.", parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_clob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  if not _CLOB_AVAILABLE:
+    await update.message.reply_text("❌ CLOB module not available.")
+    return
+  status = clob_status_str()
+  orders = get_open_orders()
+  orders_str = f"\n\n📋 Open orders: {len(orders)}" if orders else "\n\n📋 No open orders"
+  bankr_str = f"\n{bankr_status_str()}" if _BANKR_AVAILABLE else ""
+  mm_str = f"\n{mm_status_str()}" if _MM_AVAILABLE and active_mm_count() else ""
+  await update.message.reply_text(
+    f"*OctoBoto CLOB*\n\n{status}{bankr_str}{orders_str}{mm_str}",
+    parse_mode=ParseMode.MARKDOWN
+  )
+
+
+async def cmd_cancelorder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """Usage: /cancelorder <order_id>"""
+  if not _CLOB_AVAILABLE:
+    await update.message.reply_text("❌ CLOB not available.")
+    return
+  args = ctx.args
+  if not args:
+    await update.message.reply_text("Usage: `/cancelorder <order_id>`", parse_mode=ParseMode.MARKDOWN)
+    return
+  order_id = args[0]
+  ok = cancel_order(order_id)
+  await update.message.reply_text(
+    f"✅ Order `{order_id}` cancelled." if ok else f"❌ Failed to cancel `{order_id}`.",
+    parse_mode=ParseMode.MARKDOWN
+  )
+
+
+async def cmd_cancelall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  if not _CLOB_AVAILABLE:
+    await update.message.reply_text("❌ CLOB not available.")
+    return
+  ok = cancel_all()
+  mm_cancelled = cancel_all_mm() if _MM_AVAILABLE else 0
+  await update.message.reply_text(
+    f"✅ All CLOB orders cancelled.\n📊 MM pairs cancelled: {mm_cancelled}"
+  )
+
+
+async def cmd_mm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """Market maker status and controls. Usage: /mm [on|off]"""
+  if not _MM_AVAILABLE:
+    await update.message.reply_text("❌ MM module not available.")
+    return
+  args = ctx.args
+  if args and args[0] == "off":
+    n = cancel_all_mm()
+    await update.message.reply_text(f"📊 Market maker off — {n} pair(s) cancelled.")
+    return
+  if args and args[0] == "on":
+    if not (_CLOB_AVAILABLE and is_live()):
+      await update.message.reply_text("❌ Must be in LIVE mode to run market maker. Use /golive first.")
+      return
+    # Scan top liquid markets and place MM pairs
+    try:
+      markets = GAMMA.get_markets(limit=50)
+      open_ids = {p["market_id"] for p in TRACKER.open_positions()}
+      placed = 0
+      for m in markets:
+        if is_mm_eligible(m, open_ids):
+          result = place_mm_pair(m)
+          if result:
+            placed += 1
+          if active_mm_count() >= 3:
+            break
+      await update.message.reply_text(f"📊 Market maker: {placed} pair(s) placed.\n\n{mm_status_str()}", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+      await update.message.reply_text(f"❌ MM error: {e}")
+    return
+  await update.message.reply_text(mm_status_str() or "📊 No active MM pairs. Use /mm on to start.", parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_resync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """Reload secrets from .octo_secrets cache without reboot."""
+  await update.message.reply_text("🔄 Resyncing secrets from cache...")
+  try:
+    import json
+    from pathlib import Path
+    cache = Path(r"C:\Users\walli\octodamus\.octo_secrets")
+    if not cache.exists():
+      await update.message.reply_text("❌ Cache file not found.")
+      return
+    raw = json.loads(cache.read_text(encoding="utf-8"))
+    secrets = raw.get("secrets", raw)
+    loaded = 0
+    for k, v in secrets.items():
+      if v:
+        os.environ[k] = v
+        loaded += 1
+    global ANTHROPIC_KEY, OPENAI_KEY
+    ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", ANTHROPIC_KEY)
+    OPENAI_KEY    = os.environ.get("OPENAI_API_KEY", OPENAI_KEY)
+    saved_at = raw.get("saved_at", "unknown")
+    await update.message.reply_text(
+      f"✅ Resynced {loaded} secrets from cache\n_Saved: {saved_at}_",
+      parse_mode=ParseMode.MARKDOWN
+    )
+  except Exception as e:
+    await update.message.reply_text(f"❌ Resync failed: {e}")
+
+
+async def cmd_reputation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """Show onchain reputation stats."""
+  if not _REP_AVAILABLE:
+    await update.message.reply_text("❌ Reputation module not available.")
+    return
+  await update.message.reply_text(reputation_str(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_newwallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -685,10 +1147,60 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
 
   log.info("[AutoScan] Starting scheduled scan...")
 
+  # Live USDC balance sync (#5) — keep TRACKER balance aligned with real wallet
+  if _CLOB_AVAILABLE and is_live():
+    live_bal = get_usdc_balance()
+    if live_bal > 0:
+      TRACKER.sync_balance(live_bal)
+      log.info(f"[AutoScan] Live balance synced: ${live_bal:.2f}")
+
+  # Exit logic check (#3) — trailing stop + time-based decay
+  if _EXIT_AVAILABLE:
+    open_pos = TRACKER.open_positions()
+    if open_pos:
+      current_prices = {}
+      for p in open_pos:
+        try:
+          mkt = GAMMA.get_market(p["market_id"])
+          if mkt:
+            current_prices[p["market_id"]] = float(mkt.get("yes_price", mkt.get("outcomePrices", [0.5])[0]))
+        except Exception:
+          pass
+      exits = check_exit_signals(open_pos, current_prices)
+      for ex in exits:
+        mid = ex["market_id"]
+        current_yes = current_prices.get(mid, 0.5)
+        side = next((p.get("side") for p in open_pos if p["market_id"] == mid), "YES")
+        resolution = "YES" if (side == "YES" and current_yes > 0.5) else "NO"
+        closed_list = TRACKER.close_position(mid, resolution)
+        for closed in closed_list:
+          clear_trail(mid)
+          await ctx.bot.send_message(
+            chat_id,
+            f"🚪 *Exit triggered*: {ex['reason']}\n"
+            f"_{ex['question'][:70]}_\n"
+            f"PnL: `{ex['pnl_pct']:+.1%}`",
+            parse_mode=ParseMode.MARKDOWN
+          )
+
+
   try:
     markets = GAMMA.get_markets(limit=SCAN_LIMIT)
+    crypto_markets = GAMMA.get_crypto_markets()
+    seen_ids = {m["id"] for m in markets}
+    markets = markets + [m for m in crypto_markets if m["id"] not in seen_ids]
     valid  = [m for m in markets if is_valid_market(m)]
+    # Inject velocity into auto-scan markets
+    for m in valid:
+        vel = _compute_velocity(m["id"], float(m.get("yes_price", 0.5)))
+        m["_velocity_pct"] = vel
+    valid  = enrich_markets_with_orderbook(valid, max_markets=AI_BATCH_LIMIT * 2)
     opps  = batch_estimate(valid, ANTHROPIC_KEY, max_markets=AI_BATCH_LIMIT, min_ev=AUTO_MIN_EV)
+
+    # Soft drawdown pause — skip entries if -15% from peak
+    _dd_paused, _dd_reason = is_drawdown_pause_active()
+    if _dd_paused:
+      log.warning(f"[AutoScan] {_dd_reason}")
 
     entered = 0
     for opp in opps[:AUTO_MAX_ENTER]:
@@ -699,6 +1211,14 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
       if trade["ev"] < AUTO_MIN_EV:
         continue
       if TRACKER.has_position(m["id"]):
+        continue
+      if _dd_paused:
+        continue
+
+      # Sector correlation gate
+      sector = get_market_sector(m.get("question", ""))
+      if count_sector_positions(sector) >= MAX_SECTOR_POSITIONS:
+        log.info(f"[AutoScan] Skipping — sector '{sector}' at limit")
         continue
 
       side = trade["side"]
@@ -715,11 +1235,30 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
 
       if pos:
         entered += 1
+        on_position_opened(pos)
+        record_estimate(
+          market_id=m["id"], question=m["question"],
+          claude_p=ai["probability"], market_price=m["yes_price"],
+          confidence=ai["confidence"], side=side,
+        )
+        # CLOB execution — place real order if live
+        clob_result = None
+        if _CLOB_AVAILABLE and is_live():
+          tokens = get_token_ids(m.get("conditionId", m["id"]))
+          token_id = tokens["yes"] if side == "YES" else tokens["no"]
+          if token_id:
+            clob_result = place_order(
+              token_id=token_id, side="BUY",
+              price=ep, amount_usdc=size,
+              market_question=m["question"],
+            )
+        mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
+        order_note = f"\nOrder: `{clob_result['order_id']}`" if clob_result and clob_result.get("order_id") else ""
         await ctx.bot.send_message(
           chat_id,
-          f"🤖 *Auto-trade — 📄 Paper*\n"
+          f"🤖 *Auto-trade — {mode_label}*\n"
           f"Side: *{side}* | `${size:.2f}` | EV: `{trade['ev']:+.1%}` | Score: `{score:.3f}`\n"
-          f"_{m['question'][:80]}_",
+          f"Sector: *{sector}*{order_note}\n_{m['question'][:80]}_",
           parse_mode=ParseMode.MARKDOWN
         )
 
@@ -737,6 +1276,83 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
   except Exception as e:
     log.exception("[AutoScan] error")
     await ctx.bot.send_message(chat_id, f"⚠️ Auto-scan error: {e}")
+
+
+# ─── New Market Alert Job (#9) ────────────────────────────────────────────────
+
+# Track markets we've already alerted on to avoid spam
+_alerted_new_markets: set = set()
+NEW_MARKET_MAX_AGE_HOURS = 2.0   # Only alert on markets <2h old
+NEW_MARKET_SCAN_INTERVAL = 10 * 60  # Check every 10 minutes
+
+
+async def _new_market_alert_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Poll for freshly created markets and alert on any that pass filters.
+    New markets are often mispriced for the first few hours — best entry windows.
+    """
+    if not auto_enabled or not ANTHROPIC_KEY:
+        return
+
+    chat_id = ctx.job.chat_id
+    from datetime import datetime, timezone
+
+    try:
+        markets = GAMMA.get_markets(limit=50)
+        now = datetime.now(timezone.utc)
+        fresh = []
+
+        for m in markets:
+            if m["id"] in _alerted_new_markets:
+                continue
+            created_at = m.get("created_at") or m.get("createdAt")
+            if not created_at:
+                continue
+            try:
+                ct = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                age_hours = (now - ct).total_seconds() / 3600
+            except Exception:
+                continue
+            if age_hours > NEW_MARKET_MAX_AGE_HOURS:
+                continue
+            if not is_valid_market(m):
+                continue
+            fresh.append((m, age_hours))
+
+        if not fresh:
+            return
+
+        log.info(f"[NewMarket] {len(fresh)} fresh market(s) found — estimating...")
+
+        for m, age_h in fresh[:3]:   # cap at 3 per run
+            _alerted_new_markets.add(m["id"])
+            try:
+                from octo_boto_ai import estimate
+                from octo_boto_math import best_trade
+                price = m["yes_price"]
+                ai = estimate(
+                    market_id=m["id"], question=m["question"],
+                    description=m.get("description", ""), market_price=price,
+                    api_key=ANTHROPIC_KEY, end_date=m.get("end_date", ""),
+                    use_search=True, min_ev=MIN_EV_THRESHOLD,
+                )
+                trade = best_trade(price, ai["probability"])
+                if trade["side"] == "NONE":
+                    continue
+
+                await ctx.bot.send_message(
+                    chat_id,
+                    f"NEW MARKET ({age_h:.1f}h old) — potential mispricing window\n"
+                    f"EV: `{trade['ev']:+.1%}` | Side: *{trade['side']}* | Conf: {ai['confidence']}\n"
+                    f"_{m['question'][:100]}_\n"
+                    f"Run /scan to enter if it checks out.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                log.warning(f"[NewMarket] estimate failed for {m['id']}: {e}")
+
+    except Exception:
+        log.exception("[NewMarket] job error")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -761,7 +1377,15 @@ def main():
     ("autooff",  cmd_autooff),
     ("wallet",  cmd_wallet),
     ("newwallet", cmd_newwallet),
-    ("reset",   cmd_reset),
+    ("golive",     cmd_golive),
+    ("gopaper",    cmd_gopaper),
+    ("clob",       cmd_clob),
+    ("cancelorder", cmd_cancelorder),
+    ("cancelall",  cmd_cancelall),
+    ("mm",         cmd_mm),
+    ("resync",     cmd_resync),
+    ("reputation", cmd_reputation),
+    ("reset",      cmd_reset),
     ("ksstatus", cmd_ksstatus),
     ("ksreset",  cmd_ksreset),
     ("binance",  cmd_binance),
@@ -781,6 +1405,29 @@ def main():
   _upg.price_feed.start()
   _upg.kill_switch = KillSwitch(starting_balance=TRACKER.balance())
   log.info("[Upgrades] Ready")
+
+  # Resume auto-scan if it was enabled before last shutdown
+  cfg = _load_config()
+  if cfg.get("auto_enabled") and cfg.get("auto_chat_id") and ANTHROPIC_KEY:
+    saved_chat_id = cfg["auto_chat_id"]
+    app.job_queue.run_repeating(
+      _auto_scan_job,
+      interval=AUTO_SCAN_INTERVAL,
+      first=60,  # 1 min delay on boot to let secrets load
+      name="auto_scan",
+      chat_id=saved_chat_id,
+    )
+    # New market alert job — runs every 10 min regardless of auto-scan interval
+    app.job_queue.run_repeating(
+      _new_market_alert_job,
+      interval=NEW_MARKET_SCAN_INTERVAL,
+      first=120,  # 2 min delay on boot
+      name="new_market_alerts",
+      chat_id=saved_chat_id,
+    )
+    global auto_enabled
+    auto_enabled = True
+    log.info(f"[AutoScan] Resumed from config — chat_id {saved_chat_id}")
 
   log.info("Polling...")
   app.run_polling(drop_pending_updates=True)

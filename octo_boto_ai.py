@@ -202,10 +202,25 @@ CACHE_TTL    = 30 * 60   # 30 minutes
 
 SYSTEM_PROMPT = """You are a calibrated quantitative analyst specialising in prediction market arbitrage.
 
+MARKOV STATE FRAMEWORK — read this first:
+The current crowd price is a Markov state. It already contains all publicly known information.
+Traders with money on the line update it continuously. The history of how it got there is irrelevant.
+Your job is NOT to predict the outcome. Your job is to determine if the current price is WRONG
+given Octodamus's live data signals that most traders cannot see.
+
+Do NOT ask: "Do I think this will happen?"
+DO ask: "Does Octodamus's live data give us information the market has not yet priced in?"
+
+VOLUME SIGNALS CONFIDENCE IN THE STATE:
+A price at 76% with $100M volume = strong consensus. Many informed traders agree. Hard to beat.
+A price at 76% with $50k volume = weak consensus. One large trader could move it. Edge more likely.
+Always weight your conviction by market volume — thin markets have unreliable states.
+
 Your method:
 1. Establish BASE RATE from historical base rates and priors
-2. UPDATE using only recent concrete evidence (news, polls, official data)
-3. COMPARE to crowd price — flag only genuine mispricings, not uncertainty
+2. UPDATE using only recent concrete evidence (news, polls, official data, Octodamus signals)
+3. COMPARE to crowd price — flag only genuine mispricings backed by data we have that they don't
+4. CHECK VOLUME — if market volume is LOW, the price is less reliable, edge is more likely but sizing must be smaller
 
 Be honest about uncertainty. Do NOT invent confidence. If you can't find strong evidence, say low confidence.
 
@@ -321,6 +336,8 @@ def estimate(
     use_search:       bool = True,
     min_ev:           float = 0.06,
     orderbook_ctx_str: str = "",
+    volume24h:        float = 0.0,
+    velocity_pct:     float = 0.0,
 ) -> dict:
     """
     Estimate true probability for a Polymarket binary market.
@@ -352,10 +369,32 @@ def estimate(
     ob_section       = orderbook_ctx_str if orderbook_ctx_str else ""
     consensus_section = get_consensus_context(question)
 
+    # Volume confidence tier (Markov state reliability signal)
+    from octo_boto_math import volume_confidence_tier
+    vol_tier = volume_confidence_tier(volume24h) if volume24h > 0 else "UNKNOWN"
+    vol_section = f"\nVolume confidence tier: {vol_tier} (24h volume: ${volume24h:,.0f})"
+    if vol_tier == "HIGH":
+        vol_section += " — strong consensus, the price is reliable. Need clear data edge to act."
+    elif vol_tier == "MEDIUM":
+        vol_section += " — moderate price discovery. Edge possible if data clearly diverges."
+    else:
+        vol_section += " — thin market, price unreliable. Edge more likely but size small."
+
+    # Velocity alert (new information recently entered)
+    velocity_section = ""
+    if abs(velocity_pct) >= 5.0:
+        direction = "UP" if velocity_pct > 0 else "DOWN"
+        velocity_section = (
+            f"\n⚡ VELOCITY ALERT: Price moved {velocity_pct:+.1f}% since last scan. "
+            f"New information recently entered this market (direction: {direction}). "
+            f"If your estimate aligns with this move, it confirms the edge. "
+            f"If it opposes the move, a position against momentum requires strong conviction."
+        )
+
     prompt = f"""PREDICTION MARKET ANALYSIS
 
 Question: {question}
-Additional context: {description[:300] if description else "None provided"}{date_hint}
+Additional context: {description[:300] if description else "None provided"}{date_hint}{vol_section}{velocity_section}
 Current crowd price (implied YES probability): {market_price:.1%}{futures_section}{octo_signal}{ob_section}{consensus_section}
 
 TASK: Estimate the TRUE probability this resolves YES.
@@ -500,6 +539,13 @@ def batch_estimate(
             except Exception:
                 pass
 
+        vol24   = float(m.get("volume24h", 0) or 0)
+        vel_pct = float(m.get("_velocity_pct", 0) or 0)  # injected by octo_boto.py
+
+        # Apply volume-adjusted EV floor (thin markets need bigger edge)
+        from octo_boto_math import volume_ev_floor
+        adjusted_min_ev = volume_ev_floor(vol24, min_ev)
+
         ai    = estimate(
             market_id=m["id"],
             question=m["question"],
@@ -508,8 +554,10 @@ def batch_estimate(
             api_key=api_key,
             end_date=m.get("end_date", ""),
             use_search=True,
-            min_ev=min_ev,
+            min_ev=adjusted_min_ev,
             orderbook_ctx_str=orderbook_context_str(m),
+            volume24h=vol24,
+            velocity_pct=vel_pct,
         )
         trade = best_trade(price, ai["probability"])
         if trade["side"] == "NONE":

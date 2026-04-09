@@ -27,13 +27,41 @@ def _get_ev_threshold() -> float:
         return _DEFAULT_EV_THRESHOLD
 
 MIN_EV_THRESHOLD = _DEFAULT_EV_THRESHOLD  # startup default; overridden per-call below
-MIN_LIQUIDITY      = 10_000  # $3k min liquidity (lowered to find more markets)
-MIN_VOLUME_24H     = 2_000    # $500+ daily volume (screens out dead markets)
-KELLY_FRACTION     = 0.25   # Quarter-Kelly â€" proven safer for volatile markets
-MAX_POSITION_PCT   = 0.06   # 4% of bankroll max = $20 on $500 starting
+MIN_LIQUIDITY      = 10_000  # $10k min liquidity
+MIN_VOLUME_24H     = 2_000   # $2k+ daily volume (screens out dead markets)
+KELLY_FRACTION     = 0.25   # Quarter-Kelly — proven safer for volatile markets
+MAX_POSITION_PCT   = 0.06   # 6% of bankroll max
 MIN_MARKET_PRICE   = 0.03   # Tighter band
 MAX_MARKET_PRICE   = 0.97
 MAX_POSITION_DAYS  = 90     # Don't enter markets resolving > 90 days out
+
+# ── Markov Volume Confidence Tiers ─────────────────────────────────────────
+# High volume = many informed traders have priced this. Price is a reliable state.
+# Low volume = the price can move a lot when more people pay attention.
+# A 76% contract with $100M volume is a very different signal than 76% with $50k.
+VOLUME_TIER_HIGH   = 100_000   # $100k+ 24h — strong consensus, trust the price
+VOLUME_TIER_MEDIUM =  10_000   # $10k–$100k — moderate price discovery
+VOLUME_TIER_LOW    =   2_000   # $2k–$10k — weak signal, require bigger edge
+
+def volume_confidence_tier(volume24h: float) -> str:
+    """Return HIGH / MEDIUM / LOW based on 24h trading volume."""
+    if volume24h >= VOLUME_TIER_HIGH:
+        return "HIGH"
+    elif volume24h >= VOLUME_TIER_MEDIUM:
+        return "MEDIUM"
+    return "LOW"
+
+def volume_ev_floor(volume24h: float, base_threshold: float) -> float:
+    """
+    Raise EV threshold for thin markets — less price discovery = need bigger edge.
+    HIGH: no change. MEDIUM: +2pp. LOW: +5pp.
+    """
+    tier = volume_confidence_tier(volume24h)
+    if tier == "HIGH":
+        return base_threshold
+    elif tier == "MEDIUM":
+        return base_threshold + 0.02
+    return base_threshold + 0.05
 
 
 # â"€â"€â"€ EV Functions â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
