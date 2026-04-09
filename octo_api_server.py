@@ -712,8 +712,6 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
     </p>
     <div class="intro-cta-row">
       <a class="btn-primary" href="https://octodamus.com/free-key.html">Get Free API Key →</a>
-      <a class="btn-secondary" href="https://api.octodamus.com/v2/demo">Live Demo (no key)</a>
-      <a class="btn-secondary" href="https://api.octodamus.com/v2/ask?q=What+signals+do+you+have+open" target="_blank">Ask Octodamus →</a>
     </div>
   </div>
 
