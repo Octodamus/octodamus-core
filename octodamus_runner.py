@@ -1600,9 +1600,38 @@ def mode_morning_flow() -> None:
         except Exception:
             pass
 
-        queue_post(post, post_type="morning_flow", priority=1)
+        # Generate plain-English explanation reply (the "what this means" thread)
+        explain_prompt = (
+            f"The following post was just written for @octodamusai:\n\n\"{post}\"\n\n"
+            "Write a reply tweet under 280 chars that explains what the key terms and numbers mean "
+            "in plain English — no jargon. Teach the reader exactly what the data signals and why "
+            "it matters for their money. Use this format:\n"
+            "What this means: [term] = [plain explanation]. [term] = [plain explanation]. "
+            "[One sentence on the trading implication.]\n"
+            "Keep it educational, grounded, and under 280 chars."
+        )
+        try:
+            explain_resp = claude.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                system=OCTO_SYSTEM,
+                messages=[{"role": "user", "content": explain_prompt}],
+            )
+            explanation = explain_resp.content[0].text.strip()
+        except Exception as e:
+            print(f"[Runner] Explanation generation failed: {e}")
+            explanation = None
+
+        if explanation:
+            from octo_x_poster import queue_thread
+            queue_thread([post, explanation], post_type="morning_flow")
+        else:
+            queue_post(post, post_type="morning_flow", priority=1)
+
         posted = process_queue(max_posts=1)
         print(f"[Runner] Morning flow {'posted' if posted else 'queued'}:\n  {post}")
+        if explanation:
+            print(f"[Runner] Thread reply:\n  {explanation}")
 
     except Exception as e:
         print(f"[Runner] mode_morning_flow failed: {e}")
