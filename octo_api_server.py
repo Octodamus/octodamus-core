@@ -707,9 +707,6 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
       and Polymarket positions 24/7. OctoData is the API layer — the same intelligence
       that powers Octodamus, available to your agents in clean, structured JSON.
     </p>
-    <p style="font-size:0.88rem;color:var(--text);max-width:700px;margin:0 auto 28px;line-height:1.75;border-left:2px solid rgba(0,200,255,0.5);padding-left:16px;text-align:left;">
-      Eleven signal systems run 24/7 — funding rates, open interest, options positioning, CME institutional flows, Fear &amp; Greed, Polymarket odds, COT data, liquidation maps, technical structure, macro sentiment, and on-chain data. A call only publishes when nine of eleven agree. Not eight. Not seven. Nine. Retail panic creates mispricings. Institutional flows leave footprints. When the data aligns, the crowd is almost always on the wrong side. Every call logged on publication. Every outcome public. <strong style="color:var(--bright);">That's the edge.</strong>
-    </p>
     <div class="intro-cta-row">
       <a class="btn-primary" href="https://octodamus.com/free-key.html">Get Free API Key →</a>
     </div>
@@ -891,7 +888,7 @@ print(answer[<span class="code-str">"suggested_endpoints"</span>]) <span class="
       <div class="t-card pro">
         <div class="t-badge pro-badge">Premium</div>
         <div class="t-name">Premium</div>
-        <div class="t-price">$19 / month</div>
+        <div class="t-price">$29 / year</div>
         <ul class="t-features">
           <li class="green">All open signals + confidence, entry, target, reasoning chain</li>
           <li class="green">BTC, ETH, SOL, NVDA, TSLA, AAPL — all assets</li>
@@ -1715,7 +1712,7 @@ def signup(
     """
     Create a free Basic API key instantly. No credit card required.
     Free tier: 500 req/day, 20 req/min.
-    Premium ($19/mo): 10,000 req/day, all assets, full EV scores, AI briefing.
+    Premium ($29/yr): 10,000 req/day, all assets, full EV scores, AI briefing.
     Include your key as: X-OctoData-Key: your_key
     """
     if "@" not in email or "." not in email.split("@")[-1]:
@@ -1788,7 +1785,7 @@ def upgrade_to_premium(
     success_url: str = Query("https://octodamus.com/upgrade?upgraded=1"),
 ):
     """
-    Start a Stripe checkout to upgrade to Premium ($19/mo).
+    Start a Stripe checkout to upgrade to Premium ($29/yr).
     Returns checkout_url. Key tier upgrades automatically after payment via webhook.
     """
     if not _STRIPE_KEY or not _STRIPE_PRICE_ID:
@@ -1811,7 +1808,7 @@ def upgrade_to_premium(
             subscription_data={"metadata": {"octodata_api_key": api_key}},
             customer_email=entry.get("email") or None,
         )
-        return {"checkout_url": session.url, "session_id": session.id, "amount": "$19/mo"}
+        return {"checkout_url": session.url, "session_id": session.id, "amount": "$29/yr"}
     except Exception as e:
         raise HTTPException(status_code=500, detail="Stripe error: " + str(e))
 
