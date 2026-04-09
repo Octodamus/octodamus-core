@@ -424,7 +424,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     "`/auto`     Auto-scan status\n"
     "`/wallet`    Wallet address + balance\n"
     "`/newwallet`  Generate new Polygon wallet\n"
-    "`/reset`    Reset to $500 paper balance\n",
+    "`/reset`    Reset to $500 paper balance\n"
+    "`/stats`    Category payout ratio performance\n"
+    "`/contrascan` Contrarian hunt: 3-12¢ markets w/ 85%+ data edge\n",
     parse_mode=ParseMode.MARKDOWN
   )
 
@@ -685,6 +687,188 @@ async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
   except Exception as e:
     await update.message.reply_text(f"❌ {e}")
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """Category payout ratio performance report."""
+  from octo_boto_brain import format_category_stats_report
+  report = format_category_stats_report()
+  await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_contrascan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+  """
+  Low-entry contrarian scan.
+  Targets markets priced 3-12c where Octodamus signals 85%+ true probability.
+  At these prices a correct call pays 7-30x — only needs to hit ~15% of the time.
+  """
+  global _last_scan_time
+
+  if not ANTHROPIC_KEY:
+    await update.message.reply_text(
+      "❌ ANTHROPIC_API_KEY missing — add to Bitwarden and restart."
+    )
+    return
+
+  elapsed = time.time() - _last_scan_time
+  if elapsed < SCAN_COOLDOWN:
+    wait = int(SCAN_COOLDOWN - elapsed)
+    await update.message.reply_text(f"⏳ Please wait {wait}s before scanning again.")
+    return
+
+  _last_scan_time = time.time()
+  await update.message.reply_text(
+    "🎯 *Contrarian Scan* — hunting 3-12¢ markets with data edge\n"
+    "_(~2-3 min)_",
+    parse_mode=ParseMode.MARKDOWN
+  )
+
+  try:
+    markets = GAMMA.get_markets(limit=300)
+    crypto_markets = GAMMA.get_crypto_markets()
+    seen_ids = {m["id"] for m in markets}
+    markets = markets + [m for m in crypto_markets if m["id"] not in seen_ids]
+
+    # Base validity filter (volume, days-to-close, etc.) then price gate: 3–12¢
+    all_valid = [m for m in markets if is_valid_market(m)]
+    contrarian = [
+      m for m in all_valid
+      if 0.03 <= float(m.get("yes_price", 1.0)) <= 0.12
+    ]
+
+    if not contrarian:
+      await update.message.reply_text(
+        "🔍 No 3-12¢ markets pass base filters right now.\n"
+        "Market may be fully priced on low-probability outcomes."
+      )
+      return
+
+    # Inject velocity
+    for m in contrarian:
+      vel = _compute_velocity(m["id"], float(m.get("yes_price", 0.05)))
+      m["_velocity_pct"] = vel
+
+    await update.message.reply_text(
+      f"📊 {len(contrarian)} contrarian candidates (3-12¢) — running AI...\n"
+      f"Min true prob threshold: 85% | Implied payout: 7-30x"
+    )
+
+    # Lower min_ev here — at 5¢ an 85% true prob is +1600% EV; standard filter is irrelevant
+    # We use a custom filter post-estimation: only keep where AI says >= 85%
+    opps_raw = batch_estimate(
+      contrarian, ANTHROPIC_KEY,
+      max_markets=min(len(contrarian), AI_BATCH_LIMIT),
+      min_ev=0.10  # loose floor — we filter by probability below
+    )
+
+    # Hard filter: AI must say true probability >= 85%
+    opps = [o for o in opps_raw if o["ai"].get("probability", 0) >= 0.85]
+
+    if not opps:
+      await update.message.reply_text(
+        f"🔍 {len(opps_raw)} low-prob markets analyzed — none cleared 85% true-prob threshold.\n"
+        "Contrarian plays require strong data signal, not just low price."
+      )
+      return
+
+    # Sort by implied payout multiple (1/market_price * true_prob)
+    for o in opps:
+      price = float(o["market"].get("yes_price", 0.05))
+      true_p = o["ai"].get("probability", 0)
+      o["_payout_multiple"] = round((true_p / price) if price > 0 else 0, 1)
+    opps.sort(key=lambda o: o["_payout_multiple"], reverse=True)
+
+    await update.message.reply_text(
+      f"🎯 *{len(opps)} CONTRARIAN SETUP{'S' if len(opps) != 1 else ''}* found",
+      parse_mode=ParseMode.MARKDOWN
+    )
+
+    _dd_paused, _dd_reason = is_drawdown_pause_active()
+    if _dd_paused:
+      await update.message.reply_text(
+        f"⚠️ {_dd_reason}\nShowing setups but NOT entering positions.",
+        parse_mode=ParseMode.MARKDOWN
+      )
+
+    entered = 0
+    for i, opp in enumerate(opps[:5], 1):
+      m, ai, trade, score = opp["market"], opp["ai"], opp["trade"], opp["score"]
+      price = float(m.get("yes_price", 0.05))
+      mult  = opp["_payout_multiple"]
+      ev_pct = round((ai["probability"] - price) / price * 100, 0)
+
+      sector = get_market_sector(m.get("question", ""))
+      text = (
+        f"🔥 *CONTRARIAN #{i}* — `{price:.0%}` market / `{ai['probability']:.0%}` true prob\n"
+        f"*Implied payout: {mult:.1f}x* | EV: +{ev_pct:.0f}%\n"
+        f"Confidence: `{ai['confidence']}`\n"
+        f"*{m['question'][:80]}*\n"
+        f"_{ai['reasoning'][:160]}_"
+      )
+      await update.message.reply_text(
+        text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+      )
+
+      # Entry gate
+      _ks_hit, _ks_reason = check_kill_switch_sync(TRACKER.balance())
+      if _ks_hit:
+        await update.message.reply_text(
+          f"🚨 Kill switch — trading halted\n{_ks_reason}",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        break
+
+      sector_count = count_sector_positions(sector)
+      if sector_count >= MAX_SECTOR_POSITIONS:
+        await update.message.reply_text(
+          f"⏭️ Skipping #{i} — {sector_count} open in *{sector}* (max {MAX_SECTOR_POSITIONS})",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
+
+      if (
+        not _dd_paused
+        and ai.get("confidence") in MIN_CONF_AUTO
+        and not TRACKER.has_position(m["id"])
+      ):
+        side = "YES"  # contrarian plays are always YES (buying the underpriced outcome)
+        ep   = price
+        size = position_size(TRACKER.balance(), trade["kelly"])
+
+        pos = TRACKER.open_position(
+          market_id=m["id"], question=m["question"], side=side,
+          size=size, entry_price=ep, true_p=ai["probability"],
+          ev=trade["ev"], kelly_frac=trade["kelly"],
+          confidence=ai["confidence"], reasoning=ai["reasoning"],
+          score=score, url=m.get("url", "")
+        )
+
+        if pos:
+          entered += 1
+          on_position_opened(pos)
+          record_estimate(
+            market_id=m["id"], question=m["question"],
+            claude_p=ai["probability"], market_price=price,
+            confidence=ai["confidence"], side=side,
+          )
+          await update.message.reply_text(
+            f"📥 *Contrarian position opened #{entered}*\n"
+            f"Side: YES @ `{ep:.3f}` | Size: `${size:.2f}` | Payout: `{mult:.1f}x`",
+            parse_mode=ParseMode.MARKDOWN
+          )
+          if upgrade_alerts:
+            await upgrade_alerts.trade_opened(pos, TRACKER.balance())
+
+    s = TRACKER.pnl_summary()
+    await update.message.reply_text(
+      f"✅ Contrarian scan done — {len(opps)} found | {entered} entered\n"
+      f"Balance: `${s['balance']:.2f}` | Open: {s['open_count']}",
+      parse_mode=ParseMode.MARKDOWN
+    )
+
+  except Exception as e:
+    log.exception("contrascan error")
+    await update.message.reply_text(f"❌ Contrascan error: {e}")
 
 
 async def cmd_positions(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1389,6 +1573,8 @@ def main():
     ("ksstatus", cmd_ksstatus),
     ("ksreset",  cmd_ksreset),
     ("binance",  cmd_binance),
+    ("stats",       cmd_stats),
+    ("contrascan",  cmd_contrascan),
   ]
 
   for cmd, handler in handlers:
