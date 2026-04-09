@@ -425,8 +425,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     "`/wallet`    Wallet address + balance\n"
     "`/newwallet`  Generate new Polygon wallet\n"
     "`/reset`    Reset to $500 paper balance\n"
-    "`/stats`    Category payout ratio performance\n"
-    "`/contrascan` Contrarian hunt: 3-12¢ markets w/ 85%+ data edge\n",
+    "`/stats`     Category payout ratio performance\n"
+    "`/quickscan`  Near-resolution scalp: 88-97¢ markets, +5¢ target\n"
+    "`/contrascan` Contrarian: 3-12¢ w/ 85%+ edge + 1-2¢ lottery tier\n",
     parse_mode=ParseMode.MARKDOWN
   )
 
@@ -696,6 +697,159 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
   await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
 
 
+# ── Quickscan helpers ─────────────────────────────────────────────────────────
+
+SCALP_MAX_DAYS  = 2.0    # Only markets within 48 hours of resolution
+SCALP_ENTRY_MIN = 0.88   # High-prob side must be at least 88¢
+SCALP_ENTRY_MAX = 0.97   # Cap at 97¢ — above this there's no room to drift
+SCALP_TARGET    = 0.05   # Sell target: +5¢ from entry
+SCALP_STOP      = -0.04  # Stop loss: -4¢ from entry
+SCALP_SIZE_USD  = 50.0   # Fixed position size (no Kelly — no AI confidence)
+SCALP_MIN_LIQ   = 1_000  # Minimum liquidity to ensure fillable orders
+
+
+def _is_scalp_candidate(m: dict) -> bool:
+    """Market is near resolution with one side 88-97¢."""
+    dtc = m.get("days_to_close")
+    if dtc is None or dtc > SCALP_MAX_DAYS or dtc < 0:
+        return False
+    liq = float(m.get("liquidity", 0) or 0)
+    if liq < SCALP_MIN_LIQ:
+        return False
+    yes = float(m.get("yes_price", 0.5))
+    high = max(yes, 1.0 - yes)
+    return SCALP_ENTRY_MIN <= high <= SCALP_ENTRY_MAX
+
+
+def _scalp_side(m: dict) -> tuple[str, float]:
+    """Return (side, entry_price) for the high-probability outcome."""
+    yes = float(m.get("yes_price", 0.5))
+    if yes >= (1.0 - yes):
+        return "YES", yes
+    return "NO", round(1.0 - yes, 4)
+
+
+async def cmd_quickscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Near-resolution scalp scan.
+    Targets markets 88-97¢ with <= 48h to close — buy the drift to 100¢.
+    No AI needed. Entry: current price. Target: +5¢. Stop: -4¢.
+    65-70% historical win rate at this price range per Stacy on Chain research.
+    """
+    await update.message.reply_text(
+        "⚡ *Quickscan* — hunting 88-97¢ near-resolution scalps...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    try:
+        markets = GAMMA.get_markets(limit=300)
+        crypto_markets = GAMMA.get_crypto_markets()
+        seen_ids = {m["id"] for m in markets}
+        all_markets = markets + [m for m in crypto_markets if m["id"] not in seen_ids]
+
+        candidates = [m for m in all_markets if _is_scalp_candidate(m)]
+
+        # Sort: quickest-to-close first (most mechanical drift)
+        candidates.sort(key=lambda m: m.get("days_to_close", 99))
+
+        if not candidates:
+            await update.message.reply_text(
+                "🔍 No 88-97¢ markets within 48h of resolution right now.\n"
+                "Try again later — these appear as markets approach their end date."
+            )
+            return
+
+        _dd_paused, _dd_reason = is_drawdown_pause_active()
+        if _dd_paused:
+            await update.message.reply_text(
+                f"⚠️ {_dd_reason}\nShowing scalps but NOT entering positions.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+        await update.message.reply_text(
+            f"📊 *{len(candidates)} scalp candidates* — entering best setups\n"
+            f"Logic: buy drift to resolution | Target: +5¢ | Stop: -4¢ | Size: ${SCALP_SIZE_USD:.0f}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        entered = 0
+        displayed = 0
+        for m in candidates[:10]:
+            side, ep = _scalp_side(m)
+            target   = round(ep + SCALP_TARGET, 4)
+            stop     = round(ep + SCALP_STOP, 4)
+            dtc      = m.get("days_to_close", 0)
+            dtc_str  = f"{dtc*24:.1f}h" if dtc < 1 else f"{dtc:.1f}d"
+            pct_gain = round(SCALP_TARGET / ep * 100, 1)
+            pct_loss = round(abs(SCALP_STOP) / ep * 100, 1)
+
+            text = (
+                f"📈 *SCALP* — `{ep:.0%}` {side} | Closes in `{dtc_str}`\n"
+                f"Entry: `{ep:.3f}` → Target: `{target:.3f}` (+{pct_gain:.1f}%) | "
+                f"Stop: `{stop:.3f}` (-{pct_loss:.1f}%)\n"
+                f"*{m['question'][:85]}*"
+            )
+            await update.message.reply_text(
+                text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+            )
+            displayed += 1
+
+            # Kill switch
+            _ks_hit, _ks_reason = check_kill_switch_sync(TRACKER.balance())
+            if _ks_hit:
+                await update.message.reply_text(
+                    f"🚨 Kill switch — trading halted\n{_ks_reason}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                break
+
+            # Entry — mechanical trade, no AI confidence gate
+            if not _dd_paused and not TRACKER.has_position(m["id"]):
+                # Fake kelly of 0.1 — small fixed size, no AI estimate
+                fake_kelly = round(SCALP_SIZE_USD / max(TRACKER.balance(), 1), 4)
+                pos = TRACKER.open_position(
+                    market_id=m["id"], question=m["question"], side=side,
+                    size=SCALP_SIZE_USD, entry_price=ep, true_p=round(ep + 0.05, 3),
+                    ev=round(SCALP_TARGET - abs(SCALP_STOP) * 0.35, 4),
+                    kelly_frac=fake_kelly,
+                    confidence="scalp", reasoning=f"Near-resolution scalp: {dtc_str} to close",
+                    score=round(ep, 3), url=m.get("url", "")
+                )
+                if pos:
+                    entered += 1
+                    on_position_opened(pos)
+                    # CLOB execution if live
+                    clob_result = None
+                    if _CLOB_AVAILABLE and is_live():
+                        tokens = get_token_ids(m.get("conditionId", m["id"]))
+                        token_id = tokens["yes"] if side == "YES" else tokens["no"]
+                        if token_id:
+                            clob_result = place_order(
+                                token_id=token_id, side="BUY",
+                                price=ep, amount_usdc=SCALP_SIZE_USD,
+                                market_question=m["question"],
+                            )
+                    mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
+                    await update.message.reply_text(
+                        f"📥 *{mode_label} scalp opened #{entered}*\n"
+                        f"Side: {side} @ `{ep:.3f}` | Size: `${SCALP_SIZE_USD:.0f}` | "
+                        f"Target: `{target:.3f}` | Stop: `{stop:.3f}`",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    if upgrade_alerts:
+                        await upgrade_alerts.trade_opened(pos, TRACKER.balance())
+
+        s = TRACKER.pnl_summary()
+        await update.message.reply_text(
+            f"✅ Quickscan done — {displayed} scalps shown | {entered} entered\n"
+            f"Balance: `${s['balance']:.2f}` | Open: {s['open_count']}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    except Exception as e:
+        log.exception("quickscan error")
+        await update.message.reply_text(f"❌ Quickscan error: {e}")
+
+
 async def cmd_contrascan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
   """
   Low-entry contrarian scan.
@@ -728,6 +882,71 @@ async def cmd_contrascan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     crypto_markets = GAMMA.get_crypto_markets()
     seen_ids = {m["id"] for m in markets}
     markets = markets + [m for m in crypto_markets if m["id"] not in seen_ids]
+
+    # ── Lottery Tier (1-2¢) — volatility-gated, no AI, hold to resolution ────
+    # Only eligible on low-volatility conditions: BTC < 0.5% move in last 5min.
+    # At 1¢, a correct call pays 100x. Even 2% hit rate = positive EV.
+    btc_5m_move = None
+    low_vol = False
+    if price_feed and price_feed.is_live():
+        btc_5m_move = price_feed.get_move("BTC", window_seconds=300)
+        if btc_5m_move is not None:
+            low_vol = abs(btc_5m_move) < 0.5
+
+    lottery_candidates = [
+        m for m in markets
+        if 0.01 <= float(m.get("yes_price", 1.0)) <= 0.02
+        and float(m.get("liquidity", 0) or 0) >= 500
+    ]
+
+    if lottery_candidates and low_vol:
+        btc_str = f"{btc_5m_move:+.2f}%" if btc_5m_move is not None else "unknown"
+        await update.message.reply_text(
+            f"🎰 *Lottery Tier* — {len(lottery_candidates)} markets at 1-2¢ | "
+            f"BTC 5m move: `{btc_str}` (low-vol gate: ✅)\n"
+            f"Fixed `$10` size | Hold to resolution | 100x payout if correct",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        lottery_entered = 0
+        for m in lottery_candidates[:5]:
+            price = float(m.get("yes_price", 0.01))
+            dtc   = m.get("days_to_close")
+            dtc_s = f"{dtc:.1f}d" if dtc is not None else "?"
+            await update.message.reply_text(
+                f"🎰 *LOTTERY* — `{price:.1%}` YES | `{dtc_s}` to close | 100x payout\n"
+                f"*{m['question'][:90]}*\n"
+                f"_Low-vol reversal: crowd extrapolated short-term move, price may snap back_",
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+            _ks_hit, _ks_reason = check_kill_switch_sync(TRACKER.balance())
+            if _ks_hit:
+                break
+            if not TRACKER.has_position(m["id"]):
+                pos = TRACKER.open_position(
+                    market_id=m["id"], question=m["question"], side="YES",
+                    size=10.0, entry_price=price, true_p=0.02,
+                    ev=round(0.02 / price - 1, 3),
+                    kelly_frac=round(10.0 / max(TRACKER.balance(), 1), 4),
+                    confidence="lottery",
+                    reasoning=f"1-2c lottery tier: BTC low-vol ({btc_str}), hold to resolution",
+                    score=price, url=m.get("url", "")
+                )
+                if pos:
+                    lottery_entered += 1
+                    on_position_opened(pos)
+        await update.message.reply_text(
+            f"✅ Lottery tier: {lottery_entered} tickets opened @ $10 each"
+        )
+    elif lottery_candidates and not low_vol:
+        btc_str = f"{btc_5m_move:+.2f}%" if btc_5m_move is not None else "unknown"
+        await update.message.reply_text(
+            f"🎰 {len(lottery_candidates)} lottery candidates skipped — "
+            f"BTC too volatile (`{btc_str}` in 5m, threshold < 0.5%)\n"
+            f"_Lottery tier only fires on range-bound BTC days_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    # ── End Lottery Tier ──────────────────────────────────────────────────────
 
     # Base validity filter (volume, days-to-close, etc.) then price gate: 3–12¢
     all_valid = [m for m in markets if is_valid_market(m)]
@@ -1574,6 +1793,7 @@ def main():
     ("ksreset",  cmd_ksreset),
     ("binance",  cmd_binance),
     ("stats",       cmd_stats),
+    ("quickscan",   cmd_quickscan),
     ("contrascan",  cmd_contrascan),
   ]
 
