@@ -217,23 +217,25 @@ def _x402_headers(amount_usdc: float = 29.0) -> dict:
     import base64
     micro = str(int(amount_usdc * 1_000_000))
 
+    _signal_example = {
+        "action":          "BUY",
+        "confidence":      0.78,
+        "signal":          "BULLISH",
+        "fear_greed":      62,
+        "btc_trend":       "UP",
+        "polymarket_edge": {"market": "BTC above 90k", "ev": 0.14},
+        "reasoning":       "Oracle 9/11 consensus bullish. Fear & Greed neutral-greed zone.",
+    }
     bazaar_ext = {
         "info": {
             "input": {
-                "type":   "http",
-                "method": "GET",
+                "method":       "GET",
+                "type":         "http",
+                "discoverable": True,
             },
             "output": {
-                "type": "json",
-                "example": {
-                    "action":          "BUY",
-                    "confidence":      0.78,
-                    "signal":          "BULLISH",
-                    "fear_greed":      62,
-                    "btc_trend":       "UP",
-                    "polymarket_edge": {"market": "BTC above 90k", "ev": 0.14},
-                    "reasoning":       "Oracle 9/11 consensus bullish. Fear & Greed neutral-greed zone.",
-                },
+                "type":    "json",
+                "example": _signal_example,
             },
         },
         "schema": {
@@ -242,23 +244,19 @@ def _x402_headers(amount_usdc: float = 29.0) -> dict:
                 "input": {
                     "type": "object",
                     "properties": {
-                        "type":   {"type": "string", "const": "http"},
-                        "method": {"type": "string", "enum": ["GET"]},
+                        "type":        {"type": "string", "const": "http"},
+                        "method":      {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"]},
+                        "queryParams": {"type": "object"},
                     },
                     "required": ["type"],
                 },
                 "output": {
                     "type": "object",
                     "properties": {
-                        "action":          {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
-                        "confidence":      {"type": "number"},
-                        "signal":          {"type": "string"},
-                        "fear_greed":      {"type": "integer"},
-                        "btc_trend":       {"type": "string"},
-                        "polymarket_edge": {"type": "object"},
-                        "reasoning":       {"type": "string"},
+                        "type":    {"type": "string"},
+                        "example": {"type": "object"},
                     },
-                    "required": ["action", "confidence", "signal"],
+                    "required": ["type"],
                 },
             },
             "required": ["input"],
