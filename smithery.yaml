@@ -1,0 +1,51 @@
+name: octodamus-market-intelligence
+displayName: Octodamus Market Intelligence
+description: >
+  Real-time crypto market intelligence for AI agents. Oracle trading signals
+  (9/11 consensus), Fear & Greed index, Polymarket prediction market edge plays
+  with EV scoring, BTC trend, and macro sentiment across 27 live data feeds.
+  Single-call decision endpoint returns action/confidence/signal/polymarket_edge/reasoning.
+  Designed for 15-minute agent poll cycles.
+version: 1.0.0
+icon: https://octodamus.com/octo_logo.png
+homepage: https://octodamus.com
+repository: https://github.com/octodamusai/octodamus
+license: MIT
+categories:
+  - finance
+  - crypto
+  - market-data
+tags:
+  - crypto
+  - market-intelligence
+  - polymarket
+  - trading-signals
+  - bitcoin
+  - oracle
+  - fear-greed
+  - prediction-markets
+  - defi
+  - x402
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      apiKey:
+        type: string
+        title: OctoData API Key
+        description: >
+          Your OctoData API key. Get a free Basic key (500 req/day) at
+          https://api.octodamus.com/v1/signup or buy Premium ($29 USDC on Base)
+          at https://api.octodamus.com/v1/agent-checkout
+    required:
+      - apiKey
+  commandFunction: |-
+    (config) => ({
+      command: "python",
+      args: ["octo_mcp_server.py"],
+      env: {
+        OCTO_API_KEY: config.apiKey
+      }
+    })

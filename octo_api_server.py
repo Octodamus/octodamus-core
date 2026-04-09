@@ -973,7 +973,7 @@ _ERC8004_CARD = {
         },
         {
             "name":     "Web",
-            "endpoint": "https://api.octodamus.com",
+            "endpoint": "https://octodamus.com",
             "version":  "3.0.0",
         },
         {
@@ -3314,6 +3314,63 @@ def v2_sources():
         "signup":   "POST https://api.octodamus.com/v1/signup?email=your@email.com",
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+# -- llms.txt — machine-readable API index for LLMs --------------------------
+
+_LLMS_TXT = """# Octodamus Market Intelligence API
+
+> Real-time crypto market intelligence for autonomous AI agents. Oracle trading signals (9/11 consensus), Fear & Greed index, Polymarket prediction market edge plays, BTC trend, and macro sentiment across 27 live data feeds. Designed for 15-minute AI agent poll cycles. x402 native: agents pay $29 USDC on Base, receive an API key automatically — no human required.
+
+## Quick Start
+
+- [API Documentation](https://api.octodamus.com/docs): Interactive Swagger docs — all endpoints, schemas, and try-it-now
+- [Agent Signal](https://api.octodamus.com/v2/agent-signal): Primary decision endpoint (requires API key or x402 payment)
+- [Demo (no key)](https://api.octodamus.com/v2/demo): Public preview of signal output — no key required
+- [Data Sources](https://api.octodamus.com/v2/sources): Full list of all 27 live data feeds powering every endpoint
+- [Get Free Key](https://api.octodamus.com/v1/signup): POST with your email for free Basic tier (500 req/day)
+- [Agent Checkout](https://api.octodamus.com/v1/agent-checkout): Autonomous x402 purchase — $29 USDC for annual access
+
+## Core Signal Endpoints (require X-OctoData-Key header)
+
+- [GET /v2/agent-signal](https://api.octodamus.com/v2/agent-signal): **Primary endpoint for agents.** Returns `action` (BUY/SELL/HOLD), `confidence` (0.0–1.0), `signal` (BULLISH/BEARISH/NEUTRAL), `fear_greed` (0–100), `btc_trend` (UP/DOWN/SIDEWAYS), `polymarket_edge` {market, ev}, `reasoning` (plain-text explanation). Poll every 15 minutes.
+- [GET /v2/signal](https://api.octodamus.com/v2/signal): Raw Oracle signal pack — individual votes from all 11 oracles, consensus strength, win rate, and timestamp
+- [GET /v2/polymarket](https://api.octodamus.com/v2/polymarket): Top Polymarket prediction markets with expected-value scoring. Returns `ev`, `edge`, `recommended_side`, and `confidence` per market.
+- [GET /v2/sentiment](https://api.octodamus.com/v2/sentiment): AI sentiment scores for BTC, ETH, SOL, and macro themes (score –1.0 to +1.0, label, summary)
+- [GET /v2/prices](https://api.octodamus.com/v2/prices): Current crypto prices with 24h % change for major assets
+- [GET /v2/brief](https://api.octodamus.com/v2/brief): Full AI market briefing in narrative format — ideal for agent reasoning context
+- [GET /v2/all](https://api.octodamus.com/v2/all): Combined snapshot of signal + sentiment + prices + Polymarket in one call
+
+## Key Management
+
+- [GET /v1/key/status](https://api.octodamus.com/v1/key/status): Check expiry, tier, and usage for your key — also returns renewal x402 payment details when within 30 days of expiry
+- [POST /v1/signup](https://api.octodamus.com/v1/signup): Create free Basic API key. Params: `email` (query or body)
+- [POST /v1/agent-checkout](https://api.octodamus.com/v1/agent-checkout): Initiate x402 checkout. Params: `product` (premium_annual | premium_trial), `agent_wallet` (your 0x address)
+- [GET /v1/agent-checkout/status](https://api.octodamus.com/v1/agent-checkout/status): Poll payment status. Returns `api_key` once payment is confirmed on-chain.
+
+## Pricing
+
+- **Free Basic**: 500 req/day, 20 req/min — email signup, no payment
+- **Premium Annual**: $29 USDC on Base, 10,000 req/day, 200 req/min, 365-day access
+- **Trial**: $5 USDC on Base, 10,000 req/day, 7-day access
+- **x402 chain**: eip155:8453 (Base mainnet)
+- **Pay to**: 0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db
+- **USDC contract**: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+
+## Agent Integration Notes
+
+Authentication: `X-OctoData-Key: <your-key>` header on all v1/v2 endpoints.
+x402: All v2 endpoints return HTTP 402 with `payment-required` (base64 JSON, v2) and `X-Payment-Required` (plain JSON, v1) when no key is present.
+ERC-8004: Registered on Agent Arena. globalId = eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432#44306
+A2A Card: https://agentarena.site/api/agent/8453/44306/a2a
+""".strip()
+
+
+@app.get("/llms.txt", include_in_schema=False)
+def llms_txt():
+    """Machine-readable API index for LLMs (llmstxt.org standard)."""
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(_LLMS_TXT, media_type="text/plain; charset=utf-8")
 
 
 # -- Entry point --------------------------------------------------------------
