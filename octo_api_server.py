@@ -3316,6 +3316,80 @@ def v2_sources():
     }
 
 
+# -- MCP Server (SSE transport) — mounted at /mcp ----------------------------
+# Smithery URL: https://api.octodamus.com/mcp
+
+from mcp.server.fastmcp import FastMCP as _FastMCP
+
+_mcp = _FastMCP(
+    "Octodamus Market Intelligence",
+    instructions=(
+        "Real-time crypto market intelligence. Call get_agent_signal() every 15 minutes "
+        "for the consolidated BUY/SELL/HOLD decision with confidence, Fear & Greed, BTC trend, "
+        "and top Polymarket edge play. All tools require OCTO_API_KEY to be configured."
+    ),
+)
+
+def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
+    try:
+        r = httpx.get(
+            f"https://api.octodamus.com{path}",
+            headers={"X-OctoData-Key": api_key},
+            params=params or {},
+            timeout=15,
+        )
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@_mcp.tool()
+def get_agent_signal(api_key: str) -> dict:
+    """Primary signal endpoint. Returns action (BUY/SELL/HOLD), confidence (0-1), signal (BULLISH/BEARISH/NEUTRAL), fear_greed (0-100), btc_trend, polymarket_edge {market, ev}, and reasoning. Poll every 15 minutes."""
+    return _mcp_get("/v2/agent-signal", api_key)
+
+@_mcp.tool()
+def get_polymarket_edge(api_key: str) -> dict:
+    """Top Polymarket prediction markets with EV scoring. Returns ranked list with recommended_side, expected value, and confidence per market."""
+    return _mcp_get("/v2/polymarket", api_key)
+
+@_mcp.tool()
+def get_sentiment(api_key: str, symbol: str = "") -> dict:
+    """AI sentiment scores for BTC, ETH, SOL and macro themes. score -1.0 to +1.0. Optionally filter by symbol (BTC, ETH, SOL)."""
+    path = f"/v2/sentiment/{symbol}" if symbol else "/v2/sentiment"
+    return _mcp_get(path, api_key)
+
+@_mcp.tool()
+def get_prices(api_key: str) -> dict:
+    """Current crypto prices with 24h % change for major assets."""
+    return _mcp_get("/v2/prices", api_key)
+
+@_mcp.tool()
+def get_market_brief(api_key: str) -> dict:
+    """Full AI market briefing in narrative format — ideal for agent reasoning context."""
+    return _mcp_get("/v2/brief", api_key)
+
+@_mcp.tool()
+def get_all_data(api_key: str) -> dict:
+    """Combined snapshot: signal + sentiment + prices + Polymarket in one call."""
+    return _mcp_get("/v2/all", api_key)
+
+@_mcp.tool()
+def get_oracle_signals(api_key: str) -> dict:
+    """Raw Oracle pack — individual votes from all 11 oracles, consensus strength, win rate."""
+    return _mcp_get("/v2/signal", api_key)
+
+@_mcp.tool()
+def get_data_sources() -> dict:
+    """List all 27 live data feeds powering Octodamus. No API key required."""
+    try:
+        r = httpx.get("https://api.octodamus.com/v2/sources", timeout=15)
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+app.mount("/mcp", _mcp.sse_app())
+
+
 # -- llms.txt — machine-readable API index for LLMs --------------------------
 
 _LLMS_TXT = """# Octodamus Market Intelligence API
