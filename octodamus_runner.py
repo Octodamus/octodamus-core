@@ -1521,6 +1521,94 @@ def mode_qrt() -> None:
         discord_alert(f"qrt mode failed: {e}")
 
 
+def mode_morning_flow() -> None:
+    """
+    5 AM / 6 AM / 7 AM morning post: where is the money flowing right now
+    and exactly how to take advantage of it. Specific, directional, actionable.
+    """
+    print(f"\n[Runner] Generating morning flow post...")
+    try:
+        # Pull live crypto prices
+        import requests as _req
+        prices = {}
+        try:
+            _r = _req.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
+                        "include_24hr_change": "true", "include_market_cap": "true"},
+                timeout=10,
+            )
+            _d = _r.json()
+            for name, sym in [("bitcoin","BTC"),("ethereum","ETH"),("solana","SOL")]:
+                if name in _d:
+                    prices[sym] = {
+                        "price": _d[name].get("usd", 0),
+                        "change_24h": round(float(_d[name].get("usd_24h_change", 0) or 0), 2),
+                        "mcap": _d[name].get("usd_market_cap", 0),
+                    }
+        except Exception as e:
+            print(f"[Runner] Price fetch failed: {e}")
+
+        # Fear & Greed
+        fg = 50
+        try:
+            _fg = _req.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()
+            fg = int(_fg["data"][0]["value"])
+        except Exception:
+            pass
+
+        coinglass_ctx = _get_coinglass_context()
+        deribit_ctx   = _get_deribit_context("BTC")
+        headlines     = get_top_headlines(["BTC", "ETH", "SOL"], max_per_symbol=2)
+        news_ctx      = format_headlines_for_prompt(headlines)
+        tv_ctx        = get_tv_brief()
+        brain_ctx     = get_brain_context() if _NUNCHI_ACTIVE else ""
+        call_ctx      = build_call_context() if _CALLS_ACTIVE else ""
+
+        prompt = (
+            f"Time: {datetime.now().strftime('%I:%M %p')} PT — pre-market / early session.\n"
+            f"BTC ${prices.get('BTC',{}).get('price',0):,.0f} ({prices.get('BTC',{}).get('change_24h',0):+.1f}% 24h) | "
+            f"ETH ${prices.get('ETH',{}).get('price',0):,.0f} ({prices.get('ETH',{}).get('change_24h',0):+.1f}%) | "
+            f"SOL ${prices.get('SOL',{}).get('price',0):,.0f} ({prices.get('SOL',{}).get('change_24h',0):+.1f}%)\n"
+            f"Fear & Greed: {fg}/100\n\n"
+            f"Futures/OI Intelligence:\n{coinglass_ctx}\n\n"
+            f"Options Intelligence:\n{deribit_ctx}\n\n"
+            f"Chart data:\n{tv_ctx}\n\n"
+            f"News:\n{news_ctx}\n\n"
+            f"{call_ctx}\n\n"
+            f"{brain_ctx}\n\n"
+            "Write one post under 280 chars for @octodamusai.\n"
+            "Focus: WHERE is the money flowing right now (specific market, specific direction) "
+            "and exactly HOW a trader takes advantage — entry zone, what they're watching, "
+            "or what the crowd is missing. Be specific with numbers. No vague takes. "
+            "Do NOT use 'Oracle call:' format — this is a market flow read, not a formal call. "
+            "Lead with the flow signal, end with the edge."
+        )
+
+        response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=350,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        post = response.content[0].text.strip()
+
+        try:
+            card = build_signal_card(post)
+            if len(card) <= 280:
+                post = card
+        except Exception:
+            pass
+
+        queue_post(post, post_type="morning_flow", priority=1)
+        posted = process_queue(max_posts=1)
+        print(f"[Runner] Morning flow {'posted' if posted else 'queued'}:\n  {post}")
+
+    except Exception as e:
+        print(f"[Runner] mode_morning_flow failed: {e}")
+        discord_alert(f"morning_flow mode failed: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Octodamus Runner")
     parser.add_argument(
@@ -1528,7 +1616,7 @@ if __name__ == "__main__":
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
             "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "moonshot",
-            "mentions", "youtube", "format", "qrt",
+            "mentions", "youtube", "format", "qrt", "morning_flow",
         ],
         default="monitor",
     )
@@ -1575,6 +1663,8 @@ if __name__ == "__main__":
         engage_run()
     elif args.mode == "moonshot":
         mode_moonshot()
+    elif args.mode == "morning_flow":
+        mode_morning_flow()
     elif args.mode == "mentions":
         from octo_x_mentions import poll_and_reply
         poll_and_reply(claude_client=claude)
