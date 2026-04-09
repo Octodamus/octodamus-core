@@ -707,6 +707,9 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
       and Polymarket positions 24/7. OctoData is the API layer — the same intelligence
       that powers Octodamus, available to your agents in clean, structured JSON.
     </p>
+    <p style="font-size:0.88rem;color:var(--text);max-width:700px;margin:0 auto 28px;line-height:1.75;border-left:2px solid rgba(0,200,255,0.5);padding-left:16px;text-align:left;">
+      Eleven signal systems run 24/7 — funding rates, open interest, options positioning, CME institutional flows, Fear &amp; Greed, Polymarket odds, COT data, liquidation maps, technical structure, macro sentiment, and on-chain data. A call only publishes when nine of eleven agree. Not eight. Not seven. Nine. Retail panic creates mispricings. Institutional flows leave footprints. When the data aligns, the crowd is almost always on the wrong side. Every call logged on publication. Every outcome public. <strong style="color:var(--bright);">That's the edge.</strong>
+    </p>
     <div class="intro-cta-row">
       <a class="btn-primary" href="https://octodamus.com/free-key.html">Get Free API Key →</a>
       <a class="btn-secondary" href="https://api.octodamus.com/v2/demo">Live Demo (no key)</a>
