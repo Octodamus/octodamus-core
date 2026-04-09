@@ -886,10 +886,13 @@ async def cmd_contrascan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Lottery Tier (1-2¢) — volatility-gated, no AI, hold to resolution ────
     # Only eligible on low-volatility conditions: BTC < 0.5% move in last 5min.
     # At 1¢, a correct call pays 100x. Even 2% hit rate = positive EV.
+    # Use local re-import so we get the live feed instance set in main(),
+    # not the stale None captured at module import time.
+    from octo_boto_upgrades import price_feed as _live_feed
     btc_5m_move = None
     low_vol = False
-    if price_feed and price_feed.is_live():
-        btc_5m_move = price_feed.get_move("BTC", window_seconds=300)
+    if _live_feed and _live_feed.is_live():
+        btc_5m_move = _live_feed.get_move("BTC", window_seconds=300)
         if btc_5m_move is not None:
             low_vol = abs(btc_5m_move) < 0.5
 
