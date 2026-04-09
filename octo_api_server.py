@@ -898,9 +898,9 @@ def erc8004_well_known():
     After on-chain registration, fill in agentId below to link this domain to the on-chain identity.
     """
     return {
+        "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
         "registrations": [
-            # Fill in agentId after registering at agentarena.site
-            # {"agentId": 12345, "agentRegistry": "eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"}
+            {"agentId": 44306, "agentRegistry": "eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"}
         ],
         "agent_card": _ERC8004_CARD,
     }
