@@ -624,6 +624,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/send_post      post last draft to X now\n"
         "/send_que       queue last draft for next window\n"
         "/clear          wipe conversation memory\n"
+        "/chart [ticker] [tf]  TradingView chart screenshot + analysis\n"
+        "/see <url> [question] screenshot any web page + Claude Vision\n"
         "/start          restart session"
     )
 
@@ -832,6 +834,86 @@ async def xstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode="Markdown"
     )
 
+async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /chart [ticker] [timeframe]
+    Screenshot a TradingView chart and analyze it with Claude Vision.
+    Examples: /chart   /chart ETH   /chart BTC 1d   /chart QQQ 1h
+    """
+    try:
+        from octo_playwright import chart_and_analyze, tv_chart_url, TICKER_MAP, TIMEFRAME_MAP
+    except ImportError:
+        await update.message.reply_text("octo_playwright not available — check installation.")
+        return
+
+    args    = context.args or []
+    ticker  = args[0].upper() if args else "BTC"
+    tf      = args[1].lower() if len(args) > 1 else "4h"
+    url     = tv_chart_url(ticker, tf)
+
+    await update.message.reply_text(
+        f"Loading {ticker} {tf.upper()} chart... (~8s)"
+    )
+
+    try:
+        img_bytes, analysis = await chart_and_analyze(ticker, tf, ANTHROPIC_KEY)
+        import io as _io
+        await update.message.reply_photo(
+            photo=_io.BytesIO(img_bytes),
+            caption=f"{ticker} / {tf.upper()} — {url}"
+        )
+        if analysis:
+            await update.message.reply_text(analysis)
+    except Exception as e:
+        log.exception("chart_command error")
+        await update.message.reply_text(f"Chart error: {e}")
+
+
+async def see_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /see <url> [optional question]
+    Screenshot any web page and analyze it with Claude Vision.
+    Examples:
+        /see https://coinglass.com/LiquidationMap
+        /see https://coinglass.com/LiquidationMap What are the BTC liquidation levels?
+    """
+    try:
+        from octo_playwright import see_page
+    except ImportError:
+        await update.message.reply_text("octo_playwright not available — check installation.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /see <url> [optional question]\n"
+            "Example: /see https://coinglass.com/LiquidationMap What are the BTC liquidation levels?"
+        )
+        return
+
+    url      = context.args[0]
+    question = " ".join(context.args[1:]) if len(context.args) > 1 else None
+
+    if not url.startswith("http"):
+        await update.message.reply_text("URL must start with http:// or https://")
+        return
+
+    await update.message.reply_text(f"Loading {url}... (~5s)")
+
+    try:
+        import io as _io
+        img_bytes, analysis = await see_page(url, question=question, api_key=ANTHROPIC_KEY)
+        caption = question or "Page screenshot"
+        await update.message.reply_photo(
+            photo=_io.BytesIO(img_bytes),
+            caption=caption[:200]
+        )
+        if analysis:
+            await update.message.reply_text(analysis)
+    except Exception as e:
+        log.exception("see_command error")
+        await update.message.reply_text(f"See error: {e}")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error(f"Update error: {context.error}")
 
@@ -856,6 +938,8 @@ def main() -> None:
     app.add_handler(CommandHandler("guide",     guide))
     app.add_handler(CommandHandler("clear",     clear))
     app.add_handler(CommandHandler("xstats",    xstats_command))
+    app.add_handler(CommandHandler("chart",     chart_command))
+    app.add_handler(CommandHandler("see",       see_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
