@@ -207,6 +207,63 @@ def _x402_header(amount_usdc: float = 29.0) -> dict:
     }
 
 
+def _x402_headers(amount_usdc: float = 29.0) -> dict:
+    """
+    Return both x402 v1 and v2 headers for maximum compatibility.
+    v1: X-Payment-Required (plain JSON) — legacy clients
+    v2: payment-required (base64 JSON) — x402scan, agentarena, coinbase SDK
+    """
+    import base64
+    micro = str(int(amount_usdc * 1_000_000))
+    v2_payload = {
+        "x402Version": 2,
+        "error": "Payment Required",
+        "accepts": [
+            {
+                "scheme":            "exact",
+                "network":           "eip155:8453",
+                "maxAmountRequired": micro,
+                "amount":            micro,
+                "resource":         "https://api.octodamus.com/v2/agent-signal",
+                "description":      "Octodamus Market Intelligence API — annual access",
+                "mimeType":         "application/json",
+                "payTo":            _X402_TREASURY,
+                "maxTimeoutSeconds": 300,
+                "asset":            _X402_USDC,
+                "extra": {
+                    "name":    "USD Coin",
+                    "version": "2",
+                    "chainId": 8453,
+                },
+            },
+            {
+                "scheme":            "exact",
+                "network":           "eip155:8453",
+                "maxAmountRequired": "5000000",
+                "amount":            "5000000",
+                "resource":         "https://api.octodamus.com/v2/agent-signal",
+                "description":      "Octodamus Market Intelligence API — 7-day trial",
+                "mimeType":         "application/json",
+                "payTo":            _X402_TREASURY,
+                "maxTimeoutSeconds": 300,
+                "asset":            _X402_USDC,
+                "extra": {
+                    "name":    "USD Coin",
+                    "version": "2",
+                    "chainId": 8453,
+                },
+            },
+        ],
+    }
+    v2_b64 = base64.b64encode(
+        json.dumps(v2_payload, separators=(",", ":")).encode()
+    ).decode()
+    return {
+        "X-Payment-Required": json.dumps(_x402_header(amount_usdc)),
+        "payment-required":   v2_b64,
+    }
+
+
 async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADER)):
     """
     Require valid key + enforce tier rate limits.
@@ -228,7 +285,7 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
             else:
                 raise HTTPException(
                     status_code=402,
-                    headers={"X-Payment-Required": json.dumps(_x402_header())},
+                    headers=_x402_headers(),
                     detail={
                         "error":    "payment_required",
                         "message":  "X-PAYMENT token not yet fulfilled. Poll /v1/agent-checkout/status first.",
@@ -241,10 +298,10 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
             pass
 
     if not api_key:
-        # x402 Payment Required — fully spec-compliant (x402/1) + human-readable body
+        # x402 Payment Required — fully spec-compliant (x402/1 + v2) + human-readable body
         raise HTTPException(
             status_code=402,
-            headers={"X-Payment-Required": json.dumps(_x402_header())},
+            headers=_x402_headers(),
             detail={
                 "x402":            "x402/1",
                 "error":           "payment_required",
