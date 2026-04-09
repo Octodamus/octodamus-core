@@ -3328,6 +3328,8 @@ _mcp = _FastMCP(
         "for the consolidated BUY/SELL/HOLD decision with confidence, Fear & Greed, BTC trend, "
         "and top Polymarket edge play. All tools require OCTO_API_KEY to be configured."
     ),
+    streamable_http_path="/",   # mounted at /mcp → accessible at /mcp/
+    stateless_http=True,        # no session state needed; works better through proxies
 )
 
 def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
@@ -3387,7 +3389,53 @@ def get_data_sources() -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-app.mount("/mcp", _mcp.sse_app())
+import threading as _threading
+
+def _start_mcp_server():
+    """Run MCP server on port 8743 in a background thread."""
+    import asyncio as _asyncio
+    import uvicorn as _uvicorn
+
+    async def _run():
+        config = _uvicorn.Config(
+            _mcp.streamable_http_app(),
+            host="127.0.0.1",
+            port=8743,
+            log_level="warning",
+        )
+        server = _uvicorn.Server(config)
+        await server.serve()
+
+    _asyncio.run(_run())
+
+_mcp_thread = _threading.Thread(target=_start_mcp_server, daemon=True)
+_mcp_thread.start()
+
+
+@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def mcp_proxy(path: str, request: Request):
+    """Proxy /mcp/* → local MCP server on port 8743."""
+    import httpx as _hx
+    target = f"http://127.0.0.1:8743/{path}"
+    body = await request.body()
+    async with _hx.AsyncClient() as client:
+        try:
+            r = await client.request(
+                method=request.method,
+                url=target,
+                headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                content=body,
+                timeout=30,
+            )
+            from fastapi.responses import Response
+            return Response(
+                content=r.content,
+                status_code=r.status_code,
+                headers=dict(r.headers),
+                media_type=r.headers.get("content-type"),
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
 
 
 # -- llms.txt — machine-readable API index for LLMs --------------------------
