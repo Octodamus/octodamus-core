@@ -212,48 +212,101 @@ def _x402_headers(amount_usdc: float = 29.0) -> dict:
     Return both x402 v1 and v2 headers for maximum compatibility.
     v1: X-Payment-Required (plain JSON) — legacy clients
     v2: payment-required (base64 JSON) — x402scan, agentarena, coinbase SDK
+    Includes bazaar extension with input/output schema for x402scan listing.
     """
     import base64
     micro = str(int(amount_usdc * 1_000_000))
+
+    bazaar_ext = {
+        "info": {
+            "input": {
+                "type":   "http",
+                "method": "GET",
+            },
+            "output": {
+                "type": "json",
+                "example": {
+                    "action":          "BUY",
+                    "confidence":      0.78,
+                    "signal":          "BULLISH",
+                    "fear_greed":      62,
+                    "btc_trend":       "UP",
+                    "polymarket_edge": {"market": "BTC above 90k", "ev": 0.14},
+                    "reasoning":       "Oracle 9/11 consensus bullish. Fear & Greed neutral-greed zone.",
+                },
+            },
+        },
+        "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "type":   {"type": "string", "const": "http"},
+                        "method": {"type": "string", "enum": ["GET"]},
+                    },
+                    "required": ["type"],
+                },
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "action":          {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                        "confidence":      {"type": "number"},
+                        "signal":          {"type": "string"},
+                        "fear_greed":      {"type": "integer"},
+                        "btc_trend":       {"type": "string"},
+                        "polymarket_edge": {"type": "object"},
+                        "reasoning":       {"type": "string"},
+                    },
+                    "required": ["action", "confidence", "signal"],
+                },
+            },
+            "required": ["input"],
+        },
+    }
+
+    accepts_entry = {
+        "scheme":            "exact",
+        "network":           "eip155:8453",
+        "maxAmountRequired": micro,
+        "amount":            micro,
+        "resource":          "https://api.octodamus.com/v2/agent-signal",
+        "description":       "Octodamus Market Intelligence API — real-time crypto signals, Fear & Greed, Polymarket edge. Annual access.",
+        "mimeType":          "application/json",
+        "payTo":             _X402_TREASURY,
+        "maxTimeoutSeconds": 300,
+        "asset":             _X402_USDC,
+        "extra": {
+            "name":    "USD Coin",
+            "version": "2",
+            "chainId": 8453,
+        },
+        "extensions": {"bazaar": bazaar_ext},
+    }
+
+    trial_entry = {
+        "scheme":            "exact",
+        "network":           "eip155:8453",
+        "maxAmountRequired": "5000000",
+        "amount":            "5000000",
+        "resource":          "https://api.octodamus.com/v2/agent-signal",
+        "description":       "Octodamus Market Intelligence API — 7-day trial",
+        "mimeType":          "application/json",
+        "payTo":             _X402_TREASURY,
+        "maxTimeoutSeconds": 300,
+        "asset":             _X402_USDC,
+        "extra": {
+            "name":    "USD Coin",
+            "version": "2",
+            "chainId": 8453,
+        },
+        "extensions": {"bazaar": bazaar_ext},
+    }
+
     v2_payload = {
         "x402Version": 2,
-        "error": "Payment Required",
-        "accepts": [
-            {
-                "scheme":            "exact",
-                "network":           "eip155:8453",
-                "maxAmountRequired": micro,
-                "amount":            micro,
-                "resource":         "https://api.octodamus.com/v2/agent-signal",
-                "description":      "Octodamus Market Intelligence API — annual access",
-                "mimeType":         "application/json",
-                "payTo":            _X402_TREASURY,
-                "maxTimeoutSeconds": 300,
-                "asset":            _X402_USDC,
-                "extra": {
-                    "name":    "USD Coin",
-                    "version": "2",
-                    "chainId": 8453,
-                },
-            },
-            {
-                "scheme":            "exact",
-                "network":           "eip155:8453",
-                "maxAmountRequired": "5000000",
-                "amount":            "5000000",
-                "resource":         "https://api.octodamus.com/v2/agent-signal",
-                "description":      "Octodamus Market Intelligence API — 7-day trial",
-                "mimeType":         "application/json",
-                "payTo":            _X402_TREASURY,
-                "maxTimeoutSeconds": 300,
-                "asset":            _X402_USDC,
-                "extra": {
-                    "name":    "USD Coin",
-                    "version": "2",
-                    "chainId": 8453,
-                },
-            },
-        ],
+        "error":       "Payment Required",
+        "accepts":     [accepts_entry, trial_entry],
     }
     v2_b64 = base64.b64encode(
         json.dumps(v2_payload, separators=(",", ":")).encode()
