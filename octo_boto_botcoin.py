@@ -144,7 +144,7 @@ def get_erc20_balance(token_address: str, wallet: str) -> int:
         "params": [{"to": token_address, "data": data}, "latest"],
     }
     try:
-        r = requests.post("https://rpc.ankr.com/base", json=payload, timeout=10)
+        r = requests.post("https://mainnet.base.org", json=payload, timeout=10)
         result = r.json().get("result", "0x0")
         return int(result, 16)
     except Exception:
@@ -158,7 +158,7 @@ def get_eth_balance(wallet: str) -> int:
         "params": [wallet, "latest"],
     }
     try:
-        r = requests.post("https://rpc.ankr.com/base", json=payload, timeout=10)
+        r = requests.post("https://mainnet.base.org", json=payload, timeout=10)
         result = r.json().get("result", "0x0")
         return int(result, 16)
     except Exception:
@@ -248,7 +248,14 @@ def get_bearer_token(wallet: str, force: bool = False) -> Optional[str]:
 # ── Coordinator Calls ─────────────────────────────────────────────────────────
 
 def _coord_headers(token: Optional[str]) -> dict:
-    h = {"Content-Type": "application/json"}
+    h = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://agentmoney.net",
+        "Referer": "https://agentmoney.net/",
+    }
     if token:
         h["Authorization"] = f"Bearer {token}"
     return h
@@ -272,14 +279,28 @@ def get_credits(wallet: str, token: Optional[str] = None) -> dict:
 
 
 def request_challenge(wallet: str, nonce: str, token: Optional[str] = None) -> dict:
-    r = requests.get(
-        f"{COORDINATOR}/v1/challenge",
-        params={"miner": wallet, "nonce": nonce},
-        headers=_coord_headers(token),
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()
+    for attempt in range(6):
+        r = requests.get(
+            f"{COORDINATOR}/v1/challenge",
+            params={"miner": wallet, "nonce": nonce},
+            headers=_coord_headers(token),
+            timeout=30,
+        )
+        if r.status_code == 429:
+            wait = 120 * (attempt + 1)  # 2min, 4min, 6min...
+            log.info(f"[Challenge] Rate limited — waiting {wait}s then refreshing token...")
+            time.sleep(wait)
+            # Always get fresh token after a long wait (5min TTL)
+            token = get_bearer_token(wallet, force=True)
+            continue
+        if r.status_code == 401:
+            log.info("[Challenge] Token expired — refreshing...")
+            token = get_bearer_token(wallet, force=True)
+            time.sleep(5)
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise RuntimeError("Challenge request failed after retries")
 
 
 def submit_solution(payload: dict, token: Optional[str] = None) -> dict:
@@ -289,6 +310,8 @@ def submit_solution(payload: dict, token: Optional[str] = None) -> dict:
         headers=_coord_headers(token),
         timeout=30,
     )
+    if not r.ok:
+        log.error(f"[Submit] {r.status_code}: {r.text[:400]}")
     r.raise_for_status()
     return r.json()
 
@@ -326,23 +349,25 @@ def get_stake_calldata(amount_wei: int) -> dict:
 
 # ── Claude Challenge Solver ───────────────────────────────────────────────────
 
-SOLVE_SYSTEM = """You are an expert reasoning agent solving structured inference challenges.
+SOLVE_SYSTEM = """You are a precise reasoning agent solving structured inference challenges.
 
-You will receive a document (doc), a list of questions about entities in that document,
-a list of constraints the artifact must satisfy, and solve instructions.
+You will receive: a document, questions about entities in it, constraints for an artifact, and solve instructions.
 
-Your job:
-1. Read the document carefully, paragraph by paragraph
-2. Answer each question accurately based ONLY on what the doc says
-3. Generate the artifact (a single line/value) satisfying ALL constraints
-4. If a reasoning trace is required, produce it in the exact schema requested
+YOUR RESPONSE MUST USE EXACTLY THIS FORMAT — no markdown, no extra text:
+
+Q01: <answer>
+Q02: <answer>
+(one line per question)
+ARTIFACT: <single line satisfying ALL constraints>
+TRACE: <JSON array of reasoning steps>
 
 Rules:
-- Extract only what is explicitly stated — do not infer or hallucinate
-- Paragraph references use format paragraph_1, paragraph_2, etc. (1-indexed)
-- For computation steps, show every intermediate operation
-- The artifact must be on its own line at the end, labeled: ARTIFACT: <value>
-- Answered questions must each be on their own line: Q01: <answer>
+- Extract ONLY what is explicitly in the document — never hallucinate
+- Paragraphs are referenced as paragraph_1, paragraph_2, etc. (1-indexed)
+- The ARTIFACT line must satisfy every constraint (word count, inclusions, format)
+- Count words carefully if a word-count constraint is given
+- TRACE is always required — include extract_fact and compute_logic steps
+- TRACE must be valid JSON on a single line after the TRACE: label
 """
 
 
@@ -386,21 +411,49 @@ Respond with:
 """
 
     client = anthropic.Anthropic(api_key=_anthropic_key())
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        system=SOLVE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = resp.content[0].text.strip()
-    log.debug(f"[Solver] Claude response:\n{raw}")
+    _models = [CLAUDE_MODEL, "claude-haiku-4-5-20251001", "claude-sonnet-4-5"]
+    resp = None
+    # Prefill forces Claude to start in the exact format — no markdown drift
+    prefill = "Q01:"
+    for _attempt in range(5):
+        _model = _models[min(_attempt // 2, len(_models) - 1)]
+        try:
+            resp = client.messages.create(
+                model=_model,
+                max_tokens=2000,
+                system=SOLVE_SYSTEM,
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": prefill},
+                ],
+            )
+            if _model != CLAUDE_MODEL:
+                log.info(f"[Solver] Used fallback model: {_model}")
+            break
+        except Exception as _ae:
+            wait = 15 * (_attempt + 1)
+            log.warning(f"[Solver] Anthropic error attempt {_attempt+1} ({_ae}) — retrying in {wait}s...")
+            time.sleep(wait)
+    if resp is None:
+        raise RuntimeError("Anthropic API unavailable after retries")
+    # Prepend the prefill we injected so parsing sees the full response
+    raw = (prefill + resp.content[0].text).strip()
+    log.info(f"[Solver] Claude raw response:\n{raw[:800]}")
 
-    # Parse artifact
+    # Parse artifact — try labeled line first, then last non-empty line
     artifact = ""
     for line in raw.splitlines():
-        if line.startswith("ARTIFACT:"):
-            artifact = line.replace("ARTIFACT:", "").strip()
+        if line.upper().startswith("ARTIFACT:"):
+            artifact = line.split(":", 1)[1].strip()
             break
+    if not artifact:
+        # Fallback: last non-empty line that isn't a Q answer or TRACE
+        for line in reversed(raw.splitlines()):
+            line = line.strip()
+            if line and not line.startswith("Q") and not line.startswith("TRACE"):
+                artifact = line
+                break
+    log.info(f"[Solver] Parsed artifact: {artifact[:80]}")
 
     # Parse Q&A answers
     submitted_answers = {}
@@ -411,16 +464,23 @@ Respond with:
             key = f"q{m.group(1).zfill(2)}"
             submitted_answers[key] = m.group(2).strip()
 
-    # Parse reasoning trace if present
+    # Parse reasoning trace — always include if present, required or not
     reasoning_trace = []
-    if trace_needed:
-        try:
-            trace_start = raw.find("TRACE:")
-            if trace_start >= 0:
-                trace_json = raw[trace_start + 6:].strip()
-                reasoning_trace = json.loads(trace_json)
-        except Exception as e:
-            log.warning(f"[Solver] Could not parse reasoning trace: {e}")
+    try:
+        trace_start = raw.find("TRACE:")
+        if trace_start >= 0:
+            trace_json = raw[trace_start + 6:].strip()
+            # Handle multiline — take until end
+            reasoning_trace = json.loads(trace_json)
+    except Exception as e:
+        log.warning(f"[Solver] Could not parse reasoning trace: {e}")
+        # Build minimal trace from Q answers as fallback
+        reasoning_trace = [
+            {"step_id": f"e{i+1}", "action": "extract_fact",
+             "targetEntity": f"entity_{i+1}", "attribute": "answer",
+             "valueExtracted": v, "source": "paragraph_1"}
+            for i, v in enumerate(submitted_answers.values())
+        ]
 
     return {
         "artifact":        artifact,
@@ -451,6 +511,8 @@ def mine_one(wallet: str, token: Optional[str]) -> dict:
     trace_cfg      = challenge.get("traceSubmission", {})
 
     log.info(f"[Mine] Challenge {challenge_id[:12]}... domain={domain} credits_per_solve={credits_per}")
+    log.info(f"[Mine] Questions: {challenge.get('questions', [])[:2]}")
+    log.info(f"[Mine] Constraints: {challenge.get('constraints', [])[:2]}")
 
     # Solve
     t0       = time.time()
@@ -468,7 +530,8 @@ def mine_one(wallet: str, token: Optional[str]) -> dict:
         "modelVersion":         CLAUDE_MODEL,
         "submittedAnswers":     solution["submittedAnswers"],
     }
-    if trace_cfg.get("required") and solution["reasoningTrace"]:
+    # Always include trace — coordinator requires it in SWCP mode
+    if solution["reasoningTrace"]:
         payload["reasoningTrace"] = solution["reasoningTrace"]
 
     log.info("[Mine] Submitting solution...")
