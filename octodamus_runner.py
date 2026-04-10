@@ -124,7 +124,7 @@ try:
             except Exception:
                 pass
             
-            _FOCUS_ROTATION = ["BTC", "ETH", "SOL", "MACRO"]
+            _FOCUS_ROTATION = ["BTC", "ETH", "SOL", "MACRO", "HYPE"]
             _focus = _FOCUS_ROTATION[_post_count % len(_FOCUS_ROTATION)]
             
             # Build context for focus asset
@@ -142,6 +142,21 @@ try:
                     "\n\nFOCUS THIS POST ON: Cross-market dynamics, macro sentiment, "
                     "or correlation between BTC/ETH/SOL. Do NOT lead with a single asset price. "
                     "Talk about the broader market picture."
+                )
+            elif _focus == "HYPE":
+                # HYPE: use dedicated tracker, not CoinGlass perp data
+                context = hype_context_str()
+                _hip4 = hip4_news_str()
+                if _hip4:
+                    context += "\n\n" + _hip4
+                focus_instruction = (
+                    "\n\nFOCUS THIS POST ON: HYPE / Hyperliquid. "
+                    "Use the HYPE price, OI, and HIP-4 data above. "
+                    "HIP-4 is Hyperliquid's event futures primitive — binary markets (0/1) "
+                    "with cross-margin against perps. This is the key thesis: idle prediction market "
+                    "collateral becomes perp margin under one unified risk engine. "
+                    "Write about HYPE's position, momentum, or the HIP-4 structural thesis. "
+                    "Do not write a generic Hyperliquid overview — find the specific signal or angle."
                 )
             else:
                 context = _cg_glass.build_oracle_context(_focus)
@@ -208,6 +223,21 @@ except ImportError:
     _BUILDERS_ACTIVE = False
     def build_builders_context(): return ""
 
+try:
+    from octo_despxa import despxa_context_str
+    _DESPXA_ACTIVE = True
+except ImportError:
+    _DESPXA_ACTIVE = False
+    def despxa_context_str(): return ""
+
+try:
+    from octo_hype import hype_context_str, hip4_news_str
+    _HYPE_ACTIVE = True
+except ImportError:
+    _HYPE_ACTIVE = False
+    def hype_context_str(): return ""
+    def hip4_news_str(): return ""
+
 claude = anthropic.Anthropic()
 
 try:
@@ -217,7 +247,7 @@ except ImportError:
     _TV_ACTIVE = False
     def get_tv_brief(): return ""
 
-_COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
+_COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "HYPE": "hyperliquid"}
 
 def _check_smart_call():
     """
@@ -762,7 +792,15 @@ STYLE RULES:
 
 Never repeat ocean words (depths, currents, tide, surface) more than once per post.
 
-CORE BELIEF: Congress members front-run markets. They trade on legislative and regulatory knowledge before it becomes public. When a politician buys, ask what bill, contract, or ruling is coming. The trade is the signal."""
+CORE BELIEF: Congress members front-run markets. They trade on legislative and regulatory knowledge before it becomes public. When a politician buys, ask what bill, contract, or ruling is coming. The trade is the signal.
+
+MATH ACCURACY IS MANDATORY: If you write any calculation, verify it before posting.
+  - Tax applies to GAINS only, never to total value. after-tax = capital + (gain × (1 - rate))
+    Example: $1 grows to $37.78. Gain = $36.78. At 37% tax: keep $1 + $36.78 × 0.63 = $24.17. NOT $37.78 × 0.63.
+  - Compound growth: use (1 + r)^n. 1% daily for 365 days = 1.01^365 = 37.78x gross. Correct.
+  - Percentage gains: if price goes from $A to $B, gain% = (B-A)/A × 100. Not B/A × 100.
+  - Double-check every multiplication, division, and percentage before it goes in the post.
+  - If unsure of a calculation, omit it rather than guess."""
 
 _VOICE_INSTRUCTIONS = [
     "ORACLE voice — bored certainty, like you've seen this chart a thousand times.",
@@ -772,6 +810,15 @@ _VOICE_INSTRUCTIONS = [
     "PRECISE voice — pure clean signal, no flourish. One thing that matters.",
     "CONTRARIAN voice — HARD CALL ONLY. Lead with the asset price and what the crowd gets wrong. End with Oracle call line in exact format. Example: 'SOL at $91.95. Everyone chasing the pump while volume dries up. Oracle call: SOL DOWN from $92 to $79 by Wednesday.'",
     "CONTRARIAN voice — roast the narrative AND end with Oracle call. Find the irony, name it in one sharp sentence, then the call. Example: 'NVDA up 3% on an analyst note from the same firm that rated it Buy at the top. Oracle call: NVDA DOWN from $180 to $168 by end of week.'",
+    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: 'Funding rates went positive five days in a row. I've watched this movie many times — great first act, very bad third act for the longs. Oracle call: BTC DOWN from $83,900. I'm not guessing. I'm reporting.' OR 'Stablecoin inflows $2.1B this week. The press covered a chart that looked like a flag or a man's hope — hard to say which. The $2.1B is not ambiguous. It is moving in one direction.' OR 'The crowd is long, leveraged, and explaining to each other why this time is different. I've heard that sermon before. It ends the same way it always ends — beautifully, for those on the right side of it.'",
+    # SINGLE SENTENCE voice — weighted x4
+    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
+    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
+    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
+    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
+    # Weighted x3 — fires ~30% of the time (every 3rd post approx)
+    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: '$480M in longs liquidated and funding flipped negative. The market already wrung out the weak hands like a bar rag. Fear & Greed at 18. This is what a floor smells like.' OR 'Fear & Greed at 18 isn't a warning — it's a receipt.' OR 'The crowd torched their own positions and called it a market.'",
+    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: 'Open interest up 38% on flat price. In my experience this resolves one way. Fast. Like a spring trap on a cold morning.' OR 'The analysts cut their targets this morning. These are the same analysts who raised them at the top. I don't use analysts. I use data and frankly that's enough.' OR 'The crowd is long and explaining why this time is different. I've heard that sermon. It ends the same way it always ends.'",
 ]
 
 
@@ -789,6 +836,7 @@ NEWSAPI_QUERIES = {
     "BTC":  "Bitcoin cryptocurrency",
     "ETH":  "Ethereum cryptocurrency",
     "SOL":  "Solana cryptocurrency",
+    "HYPE": "Hyperliquid HYPE token HIP-4",
     "SPY":  "S&P 500 market",
     "QQQ":  "Nasdaq market",
 }
@@ -910,7 +958,7 @@ def mode_monitor() -> None:
 # MODE: DAILY — morning oracle read
 # ─────────────────────────────────────────────
 
-DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA"]
+DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA", "HYPE"]
 
 
 def mode_daily() -> None:
@@ -919,9 +967,9 @@ def mode_daily() -> None:
         snapshots = {}
         for ticker in DAILY_TICKERS:
             try:
-                if ticker in ("BTC", "ETH", "SOL"):
+                if ticker in ("BTC", "ETH", "SOL", "HYPE"):
                     import requests as _req
-                    _cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
+                    _cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "HYPE": "hyperliquid"}
                     _r = _req.get("https://api.coingecko.com/api/v3/simple/price",
                         params={"ids": _cg_map[ticker], "vs_currencies": "usd", "include_24hr_change": "true"},
                         timeout=10)
@@ -963,6 +1011,9 @@ def mode_daily() -> None:
                     f"{news_section}\n\n"
                     f"{build_youtube_context()}\n\n"
                     f"{build_builders_context()}\n\n"
+                    f"{despxa_context_str()}\n\n"
+                    f"{hype_context_str()}\n\n"
+                    f"{hip4_news_str()}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{get_brain_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
@@ -998,17 +1049,47 @@ def mode_daily() -> None:
         else:
             print(f"[Runner] Oracle call detected — skipping signal card to preserve call text")
         _is_card_daily = post.startswith("◈")
-        queue_post(post, post_type="daily_read", priority=1)
-        posted = process_queue(max_posts=1)
-        if posted:
+
+        # Oracle calls post directly with chart image attached — bypass queue
+        if has_oracle_call:
+            import re as _re
+            _asset_match = _re.search(r'Oracle call:\s*(\w+)\b', post, _re.IGNORECASE)
+            _dir_match   = _re.search(r'Oracle call:\s*\w+\s+(UP|DOWN)', post, _re.IGNORECASE)
+            _price_match = _re.search(r'\$(\d[\d,]+)', post)
+            _call_asset  = _asset_match.group(1).upper() if _asset_match else "BTC"
+            _call_dir    = _dir_match.group(1).upper() if _dir_match else "UP"
+            _call_price  = float(_price_match.group(1).replace(",", "")) if _price_match else 0
+
             try:
-                import json as _json
-                from pathlib import Path as _Path
-                _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
-                _last_entry = list(_plog.values())[-1]
-                log_post(_last_entry["text"], "daily_read", "daily", _is_card_daily, _last_entry.get("url", ""))
-            except Exception:
+                from octo_x_poster import post_oracle_call_with_chart, _log_post as _xlog
+                _result   = post_oracle_call_with_chart(post, _call_asset, "4h")
+                _tweet_id = _result.get("id", "")
+                _tweet_url = _result.get("url", "")
+                posted    = 1 if _tweet_id else 0
+                _xlog(post, {"type": "oracle_call_with_chart", "asset": _call_asset})
+                log_post(post, "daily_read", "daily", _is_card_daily, _tweet_url)
+
+            except Exception as _oc_e:
+                print(f"[Runner] Oracle call post failed: {_oc_e}")
+                # Fallback: plain text via queue
+                queue_post(post, post_type="daily_read", priority=1)
+                posted = process_queue(max_posts=1)
                 log_post(post, "daily_read", "daily", _is_card_daily)
+
+        else:
+            # Normal posts go through the queue as before
+            queue_post(post, post_type="daily_read", priority=1)
+            posted = process_queue(max_posts=1)
+            if posted:
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+                    _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                    _last_entry = list(_plog.values())[-1]
+                    log_post(_last_entry["text"], "daily_read", "daily", _is_card_daily, _last_entry.get("url", ""))
+                except Exception:
+                    log_post(post, "daily_read", "daily", _is_card_daily)
+
         print(f"[Runner] Daily read {'posted' if posted else 'queued'}:\n  {post}")
 
     except Exception as e:
@@ -1101,6 +1182,9 @@ def mode_wisdom() -> None:
                     f"{news_section}\n\n"
                     f"{build_youtube_context()}\n\n"
                     f"{build_builders_context()}\n\n"
+                    f"{despxa_context_str()}\n\n"
+                    f"{hype_context_str()}\n\n"
+                    f"{hip4_news_str()}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
                     "One post, under 280 chars.\n"
