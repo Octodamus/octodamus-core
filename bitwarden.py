@@ -30,7 +30,8 @@ Bitwarden item names:
     AGENT - Octodamus - Etherscan API
     AGENT - Octodamus - Social - Twitter API   (username=API Key, password=API Secret, notes=rest)
     AGENT - Octodamus - Social - Discord       (password=webhook URL)
-    me: AGENT - Octodamus - Finance - Bankr - Wallet   (optional)
+    AGENT - Octodamus - Finance - Bankr                 (optional)
+    AGENT - Octodamus - POLYBACKTEST - API Key
 """
 
 import json
@@ -54,7 +55,8 @@ CACHE_MAX_AGE_HOURS = 23  # warn if cache older than this
 OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Brain - Anthropic":            "ANTHROPIC_API_KEY",
     "AGENT - Octodamus - Financial Datasets API":       "FINANCIAL_DATASETS_API_KEY",
-    "AGENT - Octodamus - Social - OpenTweet":            "OPENTWEET_API_KEY",
+    # OpenTweet retired — X API v2 (tweepy) uses TWITTER_* keys below
+    # "AGENT - Octodamus - Social - OpenTweet":          "OPENTWEET_API_KEY",
     "AGENT - Octodamus - Control - Telegram":           "TELEGRAM_BOT_TOKEN",
     "AGENT - Octodamus - OctoBoto":                       "OCTOBOTO_TELEGRAM_TOKEN",
     "AGENT - Octodamus - Search - Tavily":              "TAVILY_API_KEY",
@@ -72,10 +74,14 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Quiver API":                   "QUIVER_API_KEY",
     "AGENT - Octodamus - Social - Discord":             "DISCORD_WEBHOOK_URL",
 "AGENT - Octodamus - API - Coinglass":              "COINGLASS_API_KEY",
+    "AGENT - Octodamus - POLYBACKTEST - API Key":       "POLYBACKTEST_API_KEY",
+    "AGENT - Octodamus - OctoData - Stripe Price ID":  "OCTODATA_STRIPE_PRICE_ID",
+    "AGENT - Octodamus - OctoData - Stripe Webhook":   "OCTODATA_STRIPE_WEBHOOK_SECRET",
+    "AGENT - Octodamus - Guide - Download URL":         "GUIDE_DOWNLOAD_URL",
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
-    "me: AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",
+    "AGENT - Octodamus - Finance - Bankr": "BANKR_API_KEY",
 }
 
 OCTODAMUS_CRITICAL_KEYS = {
@@ -170,6 +176,25 @@ def _load_twitter_from_bw() -> dict:
 # SECRETS CACHE
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+# -- Gmail multi-field loader --------------------------------------------------
+
+def _load_gmail_from_bw() -> dict:
+    """
+    Octodamus Gmail item layout:
+      username -> Gmail address  (GMAIL_USER)
+      password -> App Password   (GMAIL_APP_PASSWORD)
+    """
+    secrets = {}
+    try:
+        item = _get_item("Octodamus Gmail")
+        login = item.get("login", {})
+        secrets["GMAIL_USER"]         = login.get("username", "")
+        secrets["GMAIL_APP_PASSWORD"] = login.get("password", "")
+    except Exception as e:
+        print(f"[Bitwarden] Gmail failed (non-critical): {e}")
+    return secrets
+
+
 def _save_cache(secrets: dict) -> None:
     """Write secrets to local cache file for background tasks."""
     cache = {
@@ -232,11 +257,11 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
                 print(f"[Bitwarden] âœ“ {item_name}")
         except Exception as e:
             if env_var in OCTODAMUS_CRITICAL_KEYS:
-                print(f"[Bitwarden] âœ— CRITICAL missing: {item_name}")
+                print(f"[Bitwarden] CRITICAL missing: {item_name} | error: {e}")
                 missing_critical.append(env_var)
             else:
                 if verbose:
-                    print(f"[Bitwarden] âš  Optional missing: {item_name}")
+                    print(f"[Bitwarden] Optional missing: {item_name} | error: {e}")
 
     # Optional secrets
     for item_name, env_var in OCTODAMUS_OPTIONAL_SECRETS.items():
@@ -258,6 +283,32 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     if twitter and verbose:
         print(f"[Bitwarden] âœ“ AGENT - Octodamus - Social - Twitter API")
 
+    # Gmail multi-field item
+    gmail = _load_gmail_from_bw()
+    for env_var, value in gmail.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if gmail.get("GMAIL_USER") and verbose:
+        print("[Bitwarden] Gmail loaded")
+
+    # Fallback: try existing cache for any critical keys that BW failed to load
+    if missing_critical:
+        try:
+            if CACHE_FILE.exists():
+                raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+                cached = raw.get("secrets", raw)
+                still_missing = []
+                for env_var in missing_critical:
+                    if cached.get(env_var):
+                        loaded[env_var] = cached[env_var]
+                        os.environ[env_var] = cached[env_var]
+                        print(f"[Bitwarden] {env_var} recovered from existing cache")
+                    else:
+                        still_missing.append(env_var)
+                missing_critical = still_missing
+        except Exception:
+            pass
     if missing_critical:
         print(f"[Bitwarden] FATAL: Missing critical secrets: {missing_critical}")
         sys.exit(1)

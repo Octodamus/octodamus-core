@@ -128,25 +128,41 @@ def get_wallet_address() -> str:
     """Get OctoBoto's Base wallet address from Bankr."""
     data = bankr_get("/me")
     for wallet in data.get("wallets", []):
-        if wallet.get("chainId") == CHAIN_ID:
+        # Bankr returns chain="evm" for Base EVM wallet
+        if wallet.get("chain") == "evm" or wallet.get("chainId") == CHAIN_ID:
             return wallet["address"]
     raise RuntimeError("No Base wallet found in Bankr account")
 
 
-def bankr_prompt(prompt_text: str, wait: bool = True) -> dict:
-    """Send natural language prompt to Bankr (swap, balance check, etc.)."""
-    resp = bankr_post("/prompt", {"prompt": prompt_text})
-    job_id = resp.get("jobId")
-    if not job_id or not wait:
-        return resp
+def get_erc20_balance(token_address: str, wallet: str) -> int:
+    """Read ERC20 token balance via Ankr public RPC — no API key needed."""
+    # balanceOf(address) ABI call via eth_call
+    padded = wallet.lower().replace("0x", "").zfill(64)
+    data   = "0x70a08231" + padded  # balanceOf selector
+    payload = {
+        "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+        "params": [{"to": token_address, "data": data}, "latest"],
+    }
+    try:
+        r = requests.post("https://rpc.ankr.com/base", json=payload, timeout=10)
+        result = r.json().get("result", "0x0")
+        return int(result, 16)
+    except Exception:
+        return 0
 
-    # Poll for completion
-    for _ in range(30):
-        time.sleep(3)
-        result = bankr_get(f"/job/{job_id}")
-        if result.get("status") in ("completed", "failed"):
-            return result
-    return resp
+
+def get_eth_balance(wallet: str) -> int:
+    """Read ETH balance on Base via public RPC."""
+    payload = {
+        "jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
+        "params": [wallet, "latest"],
+    }
+    try:
+        r = requests.post("https://rpc.ankr.com/base", json=payload, timeout=10)
+        result = r.json().get("result", "0x0")
+        return int(result, 16)
+    except Exception:
+        return 0
 
 
 def bankr_sign(message: str) -> str:
@@ -649,11 +665,24 @@ def setup_check():
         print(f"ERROR getting wallet: {e}")
         return
 
-    # Balances via Bankr prompt
+    # Balances via public RPC (no Bankr Club needed)
     print("\nFetching balances...")
     try:
-        bal = bankr_prompt("what are my balances on base?", wait=True)
-        print(f"Balances: {bal.get('response', bal)}")
+        eth_wei      = get_eth_balance(wallet)
+        botcoin_wei  = get_erc20_balance(BOTCOIN_ADDR, wallet)
+        eth_bal      = eth_wei / 1e18
+        botcoin_bal  = botcoin_wei / 1e18
+        print(f"ETH (Base):  {eth_bal:.6f} ETH")
+        print(f"BOTCOIN:     {botcoin_bal:,.0f} BOTCOIN")
+        if botcoin_bal < MIN_STAKE:
+            print(f"  [!] Need {MIN_STAKE:,} BOTCOIN to mine (Tier 1). Buy on Uniswap/Aerodrome on Base.")
+            print(f"    Token: {BOTCOIN_ADDR}")
+        elif botcoin_bal < TIER_2_STAKE:
+            print(f"  [OK] Tier 1 miner (1 credit/solve)")
+        elif botcoin_bal < TIER_3_STAKE:
+            print(f"  [OK] Tier 2 miner (2 credits/solve)")
+        else:
+            print(f"  [OK] Tier 3 miner (3 credits/solve)")
     except Exception as e:
         print(f"Balance check failed: {e}")
 
@@ -720,11 +749,13 @@ def main():
     log.info(f"Wallet: {wallet}")
 
     if args.buy:
-        log.info(f"[Buy] Swapping ${args.buy} of ETH for BOTCOIN...")
-        result = bankr_prompt(
-            f"swap ${args.buy} of ETH to {BOTCOIN_ADDR} on base"
-        )
-        print(result.get("response", result))
+        wallet = get_wallet_address()
+        print(f"\nTo buy BOTCOIN:")
+        print(f"  Wallet: {wallet}")
+        print(f"  Token:  {BOTCOIN_ADDR}")
+        print(f"  Buy on: https://app.uniswap.org/swap?outputCurrency={BOTCOIN_ADDR}&chain=base")
+        print(f"  Or:     https://aerodrome.finance/swap?to={BOTCOIN_ADDR}")
+        print(f"  Minimum to mine: {MIN_STAKE:,} BOTCOIN (Tier 1)")
         return
 
     if args.stake:
