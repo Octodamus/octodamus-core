@@ -245,28 +245,35 @@ def _x402_headers(amount_usdc: float = 29.0) -> dict:
                 "example": _signal_example,
             },
         },
-        "schema": {
+        # inputSchema = direct JSON Schema for the request input (not wrapped)
+        # x402scan derives the input schema from this field
+        "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type":    "object",
             "properties": {
-                "input": {
+                "method":      {"type": "string", "const": "GET"},
+                "url":         {"type": "string", "format": "uri"},
+                "headers": {
                     "type": "object",
                     "properties": {
-                        "type":        {"type": "string", "const": "http"},
-                        "method":      {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"]},
-                        "queryParams": {"type": "object"},
+                        "X-OctoData-Key": {"type": "string", "description": "API key from /v1/signup or /v1/agent-checkout"},
                     },
-                    "required": ["type"],
-                },
-                "output": {
-                    "type": "object",
-                    "properties": {
-                        "type":    {"type": "string"},
-                        "example": {"type": "object"},
-                    },
-                    "required": ["type"],
                 },
             },
-            "required": ["input"],
+            "required": ["method", "url"],
+        },
+        "outputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type":    "object",
+            "properties": {
+                "action":          {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                "confidence":      {"type": "number", "minimum": 0, "maximum": 1},
+                "signal":          {"type": "string", "enum": ["BULLISH", "BEARISH", "NEUTRAL"]},
+                "fear_greed":      {"type": "number", "minimum": 0, "maximum": 100},
+                "btc_trend":       {"type": "string", "enum": ["UP", "DOWN", "SIDEWAYS"]},
+                "polymarket_edge": {"type": "object"},
+                "reasoning":       {"type": "string"},
+            },
         },
     }
 
