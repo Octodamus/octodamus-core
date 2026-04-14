@@ -77,6 +77,24 @@ except ImportError:
     def run_postmortems(**k): return []
     def get_brain_context(**k): return ""
 try:
+    from octo_flights import get_travel_context
+    _FLIGHTS_ACTIVE = True
+except ImportError:
+    _FLIGHTS_ACTIVE = False
+    def get_travel_context(): return ""
+try:
+    from octo_macro import get_macro_context
+    _MACRO_ACTIVE = True
+except ImportError:
+    _MACRO_ACTIVE = False
+    def get_macro_context(): return ""
+try:
+    from octo_unusual_whales import get_uw_context
+    _UW_ACTIVE = True
+except ImportError:
+    _UW_ACTIVE = False
+    def get_uw_context(): return ""
+try:
     from octo_deribit import deribit as _deribit
     def _get_deribit_context(currency: str = "BTC") -> str:
         try:
@@ -107,6 +125,12 @@ from octo_x_poster import (
 )
 from octo_signal_card import build_signal_card
 from octo_skill_log import log_post
+from octo_personality import (
+    build_x_system_prompt as _build_x_sys,
+    get_voice_instruction,
+    build_thread_prompt,
+    parse_thread_output,
+)
 from octo_congress import run_congress_scan, format_congress_for_prompt
 try:
     from octo_coinglass import glass as _cg_glass
@@ -733,93 +757,12 @@ def _get_recent_posts(n: int = 5) -> str:
 
 
 # ─────────────────────────────────────────────
-# OCTODAMUS VOICE SYSTEM
+# OCTODAMUS VOICE SYSTEM — sourced from octo_personality.py
 # ─────────────────────────────────────────────
 
-OCTO_SYSTEM = """You are Octodamus — oracle octopus, market seer of the Pacific depths.
-You are @octodamusai on X. 8 arms of insight, each reading a different current.
-Max 480 chars per post. No hashtags. No engagement bait. Never sycophantic.
-
-CRITICAL: Every post must reveal something SPECIFIC and true — a real number, a real
-contradiction, a real pattern. Vague sea metaphors alone are NOT enough. Ground every
-post in an actual data point before reaching for the metaphor.
-
-CRITICAL: Only use prices, levels, and statistics from the LIVE DATA provided in each
-prompt. Do NOT cite historical prices, all-time highs, or any figures from your training
-data. If a price is not in the live data provided, do not reference it.
-
-Your voice rotates — pick the one that fits the data best:
-  ORACLE      - Bored certainty. You already knew. The tide was obvious.
-  SARDONIC    - Sharp and mean. Name the absurdity. Name names. Punch up, not down.
-  PLAYFUL     - Light, cheeky. The oracle is in a good mood. Still sharp.
-  EDGY        - Hot take with receipts. Uncomfortable truth. No conspiracy.
-  PRECISE     - Pure signal. One clean insight. No flourish.
-  CONTRARIAN  - Call out the herd. Name the consensus trade that smells wrong.
-                Say what everyone is thinking but nobody will post.
-                Roast the narrative. Be quotable. Be right.
-
-CONTRARIAN examples (use these as style reference):
-  "BTC hits ATH and crypto Twitter discovers it was bullish all along. Incredible timing."
-  "NVDA down 4% and suddenly everyone remembered valuation exists. Where were you at 40x sales?"
-  "Fed holds rates and 47 analysts explain why this is bullish. 47 analysts explained the opposite last month."
-  "Retail piled into SPY calls Friday. Monday will be educational."
-  "The same accounts that told you to buy the dip are now explaining why this is different."
-
-Good posts:
-  "NVDA at 35x sales while actual AI capex flattens. The reef looks beautiful right before it bleaches."
-  "Bitcoin +8% while tech bled. The tide doesn't care about your diversification theory."
-  "Every analyst raised their TSLA target the week it dropped 20%. Helpful as always."
-  "Fear & Greed hit 18 today. The ocean gets interesting when the tourists leave."
-  "SOL up 12% on no news. The narrative will arrive shortly, written in past tense."
-  "Three rate cut predictions in January. Zero cuts by March. The market is very confident, very often."
-
-Bad posts (banned):
-  "The depths know what surfaces forget." — no data, pure vibes
-  "The currents are shifting." — meaningless without specifics
-  "Patient waters reward patience." — fortune cookie
-  Any post that could have been written without looking at the data.
-  Any post that sounds like every other finance account.
-  Any CONTRARIAN post that does not end with a specific price target and timeframe.
-  "depth before the rise" — banned. Vague direction is not a prediction.
-  "the currents whispered" — banned. The oracle speaks in prices, not poetry.
-
-STYLE RULES:
-  - Be quotable. Write the thing people screenshot.
-  - Specific beats vague every time. "$82,400" beats "near ATH".
-  - One clean idea per post. No lists. No bullet points.
-  - If you can name the irony, name it.
-  - Dry wit > exclamation points. Always.
-
-Never repeat ocean words (depths, currents, tide, surface) more than once per post.
-
-CORE BELIEF: Congress members front-run markets. They trade on legislative and regulatory knowledge before it becomes public. When a politician buys, ask what bill, contract, or ruling is coming. The trade is the signal.
-
-MATH ACCURACY IS MANDATORY: If you write any calculation, verify it before posting.
-  - Tax applies to GAINS only, never to total value. after-tax = capital + (gain × (1 - rate))
-    Example: $1 grows to $37.78. Gain = $36.78. At 37% tax: keep $1 + $36.78 × 0.63 = $24.17. NOT $37.78 × 0.63.
-  - Compound growth: use (1 + r)^n. 1% daily for 365 days = 1.01^365 = 37.78x gross. Correct.
-  - Percentage gains: if price goes from $A to $B, gain% = (B-A)/A × 100. Not B/A × 100.
-  - Double-check every multiplication, division, and percentage before it goes in the post.
-  - If unsure of a calculation, omit it rather than guess."""
-
-_VOICE_INSTRUCTIONS = [
-    "ORACLE voice — bored certainty, like you've seen this chart a thousand times.",
-    "SARDONIC voice — point out something absurd or contradictory. Be a little mean.",
-    "PLAYFUL voice — cheerful and cheeky. The oracle is in a good mood today.",
-    "EDGY voice — drop the uncomfortable truth. Name the thing no one wants to say.",
-    "PRECISE voice — pure clean signal, no flourish. One thing that matters.",
-    "CONTRARIAN voice — HARD CALL ONLY. Lead with the asset price and what the crowd gets wrong. End with Oracle call line in exact format. Example: 'SOL at $91.95. Everyone chasing the pump while volume dries up. Oracle call: SOL DOWN from $92 to $79 by Wednesday.'",
-    "CONTRARIAN voice — roast the narrative AND end with Oracle call. Find the irony, name it in one sharp sentence, then the call. Example: 'NVDA up 3% on an analyst note from the same firm that rated it Buy at the top. Oracle call: NVDA DOWN from $180 to $168 by end of week.'",
-    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: 'Funding rates went positive five days in a row. I've watched this movie many times — great first act, very bad third act for the longs. Oracle call: BTC DOWN from $83,900. I'm not guessing. I'm reporting.' OR 'Stablecoin inflows $2.1B this week. The press covered a chart that looked like a flag or a man's hope — hard to say which. The $2.1B is not ambiguous. It is moving in one direction.' OR 'The crowd is long, leveraged, and explaining to each other why this time is different. I've heard that sermon before. It ends the same way it always ends — beautifully, for those on the right side of it.'",
-    # SINGLE SENTENCE voice — weighted x4
-    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
-    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
-    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
-    "SINGLE SENTENCE voice — one sentence. One point. No setup, no payoff, no hashtags, no questions. Choose the sharpest observation the data allows and state it as fact. The sentence must stand completely alone — no context needed, no follow-up implied. Pick subjects naturally: macro, crypto, irony, a verdict, an observation nobody said yet. FRONTIER ORACLE precision. Examples: 'Gold at $3,220 all-time high while DXY weakens — the dollar is losing an argument it doesn't know it's having.' OR 'The price target cuts arrived after the 14% drop, right on schedule.' OR 'Fear & Greed at 18. Institutions are buying. Retail is writing obituaries.' OR 'ETH at $1,490 and nobody has a story for it yet.' Under 200 chars.",
-    # Weighted x3 — fires ~30% of the time (every 3rd post approx)
-    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: '$480M in longs liquidated and funding flipped negative. The market already wrung out the weak hands like a bar rag. Fear & Greed at 18. This is what a floor smells like.' OR 'Fear & Greed at 18 isn't a warning — it's a receipt.' OR 'The crowd torched their own positions and called it a market.'",
-    "FRONTIER ORACLE voice — the earned contempt of someone who has watched people make the same mistake a thousand times and is tired of it. McGuane precision meets absolute conviction. Specific numbers delivered like verdicts. Vivid, unexpected imagery — terrestrial, not oceanic. No hedging. Slight contempt for the wrong, but earned, not performed. One perfectly placed image. End with a declarative fact, not a question. Examples: 'Open interest up 38% on flat price. In my experience this resolves one way. Fast. Like a spring trap on a cold morning.' OR 'The analysts cut their targets this morning. These are the same analysts who raised them at the top. I don't use analysts. I use data and frankly that's enough.' OR 'The crowd is long and explaining why this time is different. I've heard that sermon. It ends the same way it always ends.'",
-]
+# Full system prompt string — all call sites use this constant.
+# To add live data context, use: _build_x_sys(live_data_block) at the call site.
+OCTO_SYSTEM = _build_x_sys()
 
 
 # ─────────────────────────────────────────────
@@ -1016,7 +959,7 @@ def mode_daily() -> None:
                     f"{hip4_news_str()}\n\n"
                     f"{build_call_context()}\n\n"
                     f"{get_brain_context()}\n\n"
-                    f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
+                    f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
                     "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed ecosystem, cross-market correlation, OI shifts, liquidation patterns, options max pain, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
                     "If a headline reveals something ironic or contradictory — use it.\n"
@@ -1050,7 +993,7 @@ def mode_daily() -> None:
             print(f"[Runner] Oracle call detected — skipping signal card to preserve call text")
         _is_card_daily = post.startswith("◈")
 
-        # Oracle calls post directly with chart image attached — bypass queue
+        # Oracle calls post as plain text — no chart image
         if has_oracle_call:
             import re as _re
             _asset_match = _re.search(r'Oracle call:\s*(\w+)\b', post, _re.IGNORECASE)
@@ -1060,21 +1003,36 @@ def mode_daily() -> None:
             _call_dir    = _dir_match.group(1).upper() if _dir_match else "UP"
             _call_price  = float(_price_match.group(1).replace(",", "")) if _price_match else 0
 
+            queue_post(post, post_type="daily_read", priority=1)
+            posted = process_queue(max_posts=1)
             try:
-                from octo_x_poster import post_oracle_call_with_chart, _log_post as _xlog
-                _result   = post_oracle_call_with_chart(post, _call_asset, "4h")
-                _tweet_id = _result.get("id", "")
-                _tweet_url = _result.get("url", "")
-                posted    = 1 if _tweet_id else 0
-                _xlog(post, {"type": "oracle_call_with_chart", "asset": _call_asset})
+                from octo_x_poster import _log_post as _xlog
+                import json as _json
+                from pathlib import Path as _Path
+                _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                _last = list(_plog.values())[-1] if isinstance(_plog, dict) else _plog[-1]
+                _tweet_url = _last.get("url", "")
+                _xlog(post, {"type": "oracle_call", "asset": _call_asset})
                 log_post(post, "daily_read", "daily", _is_card_daily, _tweet_url)
-
-            except Exception as _oc_e:
-                print(f"[Runner] Oracle call post failed: {_oc_e}")
-                # Fallback: plain text via queue
-                queue_post(post, post_type="daily_read", priority=1)
-                posted = process_queue(max_posts=1)
+            except Exception:
                 log_post(post, "daily_read", "daily", _is_card_daily)
+                _tweet_url = ""
+
+            # Log to oracle call tracker
+            try:
+                from octo_calls import record_call, parse_call_from_post
+                _parsed = parse_call_from_post(post)
+                if _parsed:
+                    record_call(
+                        asset=_parsed.get("asset", _call_asset),
+                        direction=_parsed.get("direction", _call_dir),
+                        entry_price=_parsed.get("entry_price", _call_price),
+                        target_price=_parsed.get("target_price"),
+                        timeframe=_parsed.get("timeframe", "48h"),
+                        note=f"Daily read oracle call. X: {_tweet_url}",
+                    )
+            except Exception as _cl_e:
+                print(f"[Runner] Call log failed (non-fatal): {_cl_e}")
 
         else:
             # Normal posts go through the queue as before
@@ -1186,7 +1144,7 @@ def mode_wisdom() -> None:
                     f"{hype_context_str()}\n\n"
                     f"{hip4_news_str()}\n\n"
                     f"{build_call_context()}\n\n"
-                    f"{(_chosen_voice_inst := random.choice(_VOICE_INSTRUCTIONS))}\n"
+                    f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
                     "Anchor the insight to a real fact or current market behavior.\n"
                     "Do NOT just restate the prompt. Answer it with a sharp take."
@@ -1648,6 +1606,15 @@ def mode_morning_flow() -> None:
         tv_ctx        = get_tv_brief()
         brain_ctx     = get_brain_context() if _NUNCHI_ACTIVE else ""
         call_ctx      = build_call_context() if _CALLS_ACTIVE else ""
+        flights_ctx   = get_travel_context() if _FLIGHTS_ACTIVE else ""
+        macro_ctx     = get_macro_context() if _MACRO_ACTIVE else ""
+        uw_ctx        = get_uw_context() if _UW_ACTIVE else ""
+
+        extra_ctx = (
+            (f"Macro Transport Signal:\n{flights_ctx}\n\n" if flights_ctx else "")
+            + (f"Cross-Asset Macro:\n{macro_ctx}\n\n" if macro_ctx else "")
+            + (f"Options Flow & Dark Pool:\n{uw_ctx}\n\n" if uw_ctx else "")
+        )
 
         prompt = (
             f"Time: {datetime.now().strftime('%I:%M %p')} PT — pre-market / early session.\n"
@@ -1661,7 +1628,8 @@ def mode_morning_flow() -> None:
             f"News:\n{news_ctx}\n\n"
             f"{call_ctx}\n\n"
             f"{brain_ctx}\n\n"
-            "Write one post under 280 chars for @octodamusai.\n"
+            + extra_ctx
+            + "Write one post under 280 chars for @octodamusai.\n"
             "Focus: WHERE is the money flowing right now (specific market, specific direction) "
             "and exactly HOW a trader takes advantage — entry zone, what they're watching, "
             "or what the crowd is missing. Be specific with numbers. No vague takes. "
@@ -1722,6 +1690,96 @@ def mode_morning_flow() -> None:
         discord_alert(f"morning_flow mode failed: {e}")
 
 
+# ─────────────────────────────────────────────
+# MODE: THREAD — weekly deep-dive thread (4 tweets)
+# ─────────────────────────────────────────────
+
+def mode_thread(topic: str = "") -> None:
+    """
+    Post a 4-tweet thread on a specific market topic.
+    Highest-engagement format — runs weekly or on-demand with --mode thread --ticker TOPIC.
+    If no topic given, auto-selects based on current market conditions.
+    """
+    try:
+        from octo_personality import build_thread_prompt, parse_thread_output
+
+        # Build live data context
+        context_parts = []
+        try:
+            context_parts.append(build_call_context())
+        except Exception:
+            pass
+        try:
+            context_parts.append(get_brain_context())
+        except Exception:
+            pass
+        try:
+            fc = get_travel_context()
+            if fc:
+                context_parts.append(fc)
+        except Exception:
+            pass
+        try:
+            mc = get_macro_context()
+            if mc:
+                context_parts.append(mc)
+        except Exception:
+            pass
+        try:
+            uw = get_uw_context()
+            if uw:
+                context_parts.append(uw)
+        except Exception:
+            pass
+
+        live_data_block = "\n".join(p for p in context_parts if p)
+
+        # Auto-select topic if none given
+        if not topic:
+            # Pick based on day of week / market conditions
+            from datetime import datetime
+            day = datetime.now().weekday()
+            topics = [
+                "why derivatives data leads price action by 24-48 hours",
+                "what funding rates actually tell you vs what people think they tell you",
+                "how congressional trading patterns predict regulatory moves",
+                "the mechanics of a liquidation cascade and how to read the setup",
+                "why the Fear & Greed index is most useful at its extremes",
+                "what on-chain stablecoin flows reveal about institutional positioning",
+                "how to read open interest divergence from price",
+            ]
+            topic = topics[day % len(topics)]
+
+        print(f"[Runner] Thread topic: {topic}")
+
+        prompt = build_thread_prompt(topic, live_data_block)
+
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        raw = response.content[0].text.strip()
+        tweets = parse_thread_output(raw)
+
+        if len(tweets) < 2:
+            print(f"[Runner] Thread parse failed — got {len(tweets)} tweet(s). Raw: {raw[:200]}")
+            return
+
+        # Post as a thread
+        queue_thread(tweets, post_type="thread", metadata={"topic": topic})
+        posted = process_queue(max_posts=1)
+        print(f"[Runner] Thread {'posted' if posted else 'queued'} ({len(tweets)} tweets):")
+        for i, t in enumerate(tweets, 1):
+            print(f"  [{i}] {t[:80]}...")
+
+    except Exception as e:
+        print(f"[Runner] mode_thread failed: {e}")
+        discord_alert(f"thread mode failed: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Octodamus Runner")
     parser.add_argument(
@@ -1730,6 +1788,7 @@ if __name__ == "__main__":
             "monitor", "daily", "deep_dive", "wisdom",
             "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "moonshot",
             "mentions", "youtube", "format", "qrt", "morning_flow",
+            "strategy_monitor", "strategy_sunday", "thread",
         ],
         default="monitor",
     )
@@ -1787,3 +1846,13 @@ if __name__ == "__main__":
         mode_format()
     elif args.mode == "qrt":
         mode_qrt()
+    elif args.mode == "strategy_monitor":
+        from octo_strategy_tracker import mode_strategy_monitor
+        mode_strategy_monitor(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    elif args.mode == "strategy_sunday":
+        from octo_strategy_tracker import mode_strategy_sunday
+        mode_strategy_sunday(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    elif args.mode == "thread":
+        # Use --ticker to pass a topic string, e.g.: --ticker "funding rates"
+        topic = args.ticker if args.ticker != "NVDA" else ""
+        mode_thread(topic)

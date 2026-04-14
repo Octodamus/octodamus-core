@@ -333,14 +333,12 @@ def read_currents(symbol: str = "BTC") -> dict:
         "top_traders_ratio_4h": top_long_short_ratio(symbol, "4h"),
         # Where the money is GOING (flow and urgency)
         "taker_buy_sell_4h": taker_buy_sell(symbol, "4h"),
-        "liquidation_orders": liquidation_orders(symbol),
-        # Where the money WILL GO (structural levels)
-        "liquidation_map": liquidation_map(symbol),
         # Historical context (trend)
         "open_interest_daily": open_interest(symbol, "1d"),
         "funding_rate_daily": funding_rate(symbol, "8h"),
         "long_short_ratio_daily": long_short_ratio(symbol, "1d"),
         "liquidation_history_4h": liquidation_history(symbol, "4h"),
+        # Note: liquidation_map, liquidation_orders, coins_markets require higher plan tier
     }
 
 
@@ -350,23 +348,7 @@ def build_oracle_context(symbol: str = "BTC") -> str:
     This is injected into the runner/Telegram when Octodamus
     needs to make or evaluate a directional call.
     """
-    lines = [f"═══ COINGLASS FUTURES INTELLIGENCE: {symbol} ═══\n"]
-
-    # ── Coins Markets (single-call overview) ──────────────────────────────
-    mkts = coins_markets()
-    if isinstance(mkts, list) and mkts:
-        coin = next((c for c in mkts if c.get("symbol") == symbol), None)
-        if coin:
-            price = coin.get("current_price", 0)
-            oi_usd = coin.get("open_interest_usd", 0) or 0
-            fr_oi = coin.get("avg_funding_rate_by_oi", 0) or 0
-            oi_ratio = coin.get("open_interest_market_cap_ratio", 0) or 0
-            lines.append(f"► SNAPSHOT:")
-            lines.append(f"  Price: ${price:,.1f}")
-            lines.append(f"  Open Interest: ${oi_usd/1e9:.2f}B (OI/MCap: {oi_ratio*100:.1f}%)")
-            fr_dir = "LONGS PAY" if fr_oi > 0 else "SHORTS PAY"
-            lines.append(f"  Avg Funding Rate (OI-weighted): {fr_oi*100:+.4f}% ({fr_dir})")
-            lines.append("")
+    lines = [f"=== COINGLASS FUTURES INTELLIGENCE: {symbol} ===\n"]
 
     # ── Funding Rate (exchange breakdown) ─────────────────────────────────
     fr_data = funding_rate_exchange(symbol)
@@ -447,21 +429,6 @@ def build_oracle_context(symbol: str = "BTC") -> str:
                 lines.append(f"  Buy: {buy_pct:.0f}% | ${total/1e6:.0f}M vol | {flow}")
         lines.append("")
 
-    # ── Liquidation Orders (recent large liqs) ────────────────────────────
-    liq_orders = liquidation_orders(symbol)
-    if isinstance(liq_orders, list) and liq_orders:
-        # Filter for larger liquidations (>$100k)
-        big_liqs = [o for o in liq_orders if float(o.get("usd_value", 0) or 0) > 100000]
-        if big_liqs:
-            lines.append(f"► LARGE LIQUIDATIONS (>{100}k, last 7d):")
-            for o in big_liqs[:5]:
-                exch = o.get("exchange_name", "?")
-                val = float(o.get("usd_value", 0) or 0)
-                side = "LONG" if o.get("side") == 1 else "SHORT"
-                px = o.get("price", 0)
-                lines.append(f"  {exch} {side}: ${val/1e3:.0f}k @ ${px:,.0f}")
-            lines.append("")
-
     # ── Recent Liquidations (aggregated history) ──────────────────────────
     liq_hist = liquidation_history(symbol, "4h")
     if isinstance(liq_hist, list) and liq_hist:
@@ -476,7 +443,7 @@ def build_oracle_context(symbol: str = "BTC") -> str:
                 lines.append(f"  Longs: ${long_liq/1e6:.1f}M | Shorts: ${short_liq/1e6:.1f}M | {dominant}")
         lines.append("")
 
-    lines.append("═══ END COINGLASS INTELLIGENCE ═══")
+    lines.append("=== END COINGLASS INTELLIGENCE ===")
     return "\n".join(lines)
 
 

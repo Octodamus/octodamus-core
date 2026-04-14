@@ -302,6 +302,72 @@ class PaperTracker:
 
     # ─── Reset ────────────────────────────────────────────────────────────
 
+    # ─── Session Guard ────────────────────────────────────────────────────
+
+    def session_guard(
+        self,
+        max_daily_loss: float = 30.0,
+        max_consecutive_losses: int = 3,
+    ) -> dict:
+        """
+        Check whether new trades should be blocked for the rest of today's session.
+
+        Blocks when EITHER condition is true:
+          - Daily realised P&L has dropped below -max_daily_loss ($30 default)
+          - The last N closed trades are all losses (3 consecutive default)
+
+        Returns:
+          blocked            — bool: True = do not enter new positions
+          reason             — human-readable explanation (empty string if not blocked)
+          daily_pnl          — today's realised P&L in USD
+          consecutive_losses — current losing streak length
+        """
+        today = datetime.now(timezone.utc).date().isoformat()   # "2026-04-12"
+
+        closed_today = [
+            t for t in self._data["closed"]
+            if (t.get("closed_at") or "").startswith(today)
+        ]
+        daily_pnl = round(sum(t.get("pnl", 0) for t in closed_today), 2)
+
+        # Count unbroken losing streak from the most recent trade backwards
+        consecutive = 0
+        for t in reversed(self._data["closed"]):
+            if not t.get("won", True):
+                consecutive += 1
+            else:
+                break
+
+        if daily_pnl <= -abs(max_daily_loss):
+            return {
+                "blocked":            True,
+                "reason":             f"Daily loss limit hit (${daily_pnl:.2f} today, limit ${max_daily_loss:.0f})",
+                "daily_pnl":          daily_pnl,
+                "consecutive_losses": consecutive,
+            }
+
+        if consecutive >= max_consecutive_losses:
+            return {
+                "blocked":            True,
+                "reason":             f"{consecutive} consecutive losses — cooling off",
+                "daily_pnl":          daily_pnl,
+                "consecutive_losses": consecutive,
+            }
+
+        return {
+            "blocked":            False,
+            "reason":             "",
+            "daily_pnl":          daily_pnl,
+            "consecutive_losses": consecutive,
+        }
+
+    def sync_balance(self, live_balance: float):
+        """Sync tracker balance to real on-chain USDC balance (live mode only)."""
+        deployed = sum(p.get("size", 0) for p in self._data.get("positions", []))
+        # Available cash = live_balance, total = cash + deployed
+        self._data["balance"] = round(live_balance + deployed, 2)
+        self._save()
+
     def reset(self, new_balance: float = STARTING_BALANCE):
         """Wipe all trades, reset balance."""
         self._data = {

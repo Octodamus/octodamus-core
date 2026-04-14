@@ -44,6 +44,9 @@ def record_call(
     timeframe: str = "24h",
     target_price: Optional[float] = None,
     note: str = "",
+    signals: Optional[dict] = None,   # #10 — signal breakdown for calibration
+    edge_score: float = 0.0,          # #3 — (bulls - bears) / total_signals
+    time_quality: str = "",           # #2 — "peak" | "offhours" | "weekend"
 ) -> dict:
     calls = _load()
 
@@ -54,22 +57,29 @@ def record_call(
             return c
 
     call = {
-        "id":           len(calls) + 1,
-        "asset":        asset.upper(),
-        "direction":    direction.upper(),
-        "entry_price":  entry_price,
-        "target_price": target_price,
-        "timeframe":    timeframe,
-        "note":         note[:200],
-        "made_at":      datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "resolved":     False,
-        "outcome":      None,
-        "exit_price":   None,
-        "resolved_at":  None,
+        "id":                     len(calls) + 1,
+        "call_type":              "oracle",
+        "asset":                  asset.upper(),
+        "direction":              direction.upper(),
+        "entry_price":            entry_price,
+        "target_price":           target_price,
+        "timeframe":              timeframe,
+        "note":                   note[:300],
+        "made_at":                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "resolved":               False,
+        "outcome":                None,
+        "won":                    None,
+        "exit_price":             None,
+        "resolved_at":            None,
+        "resolution_price_source": "CoinGecko spot" if asset.upper() in ("BTC","ETH","SOL") else "yfinance",
+        # Intelligence enrichment fields
+        "signals":     signals or {},
+        "edge_score":  round(edge_score, 3),
+        "time_quality": time_quality,
     }
     calls.append(call)
     _save(calls)
-    print(f"[OctoCalls] #{call['id']} recorded: {asset.upper()} {direction.upper()} @ ${entry_price:,.2f}")
+    print(f"[OctoCalls] #{call['id']} recorded: {asset.upper()} {direction.upper()} @ ${entry_price:,.2f} edge={edge_score:.2f}")
     return call
 
 
@@ -83,12 +93,17 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
             c["resolved"] = True
             c["resolved_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             d = c["direction"]
+            entry = c["entry_price"]
+            # WIN requires ≥1% move in called direction — not just any tick.
+            # This is the institutional standard for track record credibility.
+            min_move = entry * 0.01
             if d == "UP":
-                c["outcome"] = "WIN" if exit_price > c["entry_price"] else "LOSS"
+                c["outcome"] = "WIN" if exit_price >= entry + min_move else "LOSS"
             elif d == "DOWN":
-                c["outcome"] = "WIN" if exit_price < c["entry_price"] else "LOSS"
+                c["outcome"] = "WIN" if exit_price <= entry - min_move else "LOSS"
             else:
                 c["outcome"] = "PUSH"
+            c["won"] = (c["outcome"] == "WIN")
             _save(calls)
             print(f"[OctoCalls] #{call_id} resolved: {c['outcome']} (${c['entry_price']:,.2f} -> ${exit_price:,.2f})")
             return c
@@ -169,12 +184,14 @@ def _is_expired(call: dict) -> bool:
 
 
 def autoresolve() -> list:
-    """Check open calls against live prices. Resolve expired ones."""
+    """Check open calls against live prices. Resolve expired oracle calls only."""
     calls = _load()
     resolved = []
     for c in calls:
         if c["resolved"]:
             continue
+        if c.get("call_type", "oracle") != "oracle":
+            continue  # Polymarket calls resolve via Polymarket, not price feeds
         if not _is_expired(c):
             continue
         price = _fetch_price(c["asset"])
@@ -191,10 +208,12 @@ def autoresolve() -> list:
 
 def get_stats() -> dict:
     calls = _load()
-    resolved = [c for c in calls if c["resolved"]]
+    # Only count oracle calls in the win/loss record — not polymarket bridge trades
+    oracle_calls = [c for c in calls if c.get("call_type", "oracle") == "oracle"]
+    resolved = [c for c in oracle_calls if c["resolved"]]
     wins = sum(1 for c in resolved if c["outcome"] == "WIN")
     losses = sum(1 for c in resolved if c["outcome"] == "LOSS")
-    open_calls = [c for c in calls if not c["resolved"]]
+    open_calls = [c for c in oracle_calls if not c["resolved"]]
 
     streak = ""
     streak_char = ""
@@ -213,15 +232,130 @@ def get_stats() -> dict:
 
     rate = f"{wins/(wins+losses)*100:.0f}%" if (wins + losses) > 0 else "N/A"
     return {
-        "total": len(calls),
+        "total": len(oracle_calls),
         "wins": wins,
         "losses": losses,
         "win_rate": rate,
         "streak": streak or "\u2014",
         "open": len(open_calls),
         "open_calls": open_calls,
-        "all_calls": calls,
+        "all_calls": oracle_calls,
     }
+
+
+# ── Guard functions (upgrades #2 #7 #8 #10) ──────────────────────────────────
+
+def get_recent_win_rate(n: int = 5) -> Optional[float]:
+    """
+    Return win rate of the last N resolved oracle calls, or None if fewer than N exist.
+    Used by the win-rate circuit breaker (#8).
+    """
+    calls = _load()
+    oracle = [c for c in calls if c.get("call_type", "oracle") == "oracle"]
+    resolved = [c for c in oracle if c["resolved"] and c.get("outcome") in ("WIN", "LOSS")]
+    if len(resolved) < n:
+        return None
+    recent = resolved[-n:]
+    wins = sum(1 for c in recent if c["outcome"] == "WIN")
+    return wins / n
+
+
+def get_direction_concentration() -> dict:
+    """
+    Return counts of open oracle calls by direction.
+    Used to detect correlated multi-asset bets (#7).
+    e.g. {"UP": 2, "DOWN": 1} means 2 assets already have open UP calls.
+    """
+    calls = _load()
+    open_oracle = [
+        c for c in calls
+        if not c["resolved"] and c.get("call_type", "oracle") == "oracle"
+    ]
+    counts = {"UP": 0, "DOWN": 0}
+    for c in open_oracle:
+        d = c.get("direction", "").upper()
+        if d in counts:
+            counts[d] += 1
+    return counts
+
+
+def time_quality_score() -> str:
+    """
+    Return 'peak' | 'offhours' | 'weekend' based on current UTC time.
+    Used to flag low-liquidity call windows (#2).
+
+    Peak: Mon-Fri 13:00-21:00 UTC (US market hours, high crypto liquidity)
+    Offhours: Mon-Fri outside that window
+    Weekend: Saturday or Sunday
+    """
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+    hour    = now.hour
+
+    if weekday >= 5:
+        return "weekend"
+    if 13 <= hour <= 21:
+        return "peak"
+    return "offhours"
+
+
+def get_signal_calibration() -> dict:
+    """
+    Compute per-signal win rates from historical calls that have signal breakdowns (#10).
+    Returns dict of {signal_name: {n, win_rate}} for signals with >=3 observations.
+    """
+    calls = _load()
+    resolved = [
+        c for c in calls
+        if c.get("call_type", "oracle") == "oracle"
+        and c["resolved"]
+        and c.get("outcome") in ("WIN", "LOSS")
+        and c.get("signals")
+    ]
+
+    signal_records: dict = {}
+    for c in resolved:
+        won = c["outcome"] == "WIN"
+        direction = c.get("direction", "UP")
+        for sig_name, sig_dir in c["signals"].items():
+            # A signal "contributed" correctly if it agreed with the call direction
+            agreed = (sig_dir.upper() == direction.upper())
+            key = sig_name
+            if key not in signal_records:
+                signal_records[key] = {"agree_wins": 0, "agree_total": 0,
+                                       "disagree_wins": 0, "disagree_total": 0}
+            if agreed:
+                signal_records[key]["agree_total"] += 1
+                if won:
+                    signal_records[key]["agree_wins"] += 1
+            else:
+                signal_records[key]["disagree_total"] += 1
+                if won:
+                    signal_records[key]["disagree_wins"] += 1
+
+    result = {}
+    for sig, r in signal_records.items():
+        if r["agree_total"] >= 3:
+            result[sig] = {
+                "agree_win_rate": round(r["agree_wins"] / r["agree_total"], 2),
+                "agree_n":        r["agree_total"],
+                "disagree_win_rate": round(r["disagree_wins"] / r["disagree_total"], 2) if r["disagree_total"] else None,
+            }
+    return result
+
+
+def calibration_summary_str() -> str:
+    """Format signal calibration for injection into runner context (#10)."""
+    cal = get_signal_calibration()
+    if not cal:
+        return ""
+    lines = ["Signal calibration (when signal agrees with call direction):"]
+    sorted_sigs = sorted(cal.items(), key=lambda x: x[1]["agree_win_rate"], reverse=True)
+    for sig, stats in sorted_sigs:
+        lines.append(
+            f"  {sig}: {stats['agree_win_rate']:.0%} win rate ({stats['agree_n']} calls)"
+        )
+    return "\n".join(lines)
 
 
 # ── Prompt injection ──────────────────────────────────────────────────────────
@@ -233,11 +367,30 @@ def build_call_context() -> str:
     lines.append("── DIRECTIONAL CALL SYSTEM ──")
     lines.append(f"Record: {s['wins']}W / {s['losses']}L | Win rate: {s['win_rate']} | Streak: {s['streak']}")
 
+    # #8: Surface recent win rate for context
+    recent_wr = get_recent_win_rate(n=5)
+    if recent_wr is not None:
+        lines.append(f"Last 5 calls win rate: {recent_wr:.0%}" +
+                     (" ⚠ circuit breaker active" if recent_wr < 0.50 else ""))
+
+    # #2: Time quality context
+    tq = time_quality_score()
+    if tq != "peak":
+        lines.append(f"Current market window: {tq.upper()} — factor this into confidence.")
+
+    # #7: Direction concentration
+    dc = get_direction_concentration()
+    if dc["UP"] >= 2:
+        lines.append(f"WARNING: {dc['UP']} open UP calls — avoid adding more UP calls (correlated risk).")
+    if dc["DOWN"] >= 2:
+        lines.append(f"WARNING: {dc['DOWN']} open DOWN calls — avoid adding more DOWN calls (correlated risk).")
+
     if s["open_calls"]:
         lines.append("Open calls (do NOT call these assets again):")
         for c in s["open_calls"]:
             t = f" target ${c['target_price']:,.0f}" if c.get("target_price") else ""
-            lines.append(f"  #{c['id']} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f}{t} [{c['timeframe']}]")
+            eq = f" edge={c.get('edge_score', 0):+.2f}" if c.get("edge_score") else ""
+            lines.append(f"  #{c['id']} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f}{t} [{c['timeframe']}]{eq}")
 
     lines.append("")
     lines.append("CALL RULES — your win rate IS your reputation:")
@@ -254,6 +407,13 @@ def build_call_context() -> str:
     lines.append("   Oracle call: NVDA DOWN from $175 to $165 by Friday close.")
     lines.append("   Oracle call: SOL DOWN from $89 to $83 by end of week.")
     lines.append("8. The Oracle call line MUST be present. It is how your record is tracked.")
+
+    # #10: Signal calibration — show which signals have proven predictive
+    cal_str = calibration_summary_str()
+    if cal_str:
+        lines.append("")
+        lines.append(cal_str)
+        lines.append("Prefer directions where the highest-accuracy signals agree.")
 
     return "\n".join(lines)
 

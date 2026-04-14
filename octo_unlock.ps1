@@ -48,6 +48,14 @@ if (-not $session) {
 $env:BW_SESSION = $session
 Status "Bitwarden unlock" $true "vault open"
 
+# Sync vault so newly-added items are visible
+$syncOut = & $BW sync --session $session 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Status "Bitwarden sync" $true "vault up to date"
+} else {
+    Status "Bitwarden sync" $false "sync failed (non-critical) - $syncOut"
+}
+
 # STEP 2: Load secrets to Windows cache
 Write-Host ""
 Write-Host "  [2/6] Loading secrets..." -ForegroundColor Yellow
@@ -56,7 +64,7 @@ $loaderCode = @"
 import sys
 sys.path.insert(0, r'C:\Users\walli\octodamus')
 import bitwarden
-s = bitwarden.load_all_secrets(verbose=False)
+s = bitwarden.load_all_secrets(verbose=True)
 print('Loaded' + ' ' + str(len(s)) + ' secrets')
 "@
 $loaderCode | Out-File -FilePath $loaderPath -Encoding utf8
@@ -83,6 +91,40 @@ try {
 Write-Host "  Syncing Python files to WSL..." -ForegroundColor Cyan
 wsl.exe -d Ubuntu -- bash -c "cp /mnt/c/Users/walli/octodamus/*.py /home/walli/octodamus/ 2>/dev/null"
 Status "Python file sync" $true
+
+# Sync data files Windows -> WSL
+wsl.exe -d Ubuntu -- bash -c "cp /mnt/c/Users/walli/octodamus/data/octo_calls.json /home/walli/octodamus/data/ 2>/dev/null"
+Status "Calls data sync" $true
+
+# STEP 3.5: Launch TradingView with CDP
+Write-Host ""
+Write-Host "  [3.5/6] Starting TradingView (CDP)..." -ForegroundColor Yellow
+$TV_EXE = "C:\Program Files\WindowsApps\TradingView.Desktop_3.0.0.7652_x64__n534cwy3pjxzj\TradingView.exe"
+$TV_PORT = 9222
+try {
+    # Kill any existing TradingView instance
+    Get-Process -Name TradingView -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # Launch with CDP (Start-Process is required for MSIX/Store apps)
+    Start-Process -FilePath $TV_EXE -ArgumentList "--remote-debugging-port=$TV_PORT"
+    Start-Sleep -Seconds 10
+
+    # Poll using .NET WebClient — avoids curl/Invoke-WebRequest alias issues
+    $cdpReady = $false
+    $wc = New-Object System.Net.WebClient
+    for ($i = 0; $i -lt 15; $i++) {
+        try {
+            $resp = $wc.DownloadString("http://127.0.0.1:$TV_PORT/json/version")
+            if ($resp -match "Browser") { $cdpReady = $true; break }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    $wc.Dispose()
+    Status "TradingView CDP" $cdpReady ("port $TV_PORT" + $(if ($cdpReady) { " ready" } else { " timeout - TV data unavailable" }))
+} catch {
+    Status "TradingView CDP" $false "$_"
+}
 
 # STEP 4: Start Telegram bot
 Write-Host ""

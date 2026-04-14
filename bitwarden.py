@@ -30,7 +30,7 @@ Bitwarden item names:
     AGENT - Octodamus - Etherscan API
     AGENT - Octodamus - Social - Twitter API   (username=API Key, password=API Secret, notes=rest)
     AGENT - Octodamus - Social - Discord       (password=webhook URL)
-    AGENT - Octodamus - Finance - Bankr                 (optional)
+    AGENT - Octodamus - Finance - Bankr - Wallet         (optional, wins over above if both exist)
     AGENT - Octodamus - POLYBACKTEST - API Key
 """
 
@@ -81,7 +81,8 @@ OCTODAMUS_SECRETS = {
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
-    "AGENT - Octodamus - Finance - Bankr": "BANKR_API_KEY",
+    "AGENT - Octodamus - Finance - Bankr":          "BANKR_API_KEY",
+    "AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",  # wins if both exist — user keeps this one updated
 }
 
 OCTODAMUS_CRITICAL_KEYS = {

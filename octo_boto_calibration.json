@@ -1,0 +1,47 @@
+{
+  "estimates": [
+    {
+      "market_id": "1712301",
+      "question": "Will WTI Crude Oil (WTI) hit (LOW) $80 in April?",
+      "claude_p": 0.06,
+      "market_price": 0.245,
+      "confidence": "high",
+      "side": "NO",
+      "recorded_at": "2026-04-06T12:46:28.268203+00:00",
+      "outcome": null
+    },
+    {
+      "market_id": "1929170",
+      "question": "Will WTI Crude Oil (WTI) hit (HIGH) $110 in April?",
+      "claude_p": 0.97,
+      "market_price": 0.48,
+      "confidence": "high",
+      "side": "YES",
+      "category": "other",
+      "recorded_at": "2026-04-13T21:20:37.097348+00:00",
+      "outcome": null
+    },
+    {
+      "market_id": "1823779",
+      "question": "Will Bitcoin dip to $65,000 in April?",
+      "claude_p": 0.12,
+      "market_price": 0.285,
+      "confidence": "high",
+      "side": "NO",
+      "category": "crypto",
+      "recorded_at": "2026-04-13T21:20:38.202423+00:00",
+      "outcome": null
+    },
+    {
+      "market_id": "1823776",
+      "question": "Will Bitcoin reach $80,000 in April?",
+      "claude_p": 0.1,
+      "market_price": 0.315,
+      "confidence": "high",
+      "side": "NO",
+      "category": "crypto",
+      "recorded_at": "2026-04-13T22:49:38.852420+00:00",
+      "outcome": null
+    }
+  ]
+}

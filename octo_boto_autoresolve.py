@@ -24,6 +24,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from octo_boto_tracker import PaperTracker
 
+try:
+    from octo_boto_oracle_bridge import on_position_closed as _bridge_close
+    _BRIDGE = True
+except ImportError:
+    _BRIDGE = False
+    def _bridge_close(closed, balance): pass
+
 log = logging.getLogger("OctoBotoResolve")
 
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
@@ -183,7 +190,13 @@ def run_autoresolve(dry_run: bool = False) -> list:
                     pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
                     log.info(f"  → CLOSED: {outcome_str} | PnL: {pnl_str} ({c.get('pnl_pct', 0):.1f}%)")
 
-                    # Send Telegram alert if available
+                    # Resolve Oracle call + queue X post via bridge
+                    try:
+                        _bridge_close(c, tracker.balance())
+                    except Exception as e:
+                        log.warning(f"  Bridge close failed: {e}")
+
+                    # Send Telegram alert
                     try:
                         _send_resolve_alert(c, reason)
                     except Exception as e:

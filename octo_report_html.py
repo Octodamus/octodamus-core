@@ -389,14 +389,143 @@ def _render_congressional(data):
         + _footer("Data: Quiver Quantitative"))
 
 
+def _render_signal_pack(data):
+    wins     = data.get("wins", 0)
+    losses   = data.get("losses", 0)
+    rate     = data.get("win_rate")
+    opens    = data.get("open_calls", [])
+    last     = data.get("last_call", {})
+    rate_str = f"{rate}%" if rate is not None else "N/A"
+    rate_c   = "up" if rate and rate >= 60 else "dn" if rate and rate < 50 else "cy"
+
+    stats = ('<div class="stats">'
+        + f'<div class="stat"><div class="stat-v up">{wins}</div><div class="stat-l">WINS</div></div>'
+        + f'<div class="stat"><div class="stat-v dn">{losses}</div><div class="stat-l">LOSSES</div></div>'
+        + f'<div class="stat"><div class="stat-v {rate_c}">{rate_str}</div><div class="stat-l">WIN RATE</div></div>'
+        + '</div>')
+
+    open_rows = ""
+    for c in opens:
+        direction = c.get("direction", "")
+        dc = "up" if direction == "UP" else "dn" if direction == "DOWN" else "cy"
+        open_rows += _dr(c.get("asset", ""), f'{direction} — Entry: ${c.get("entry_price","?")} → Target: ${c.get("target_price","?")} · {c.get("timeframe","")}', dc)
+    if not open_rows:
+        open_rows = _dr("Open Signals", "No open calls at this time.", "cy")
+
+    last_rows = ""
+    if last:
+        out = last.get("outcome", "")
+        last_rows = (_dr("Asset", last.get("asset", ""))
+            + _dr("Direction", last.get("direction", ""))
+            + _dr("Outcome", out, "up" if out == "WIN" else "dn"))
+
+    h = _rpt_head("ORACLE SIGNAL PACK", "OCTODAMUS DIRECTIONAL CALL RECORD", "2.00 USDC",
+                  "up" if rate and rate >= 60 else "neutral", f"{rate_str} WIN RATE")
+    return (h
+        + _section(1, "Track Record", "neutral", "", stats)
+        + _section(2, "Open Signals", "up" if opens else "neutral", f"{len(opens)} OPEN", open_rows)
+        + (_section(3, "Last Resolved Call", "neutral", "", last_rows) if last_rows else "")
+        + _section(4, "Methodology", "neutral", "",
+            _dr("Threshold", "5+ of 11 signals aligned", "cy")
+            + _dr("Signals", "Funding rate, OI, L/S ratio, RSI, MACD, taker flow, liquidations", "")
+            + _dr("Verify", "api.octodamus.com/api/calls", "cy"))
+        + _footer("Oracle Call System", RESULTS_URL))
+
+
+def _render_polymarket_alpha(data):
+    balance  = data.get("balance", 500.0)
+    pnl      = data.get("pnl", 0.0)
+    wins     = data.get("wins", 0)
+    losses   = data.get("losses", 0)
+    rate     = data.get("win_rate")
+    plays    = data.get("positions", [])
+    rate_str = f"{rate}%" if rate is not None else "N/A"
+    pnl_c    = "up" if pnl >= 0 else "dn"
+    pnl_str  = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+
+    stats = ('<div class="stats">'
+        + f'<div class="stat"><div class="stat-v cy">${balance:.0f}</div><div class="stat-l">BALANCE</div></div>'
+        + f'<div class="stat"><div class="stat-v {pnl_c}">{pnl_str}</div><div class="stat-l">P&L</div></div>'
+        + f'<div class="stat"><div class="stat-v up">{wins}W/{losses}L</div><div class="stat-l">RECORD</div></div>'
+        + '</div>')
+
+    play_rows = ""
+    for p in plays:
+        side = p.get("side", "")
+        sc   = "up" if side == "YES" else "dn"
+        ev   = p.get("ev")
+        ev_s = f"{ev:+.1%}" if ev is not None else "N/A"
+        conf = p.get("confidence", "")
+        play_rows += _dr(
+            p.get("question", "")[:60] + ("..." if len(p.get("question","")) > 60 else ""),
+            f'{side} @ {p.get("entry_price","?")} · EV: {ev_s} · {conf}', sc)
+    if not play_rows:
+        play_rows = _dr("Positions", "No open positions at this time.", "cy")
+
+    h = _rpt_head("POLYMARKET ALPHA REPORT", "OCTOBOTO — AI PREDICTION MARKET ENGINE", "2.00 USDC",
+                  "up" if pnl >= 0 else "dn", "PAPER MODE")
+    return (h
+        + _section(1, "Portfolio Summary", "neutral", "", stats)
+        + _section(2, "Open Positions", "cy", f"{len(plays)} POSITIONS", play_rows)
+        + _section(3, "Methodology", "neutral", "",
+            _dr("Entry Gate", "EV > 7%, Kelly sizing, AI probability vs market price", "cy")
+            + _dr("AI Model", "Claude Sonnet — probability estimation with web search", "")
+            + _dr("Mode", "Paper trading — real money after 50+ trades, Sharpe > 1.0", "cy"))
+        + _footer("OctoBoto Polymarket Engine", RESULTS_URL))
+
+
+def _render_conviction_score(data):
+    scores = data.get("scores", {})
+    scale  = data.get("scale", "")
+
+    score_rows = ""
+    for asset, d in scores.items():
+        score = d.get("score", 50)
+        bias  = d.get("bias", "NEUTRAL")
+        sc    = "up" if bias == "BULLISH" else "dn" if bias == "BEARISH" else "cy"
+        od    = d.get("open_direction", "")
+        rec   = d.get("record", "")
+        bar_w = score
+        bar_c = "#00ff88" if bias == "BULLISH" else "#ff4d6d" if bias == "BEARISH" else "#00d4ff"
+        score_rows += (
+            f'<div class="dr" style="flex-direction:column;align-items:flex-start;gap:6px;padding:10px 14px;border-bottom:1px solid var(--border)">'
+            f'<div style="display:flex;justify-content:space-between;width:100%">'
+            f'<span class="dr-l">{asset}</span>'
+            f'<span class="dr-v {sc}">{score}/100 — {bias}</span></div>'
+            f'<div style="width:100%;height:4px;background:var(--border);border-radius:2px">'
+            f'<div style="width:{bar_w}%;height:4px;background:{bar_c};border-radius:2px"></div></div>'
+            f'<div style="font-size:9px;color:var(--text2)">Record: {rec} · Open: {od or "none"}</div>'
+            f'</div>')
+
+    if not score_rows:
+        score_rows = _dr("Status", "No call history yet — scores will populate as Oracle calls are made.", "cy")
+
+    h = _rpt_head("CONVICTION SCORE REPORT", "OCTODAMUS PER-ASSET BULL/BEAR SCORE", "1.00 USDC", "neutral", "COMPOSITE")
+    return (h
+        + _section(1, "Asset Conviction Scores", "neutral", "", score_rows)
+        + _section(2, "Scale", "neutral", "",
+            _dr("0-39", "BEARISH bias", "dn")
+            + _dr("40-60", "NEUTRAL — no strong conviction", "cy")
+            + _dr("61-100", "BULLISH bias", "up")
+            + _dr("Note", scale, ""))
+        + _section(3, "Methodology", "neutral", "",
+            _dr("Base score", "Win rate on resolved Oracle calls per asset", "cy")
+            + _dr("Tilt", "+10 if open call is UP, -10 if DOWN", "")
+            + _dr("Verify", "api.octodamus.com/api/calls", "cy"))
+        + _footer("Oracle Conviction Engine", RESULTS_URL))
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 
 def render_html(data: dict, logo_data_uri: str = "") -> str:
     t = data.get("type","")
-    if t == "market_signal":   body = _render_market_signal(data)
-    elif t == "fear_greed":    body = _render_fear_greed(data)
+    if t == "market_signal":      body = _render_market_signal(data)
+    elif t == "fear_greed":       body = _render_fear_greed(data)
     elif t == "bitcoin_analysis": body = _render_bitcoin(data)
-    elif t == "congressional": body = _render_congressional(data)
+    elif t == "congressional":    body = _render_congressional(data)
+    elif t == "signal_pack":      body = _render_signal_pack(data)
+    elif t == "polymarket_alpha": body = _render_polymarket_alpha(data)
+    elif t == "conviction_score": body = _render_conviction_score(data)
     else: body = f'<div style="padding:20px;font-family:monospace;color:#ff4d6d">Unknown type: {t}</div>'
     return _wrap(body)
 

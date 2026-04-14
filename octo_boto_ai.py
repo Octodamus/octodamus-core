@@ -76,7 +76,7 @@ def _cached_tv_brief() -> str:
 
 # ─── Octodamus Signal Feed ─────────────────────────────────────────────────────
 
-def _get_octodamus_signal_context(question: str) -> str:
+def _get_octodamus_signal_context(question: str) -> tuple[str, str]:
     """
     Pull live directional signal from the Octodamus 11-signal engine.
     Only runs for crypto/macro questions where Octodamus has data edge.
@@ -96,7 +96,7 @@ def _get_octodamus_signal_context(question: str) -> str:
         asset = "MACRO"
 
     if asset is None:
-        return ""
+        return "", "NEUTRAL"
 
     try:
         import sys, os
@@ -139,7 +139,7 @@ def _get_octodamus_signal_context(question: str) -> str:
                 pass
 
         if not price:
-            return ""
+            return "", "NEUTRAL"
 
         fng = 50
         try:
@@ -175,7 +175,7 @@ def _get_octodamus_signal_context(question: str) -> str:
             if tv_brief:
                 tv_section = f"\n\nTRADINGVIEW CHART DATA (4H live):\n{tv_brief}"
 
-        return (
+        ctx_str = (
             f"\n\nOCTODAMUS SIGNAL ENGINE ({pull_asset} @ ${price:,.0f}):\n"
             f"  11-signal consensus: {direction}\n"
             f"  24h change: {chg_24h:+.1f}%\n"
@@ -186,9 +186,10 @@ def _get_octodamus_signal_context(question: str) -> str:
             f"NOTE: Octodamus signal is your PRIMARY directional prior. "
             f"Only override it with very strong contrary evidence."
         )
+        return ctx_str, direction
 
     except Exception:
-        return ""
+        return "", "NEUTRAL"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 MODEL      = "claude-sonnet-4-6"
@@ -357,6 +358,7 @@ def estimate(
             if time.time() - ts < CACHE_TTL:
                 cached = dict(result)
                 cached["cached"] = True
+                cached.setdefault("octo_direction", "NEUTRAL")
                 return cached
 
     # 2. Build prompt
@@ -365,7 +367,7 @@ def estimate(
     futures_context = _get_crypto_context(question)
     futures_section = f"\n\nFUTURES INTELLIGENCE (use this data to inform your estimate):\n{futures_context}" if futures_context else ""
     # Fetch Octodamus 11-signal directional context (primary prior for crypto/macro)
-    octo_signal = _get_octodamus_signal_context(question)
+    octo_signal, octo_direction = _get_octodamus_signal_context(question)
     ob_section       = orderbook_ctx_str if orderbook_ctx_str else ""
     consensus_section = get_consensus_context(question)
 
@@ -413,17 +415,23 @@ TASK: Determine if the market is mispriced. Form your estimate from signals alon
 
 STEP 1 — SEARCH: Find recent relevant news, data, polls, or expert estimates.
 STEP 2 — BASE RATE: Historical base rate for this event type — before looking at market price.
-STEP 3 — INDEPENDENT ESTIMATE: Your raw probability based on steps 1-2 and the signal data above.
-         Lock this number before proceeding to Step 4.
-STEP 4 — COMPARE TO MARKET: Current crowd price is {market_price:.1%}.
+STEP 3 — FACTOR DECOMPOSITION (superforecaster method):
+         List the 3-5 key factors that most determine whether this resolves YES or NO.
+         For each factor: direction (pushes YES or NO), strength of evidence (strong/weak/absent).
+         Example factors: recent polling trend, time remaining, historical base rate for this type,
+         key upcoming events, counter-evidence the crowd may be ignoring.
+         Weigh them against each other. This is your analytical foundation — not narratives.
+STEP 4 — INDEPENDENT ESTIMATE: Synthesise steps 1-3 into a single probability.
+         Lock this number before proceeding to Step 5.
+STEP 5 — COMPARE TO MARKET: Current crowd price is {market_price:.1%}.
          Edge = |your_estimate - {market_price:.1%}|. Required: > {min_ev:.0%}.
          If edge < {min_ev:.0%}, return NONE — noise threshold not cleared.
-STEP 5 — CATEGORY CHECK: If this market's category has payout_ratio < 1.5 above, return NONE.
+STEP 6 — CATEGORY CHECK: If this market's category has payout_ratio < 1.5 above, return NONE.
 
 Edge threshold: {min_ev:.0%} minimum (if |estimate - {market_price:.1%}| < {min_ev:.0%}: NONE)
 
 OUTPUT: Respond ONLY with valid JSON, no markdown, no prose:
-{{"probability": 0.XX, "confidence": "high|medium|low", "edge": "YES_BUY|NO_BUY|NONE", "reasoning": "2-3 sentences citing specific evidence"}}
+{{"probability": 0.XX, "confidence": "high|medium|low", "edge": "YES_BUY|NO_BUY|NONE", "reasoning": "2-3 sentences citing the top factors and specific evidence"}}
 
 Confidence guide:
 - high: found recent concrete data (poll %, official statement, clear track record)
@@ -475,8 +483,9 @@ Confidence guide:
                     text += block.text
 
         result = _parse(text, market_price)
-        result["ai_used"] = True
-        result["cached"]  = False
+        result["ai_used"]       = True
+        result["cached"]        = False
+        result["octo_direction"] = octo_direction  # e.g. "STRONG UP", "DOWN", "NEUTRAL"
 
         # Cache result
         with _cache_lock:
@@ -510,25 +519,55 @@ def batch_estimate(
 
     Returns list of opportunity dicts sorted by composite_score desc.
     """
-    # Pre-filter
-    candidates = []
-    for m in markets:
-        if not is_valid_market(m):
-            continue
-        price = m.get("yes_price", 0.5)
+    # Pre-filter then PRE-SORT before selecting top N.
+    # Previous code took the first 15 valid markets in API order — now we rank first.
+    DOMAIN_KEYWORDS = {
+        "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "crypto",
+        "fed", "rate", "inflation", "cpi", "gdp", "recession", "macro",
+        "oil", "gold", "dollar", "dxy", "tariff", "treasury",
+    }
 
-        # Only consider markets where price is NOT near certainty
-        # AND there's meaningful 24h trading activity
-        if not (0.05 < price < 0.95):
-            continue
+    def _pre_score(m: dict) -> float:
+        """Composite pre-score for market selection priority.
+        Higher = more likely to have real edge. Used to rank before AI call.
+        """
+        price   = m.get("yes_price", 0.5)
+        vlr     = m.get("vol_liq_ratio", 0.0)
+        vel     = abs(m.get("_velocity_pct", 0.0))
+        dtc     = m.get("days_to_close", 30)
+        q       = (m.get("question") or "").lower()
 
-        # Prefer active markets — vol/liq ratio > 0.05 (5% daily turnover)
-        if m.get("vol_liq_ratio", 0) < 0.03:
-            continue
+        # Price distance from certainty — markets near 50% have most edge potential
+        price_score = 1.0 - abs(price - 0.5) * 2   # 1.0 at 50c, 0.0 at 0c or 100c
 
-        candidates.append(m)
-        if len(candidates) >= max_markets:
-            break
+        # Active price discovery (daily turnover ratio, capped at 1.0)
+        vlr_score = min(vlr / 0.2, 1.0)
+
+        # Velocity bonus — price moved recently = fresh info entered
+        vel_score = min(vel / 10.0, 1.0)
+
+        # Time window: sweet spot 3-45 days. Too soon or too far penalised.
+        if dtc < 1:
+            time_score = 0.0
+        elif dtc <= 45:
+            time_score = 1.0 - max(0, dtc - 45) / 45
+        else:
+            time_score = max(0.0, 1.0 - (dtc - 45) / 60)
+
+        # Domain relevance boost — Octodamus has stronger signals here
+        domain_score = 0.2 if any(kw in q for kw in DOMAIN_KEYWORDS) else 0.0
+
+        return (price_score * 0.30 + vlr_score * 0.30 +
+                vel_score * 0.20 + time_score * 0.15 + domain_score)
+
+    passable = [
+        m for m in markets
+        if is_valid_market(m)
+        and (0.05 < m.get("yes_price", 0.5) < 0.95)
+        and m.get("vol_liq_ratio", 0) >= 0.03
+    ]
+    passable.sort(key=_pre_score, reverse=True)
+    candidates = passable[:max_markets]
 
     if not candidates:
         return []
@@ -652,12 +691,13 @@ def _parse(text: str, fallback_price: float) -> dict:
 
 def _fallback(market_price: float, reason: str = "") -> dict:
     return {
-        "probability": market_price,
-        "confidence":  "low",
-        "edge":        "NONE",
-        "reasoning":   f"AI unavailable — defaulting to market price. ({reason})",
-        "ai_used":     False,
-        "cached":      False,
+        "probability":   market_price,
+        "confidence":    "low",
+        "edge":          "NONE",
+        "reasoning":     f"AI unavailable — defaulting to market price. ({reason})",
+        "ai_used":       False,
+        "cached":        False,
+        "octo_direction": "NEUTRAL",
     }
 
 

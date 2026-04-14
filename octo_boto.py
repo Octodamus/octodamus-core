@@ -63,12 +63,13 @@ except ImportError:
     def enrich_markets_with_orderbook(markets, **kw): return markets
 
 try:
-    from octo_boto_consensus import gpt_second_opinion, consensus_str
+    from octo_boto_consensus import gpt_second_opinion, consensus_str, kalshi_confirms_edge
     _CONSENSUS_AVAILABLE = True
 except ImportError:
     _CONSENSUS_AVAILABLE = False
     def gpt_second_opinion(*a, **kw): return None
     def consensus_str(*a, **kw): return ""
+    def kalshi_confirms_edge(*a, **kw): return {"confirmed": False, "contradicts": False, "kalshi_p": None, "gap": 0.0, "note": ""}
 
 try:
     from octo_boto_calibration import record_estimate, record_outcome
@@ -162,7 +163,7 @@ log = logging.getLogger("OctoBoto")
 AUTO_SCAN_INTERVAL = 4 * 60 * 60  # 4 hours between auto scans
 SCAN_LIMIT     = 150    # Markets to fetch per scan (paginated)
 AI_BATCH_LIMIT   = 15     # Max markets sent to AI per scan
-AUTO_MIN_EV    = 0.12    # Stricter 7% threshold in auto mode
+AUTO_MIN_EV    = 0.15    # Matches TRIPLE_LOCK_MIN_EV — no point estimating below entry floor
 AUTO_MAX_ENTER   = 3
 MAX_TRADES_PER_WEEK = 999     # Hard cap — quality over quantity
      # Max new positions per auto-scan
@@ -334,6 +335,68 @@ def is_drawdown_pause_active() -> tuple:
     except Exception:
         pass
     return False, ""
+
+
+# ─── Triple-Lock Entry Gate ───────────────────────────────────────────────────
+
+TRIPLE_LOCK_MIN_EV        = 0.15   # Must clear 15% EV (up from 12% scan floor)
+TRIPLE_LOCK_MAX_DAYS      = 21     # Only enter markets resolving within 21 days
+_CRYPTO_MARKET_KEYWORDS   = [
+    "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
+    "crypto", "binance", "coinbase", "bnb", "xrp", "doge",
+]
+
+def _is_crypto_market(question: str) -> bool:
+    q = question.lower()
+    return any(k in q for k in _CRYPTO_MARKET_KEYWORDS)
+
+
+def _octo_signal_conflicts(question: str, trade_side: str, octo_direction: str) -> str:
+    """
+    Returns a non-empty block reason if the Octodamus signal conflicts with
+    the proposed trade direction. Only applies to crypto markets.
+
+    trade_side:     "YES" or "NO"
+    octo_direction: "STRONG UP", "UP", "STRONG DOWN", "DOWN", "NEUTRAL"
+
+    A YES trade on a bullish price milestone conflicts with a DOWN signal.
+    A NO trade on a bullish price milestone conflicts with an UP signal.
+    """
+    if not _is_crypto_market(question):
+        return ""
+    if octo_direction in ("", "NEUTRAL"):
+        return ""
+
+    bearish = octo_direction in ("DOWN", "STRONG DOWN")
+    bullish = octo_direction in ("UP", "STRONG UP")
+
+    q = question.lower()
+    # Detect bullish price milestone questions (e.g. "will BTC hit $100k?")
+    bullish_framing = any(k in q for k in [
+        "above", "exceed", "hit", "reach", "surpass", "over", "break",
+        "all-time high", "ath", "new high",
+    ])
+    bearish_framing = any(k in q for k in [
+        "below", "under", "drop", "fall", "crash", "lose",
+    ])
+
+    if bullish_framing:
+        # YES = bullish outcome — conflicts with bearish signal
+        if trade_side == "YES" and bearish:
+            return f"Octodamus signal {octo_direction} conflicts with YES on bullish milestone"
+        # NO = bearish outcome on bullish question — conflicts with bullish signal
+        if trade_side == "NO" and bullish:
+            return f"Octodamus signal {octo_direction} conflicts with NO on bullish milestone"
+
+    if bearish_framing:
+        # YES = bearish outcome — conflicts with bullish signal
+        if trade_side == "YES" and bullish:
+            return f"Octodamus signal {octo_direction} conflicts with YES on bearish milestone"
+        # NO = bullish outcome — conflicts with bearish signal
+        if trade_side == "NO" and bearish:
+            return f"Octodamus signal {octo_direction} conflicts with NO on bearish milestone"
+
+    return ""
 
 
 # ─── Format Helpers ───────────────────────────────────────────────────────────
@@ -544,11 +607,17 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
       gpt_result = None
       if i <= 3 and OPENAI_KEY and _CONSENSUS_AVAILABLE:
         gpt_result = gpt_second_opinion(m["question"], m["yes_price"], OPENAI_KEY)
-        # If models strongly disagree (>15% gap), demote to display-only
         if gpt_result:
           gap = abs(ai["probability"] - gpt_result.get("probability", ai["probability"]))
-          if gap > 0.15:
+          if gap > 0.10:
             gpt_result["_disagree"] = True
+
+      # Kalshi cross-check — highest-authority external signal
+      kalshi_check = None
+      if _CONSENSUS_AVAILABLE:
+        kalshi_check = kalshi_confirms_edge(
+          m["question"], trade["side"], m["yes_price"], min_gap=0.06
+        )
 
       # Build display with freshness tag and resolution risk note
       opp_text = fmt_opportunity(m, trade, ai, i, score)
@@ -560,6 +629,9 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         opp_text += f"\n  Resolution risk: {risk:.0%} — criteria somewhat ambiguous"
       if gpt_result:
         opp_text += consensus_str(ai["probability"], gpt_result)
+      if kalshi_check and kalshi_check.get("kalshi_p") is not None:
+        k_icon = "✅" if kalshi_check["confirmed"] else ("🚫" if kalshi_check["contradicts"] else "➡️")
+        opp_text += f"\n  {k_icon} Kalshi: {kalshi_check['kalshi_p']:.0%} ({kalshi_check['note'][:80]})"
 
       await update.message.reply_text(
         opp_text,
@@ -585,62 +657,114 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         continue
 
-      # GPT disagreement gate — skip entry if models strongly disagree
+      # GPT disagreement gate — skip entry if models disagree by >10% (triple-lock)
       if gpt_result and gpt_result.get("_disagree"):
         await update.message.reply_text(
-          f"⏭️ Skipping #{i} — Claude/GPT disagree by >{15}%. Not entering.",
+          f"⏭️ Skipping #{i} — Claude/GPT disagree by >10%. Not entering.",
           parse_mode=ParseMode.MARKDOWN
         )
         continue
 
-      if (
-        not _dd_paused
-        and ai.get("confidence") in MIN_CONF_AUTO
-        and trade["ev"] >= MIN_EV_THRESHOLD
-        and not TRACKER.has_position(m["id"])
-      ):
-        side = trade["side"]
-        ep  = m["yes_price"] if side == "YES" else (1.0 - m["yes_price"])
-        size = position_size(TRACKER.balance(), trade["kelly"])
-
-        pos = TRACKER.open_position(
-          market_id=m["id"], question=m["question"], side=side,
-          size=size, entry_price=ep, true_p=ai["probability"],
-          ev=trade["ev"], kelly_frac=trade["kelly"],
-          confidence=ai["confidence"], reasoning=ai["reasoning"],
-          score=score, url=m.get("url", "")
+      # ── Session guard — halt if daily loss limit or losing streak hit ──
+      guard = TRACKER.session_guard(max_daily_loss=30.0, max_consecutive_losses=3)
+      if guard["blocked"]:
+        await update.message.reply_text(
+          f"🛑 *Session guard active* — {guard['reason']}\n"
+          f"Daily P&L: `${guard['daily_pnl']:+.2f}` | Streak: `{guard['consecutive_losses']} losses`\n"
+          f"No new positions until tomorrow.",
+          parse_mode=ParseMode.MARKDOWN
         )
+        break
 
-        if pos:
-          entered += 1
-          on_position_opened(pos)
-          # Record for calibration tracking (#10)
-          record_estimate(
-            market_id=m["id"], question=m["question"],
-            claude_p=ai["probability"], market_price=m["yes_price"],
-            confidence=ai["confidence"], side=side,
+      # ── Triple-lock gate ─────────────────────────────────────────────────
+      _tl_skip = ""
+      if _dd_paused:
+        _tl_skip = "drawdown pause active"
+      elif ai.get("confidence") not in MIN_CONF_AUTO:
+        _tl_skip = f"confidence too low ({ai.get('confidence')})"
+      elif trade["ev"] < TRIPLE_LOCK_MIN_EV:
+        _tl_skip = f"EV {trade['ev']:+.1%} < {TRIPLE_LOCK_MIN_EV:.0%} triple-lock floor"
+      elif TRACKER.has_position(m["id"]):
+        _tl_skip = "duplicate position"
+      else:
+        dtc = m.get("days_to_close")
+        if dtc is not None and dtc > TRIPLE_LOCK_MAX_DAYS:
+          _tl_skip = f"resolves in {dtc}d > {TRIPLE_LOCK_MAX_DAYS}d limit"
+        elif kalshi_check and kalshi_check.get("contradicts") and kalshi_check.get("gap", 0) >= 0.10:
+          _tl_skip = f"Kalshi contradicts — {kalshi_check['note']}"
+        else:
+          _signal_conflict = _octo_signal_conflicts(
+            m.get("question", ""), trade["side"],
+            ai.get("octo_direction", "NEUTRAL"),
           )
-          # CLOB execution — place real order if live
-          clob_result = None
-          if _CLOB_AVAILABLE and is_live():
-            tokens = get_token_ids(m.get("conditionId", m["id"]))
-            token_id = tokens["yes"] if side == "YES" else tokens["no"]
-            if token_id:
+          if _signal_conflict:
+            _tl_skip = _signal_conflict
+
+      if _tl_skip:
+        await update.message.reply_text(
+          f"⛔ Skipping #{i} — {_tl_skip}",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
+
+      # Triple-lock passed — open position
+      side = trade["side"]
+      ep  = m["yes_price"] if side == "YES" else (1.0 - m["yes_price"])
+      size = position_size(TRACKER.balance(), trade["kelly"])
+
+      pos = TRACKER.open_position(
+        market_id=m["id"], question=m["question"], side=side,
+        size=size, entry_price=ep, true_p=ai["probability"],
+        ev=trade["ev"], kelly_frac=trade["kelly"],
+        confidence=ai["confidence"], reasoning=ai["reasoning"],
+        score=score, url=m.get("url", "")
+      )
+
+      if pos:
+        entered += 1
+        on_position_opened(pos)
+        # Record for calibration tracking (#10)
+        record_estimate(
+          market_id=m["id"], question=m["question"],
+          claude_p=ai["probability"], market_price=m["yes_price"],
+          confidence=ai["confidence"], side=side,
+        )
+        # CLOB execution — place real order if live
+        clob_result = None
+        if _CLOB_AVAILABLE and is_live():
+          tokens = get_token_ids(m.get("conditionId", m["id"]))
+          token_id = tokens["yes"] if side == "YES" else tokens["no"]
+          if token_id:
+            # ── Orderbook liquidity check before executing ──────────────
+            from octo_boto_clob import check_orderbook_liquidity
+            liq = check_orderbook_liquidity(token_id, ep, min_usdc=size)
+            if not liq["sufficient"]:
+              log.warning(
+                f"[OctoBoto] Thin orderbook for {m['question'][:50]} — "
+                f"only ${liq['available_usdc']:.2f} available at {ep:.3f}, need ${size:.2f}. Skipping CLOB order."
+              )
+              clob_result = {
+                "order_id": "SKIPPED-thin-book",
+                "status": "skipped",
+                "live": False,
+                "reason": f"insufficient liquidity (${liq['available_usdc']:.2f} < ${size:.2f})",
+              }
+            else:
               clob_result = place_order(
                 token_id=token_id, side="BUY",
                 price=ep, amount_usdc=size,
                 market_question=m["question"],
               )
-          mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
-          order_note = f"\nOrder: `{clob_result['order_id']}`" if clob_result and clob_result.get("order_id") else ""
-          await update.message.reply_text(
-            f"📥 *{mode_label} position opened #{entered}*\n"
-            f"Side: *{side}* | Size: `${size:.2f}` | @ `{ep:.3f}`\n"
-            f"Kelly: `{trade['kelly']:.1%}` | EV: `{trade['ev']:+.1%}` | Score: `{score:.3f}`\n"
-            f"Sector: *{sector}*{order_note}",
-            parse_mode=ParseMode.MARKDOWN
-          )
-          if upgrade_alerts:
+        mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
+        order_note = f"\nOrder: `{clob_result['order_id']}`" if clob_result and clob_result.get("order_id") else ""
+        await update.message.reply_text(
+          f"📥 *{mode_label} position opened #{entered}*\n"
+          f"Side: *{side}* | Size: `${size:.2f}` | @ `{ep:.3f}`\n"
+          f"Kelly: `{trade['kelly']:.1%}` | EV: `{trade['ev']:+.1%}` | Score: `{score:.3f}`\n"
+          f"Sector: *{sector}*{order_note}",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        if upgrade_alerts:
             await upgrade_alerts.trade_opened(pos, TRACKER.balance())
 
     s = TRACKER.pnl_summary()
@@ -1541,7 +1665,8 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
 
   # Weekly trade cap
   from datetime import datetime, timezone, timedelta
-  week_start = datetime.now(timezone.utc) - timedelta(days=datetime.now(timezone.utc).weekday())
+  _now = datetime.now(timezone.utc)
+  week_start = _now - timedelta(days=_now.weekday())
   week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
   trades_this_week = sum(
     1 for t in TRACKER._data.get("closed", TRACKER._data.get("closed_trades", []))
@@ -1579,6 +1704,7 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
         side = next((p.get("side") for p in open_pos if p["market_id"] == mid), "YES")
         resolution = "YES" if (side == "YES" and current_yes > 0.5) else "NO"
         closed_list = TRACKER.close_position(mid, resolution)
+        record_outcome(mid, resolved_yes=(resolution == "YES"))
         for closed in closed_list:
           clear_trail(mid)
           await ctx.bot.send_message(
@@ -1601,7 +1727,27 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
         vel = _compute_velocity(m["id"], float(m.get("yes_price", 0.5)))
         m["_velocity_pct"] = vel
     valid  = enrich_markets_with_orderbook(valid, max_markets=AI_BATCH_LIMIT * 2)
-    opps  = batch_estimate(valid, ANTHROPIC_KEY, max_markets=AI_BATCH_LIMIT, min_ev=AUTO_MIN_EV)
+    opps  = batch_estimate(valid, ANTHROPIC_KEY, max_markets=AI_BATCH_LIMIT, min_ev=TRIPLE_LOCK_MIN_EV)
+
+    # Reflection critic pass — filter weak signals before entry (same as manual scan)
+    opps = apply_reflection_to_batch(opps, ANTHROPIC_KEY, max_reflect=3)
+
+    # Kill switch — hard halt if triggered
+    _ks_hit, _ks_reason = check_kill_switch_sync(TRACKER.balance())
+    if _ks_hit:
+      log.warning(f"[AutoScan] Kill switch active — {_ks_reason} — skipping all entries")
+      return
+
+    # Session guard — daily loss or losing streak
+    _sg = TRACKER.session_guard(max_daily_loss=30.0, max_consecutive_losses=3)
+    if _sg["blocked"]:
+      log.warning(f"[AutoScan] Session guard — {_sg['reason']} — skipping all entries")
+      await ctx.bot.send_message(
+        chat_id,
+        f"🛑 *Auto-scan session guard* — {_sg['reason']}\nNo entries until tomorrow.",
+        parse_mode=ParseMode.MARKDOWN
+      )
+      return
 
     # Soft drawdown pause — skip entries if -15% from peak
     _dd_paused, _dd_reason = is_drawdown_pause_active()
@@ -1612,13 +1758,35 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
     for opp in opps[:AUTO_MAX_ENTER]:
       m, ai, trade, score = opp["market"], opp["ai"], opp["trade"], opp["score"]
 
-      if ai.get("confidence") not in MIN_CONF_AUTO:
-        continue
-      if trade["ev"] < AUTO_MIN_EV:
-        continue
-      if TRACKER.has_position(m["id"]):
-        continue
+      # ── Triple-lock gate (auto-scan) ────────────────────────────────────
+      _tl_skip = ""
       if _dd_paused:
+        _tl_skip = "drawdown pause"
+      elif ai.get("confidence") not in MIN_CONF_AUTO:
+        _tl_skip = f"confidence {ai.get('confidence')}"
+      elif trade["ev"] < TRIPLE_LOCK_MIN_EV:
+        _tl_skip = f"EV {trade['ev']:+.1%} < {TRIPLE_LOCK_MIN_EV:.0%}"
+      elif TRACKER.has_position(m["id"]):
+        _tl_skip = "duplicate"
+      else:
+        dtc = m.get("days_to_close")
+        if dtc is not None and dtc > TRIPLE_LOCK_MAX_DAYS:
+          _tl_skip = f"resolves in {dtc}d"
+        else:
+          # Kalshi contradiction check — hard block if Kalshi disagrees by ≥10%
+          _kc = kalshi_confirms_edge(m.get("question", ""), trade["side"], m["yes_price"], min_gap=0.06)
+          if _kc.get("contradicts") and _kc.get("gap", 0) >= 0.10:
+            _tl_skip = f"Kalshi contradicts — {_kc['note']}"
+          else:
+            _sc = _octo_signal_conflicts(
+              m.get("question", ""), trade["side"],
+              ai.get("octo_direction", "NEUTRAL"),
+            )
+            if _sc:
+              _tl_skip = _sc
+
+      if _tl_skip:
+        log.info(f"[AutoScan] Skipping — {_tl_skip} | {m.get('question', '')[:60]}")
         continue
 
       # Sector correlation gate
@@ -1653,11 +1821,24 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
           tokens = get_token_ids(m.get("conditionId", m["id"]))
           token_id = tokens["yes"] if side == "YES" else tokens["no"]
           if token_id:
-            clob_result = place_order(
-              token_id=token_id, side="BUY",
-              price=ep, amount_usdc=size,
-              market_question=m["question"],
-            )
+            from octo_boto_clob import check_orderbook_liquidity
+            liq = check_orderbook_liquidity(token_id, ep, min_usdc=size)
+            if not liq["sufficient"]:
+              log.warning(
+                f"[AutoScan] Thin orderbook for {m['question'][:50]} — "
+                f"only ${liq['available_usdc']:.2f} at {ep:.3f}, need ${size:.2f}. Skipping."
+              )
+              clob_result = {
+                "order_id": "SKIPPED-thin-book",
+                "status": "skipped",
+                "live": False,
+              }
+            else:
+              clob_result = place_order(
+                token_id=token_id, side="BUY",
+                price=ep, amount_usdc=size,
+                market_question=m["question"],
+              )
         mode_label = "🟢 LIVE" if (clob_result and clob_result.get("live")) else "📋 Paper"
         order_note = f"\nOrder: `{clob_result['order_id']}`" if clob_result and clob_result.get("order_id") else ""
         await ctx.bot.send_message(

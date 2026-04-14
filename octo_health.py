@@ -27,27 +27,33 @@ QUEUE_FILE  = PROJECT_DIR / "octo_post_queue.json"
 ACP_SCRIPT  = "/home/walli/octodamus/start_acp.sh"
 
 EXPECTED_TASKS = [
+  # Posting schedule
   "Octodamus-DailyRead",
-  "Octodamus-DailyRead-1pm",
+  "Octodamus-DailyRead-7pm",
   "Octodamus-Monitor-7am",
-  "Octodamus-Monitor-115pm",
-  "Octodamus-Monitor-6pm",
-  "Octodamus-Journal",
+  "Octodamus-Monitor-4pm",
+  "Octodamus-Thread-Mon",
+  "Octodamus-Thread-Wed",
+  "Octodamus-Format-12pm",
+  # Weekly
   "Octodamus-Wisdom",
-  "Octodamus-DeepDive-Mon",
-  "Octodamus-DeepDive-Wed",
+  "Octodamus-Soul",
+  "Octodamus-StrategySunday",
+  # Daily background
+  "Octodamus-StrategyMonitor",
+  "Octodamus-QRT-Scan",
   "Octodamus-Congress",
-  "Octodamus-Scorecard",
   "Octodamus-AutoResolve",
-  "Octodamus-Engage-8pm",
-  "Octodamus-Engage-3pm",
-  "Octodamus-Engage-4pm",
-  "Octodamus-Engage-8pm",
+  "Octodamus-BotoResolve",
+  "Octodamus-Mentions",
+  # Infrastructure
   "Octodamus-API-Server",
   "Octodamus-ACP-Worker",
   "Octodamus-Cloudflared",
   "Octodamus-XStats",
   "Octodamus-HealthCheck",
+  "Octodamus-GDrive-Backup",
+  "Octodamus-FlightSample",
 ]
 
 # ── State — reset at start of each run ───────────────────────────────────────
@@ -111,7 +117,6 @@ def _check_python_processes():
   for filename, label in [
     ("octo_api_server", "API server"),
     ("telegram_bot",  "Telegram bot"),
-    ("octo_boto",    "OctoBoto"),
   ]:
     if filename in running:
       _ok(label)
@@ -178,6 +183,57 @@ def _restart_acp_worker() -> bool:
     return True
   else:
     _fail("ACP worker restart failed — check logs")
+    return False
+
+
+def _boto_is_running() -> bool:
+  try:
+    result = subprocess.run(
+      ["powershell", "-Command",
+       "Get-Process python* | ForEach-Object { "
+       "$id = $_.Id; "
+       "(Get-WmiObject Win32_Process -Filter \"ProcessId=$id\").CommandLine "
+       "} | Out-String"],
+      capture_output=True, text=True, timeout=20
+    )
+    return "octo_boto" in result.stdout.lower()
+  except Exception:
+    return False
+
+
+def _restart_octoboto() -> bool:
+  print(" [....] Restarting OctoBoto...")
+
+  # Kill any stale instance
+  try:
+    subprocess.run(
+      ["powershell", "-Command",
+       "Get-Process python* | ForEach-Object { "
+       "$id = $_.Id; $cmd = (Get-WmiObject Win32_Process -Filter \"ProcessId=$id\").CommandLine; "
+       "if ($cmd -like '*octo_boto*') { Stop-Process -Id $id -Force } }"],
+      capture_output=True, text=True, timeout=15
+    )
+    time.sleep(2)
+  except Exception:
+    pass
+
+  # Start fresh
+  try:
+    subprocess.Popen(
+      [r"C:\Python314\python.exe", r"C:\Users\walli\octodamus\octo_boto.py"],
+      cwd=r"C:\Users\walli\octodamus",
+      creationflags=0x00000008  # DETACHED_PROCESS
+    )
+    time.sleep(5)
+  except Exception as e:
+    _fail(f"OctoBoto restart error: {e}")
+    return False
+
+  if _boto_is_running():
+    _ok("OctoBoto restarted successfully")
+    return True
+  else:
+    _fail("OctoBoto restart failed — check logs")
     return False
 
 
@@ -276,6 +332,14 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   acp_ok = _check_acp_worker()
   if not acp_ok and auto_restart:
     _restart_acp_worker()
+
+  boto_ok = _boto_is_running()
+  if boto_ok:
+    _ok("OctoBoto")
+  else:
+    _fail("OctoBoto not running")
+    if auto_restart:
+      _restart_octoboto()
 
   _check_api_endpoints()
   _check_secrets_cache()

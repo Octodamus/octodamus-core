@@ -99,6 +99,75 @@ class GammaClient:
 
         return all_markets[:total]
 
+    def get_crypto_markets(self, min_liquidity: float = 2_000) -> list:
+        """
+        Fetch active Polymarket markets specifically about crypto price calls.
+        Searches for BTC, ETH, SOL keyword markets — these trigger Coinglass
+        futures context in the AI estimator.
+
+        Lower min_liquidity threshold than general scan (2k vs 3k) because
+        crypto markets on Polymarket tend to have less liquidity than political events.
+        Returns deduplicated list merged across all keyword searches.
+        """
+        # Search keywords — longer terms are more precise; short ones (BTC/ETH)
+        # need word-boundary matching client-side to avoid false positives.
+        SEARCH_TERMS = ["bitcoin", "ethereum", "solana", "crypto", "BTC", "ETH", "SOL"]
+
+        # Client-side confirmation — question must contain a whole-word crypto term.
+        # Use space-padded or unambiguous full words to avoid substring false positives
+        # (e.g. "eth" in "Beth", "sol" in "resolve", "bnb" in "combine").
+        CONFIRM_PATTERNS = [
+            "bitcoin", " btc ", " btc?", "$btc",
+            "ethereum", " eth ", " eth?", "$eth",
+            "solana", " sol ", " sol?", "$sol",
+            "crypto", "blockchain", "defi", "web3",
+            "coinbase", "binance", "altcoin",
+            " bnb ", "xrp", "ripple", "dogecoin", " doge ",
+            "avalanche", " avax ", "chainlink", "uniswap",
+        ]
+        seen_ids = set()
+        results = []
+
+        for keyword in SEARCH_TERMS:
+            params = {
+                "active":    "true",
+                "closed":    "false",
+                "limit":     50,
+                "order":     "volume24hr",
+                "ascending": "false",
+                "keyword":   keyword,
+            }
+            raw = self._get(f"{GAMMA_BASE}/markets", params=params)
+            if not raw:
+                continue
+
+            for m in raw:
+                mid = str(m.get("id", ""))
+                if mid in seen_ids:
+                    continue
+
+                liq = float(m.get("liquidity", 0) or 0)
+                if liq < min_liquidity:
+                    continue
+
+                summary = self._summarize(m)
+                if not summary or summary.get("yes_price") is None:
+                    continue
+
+                # Client-side filter — confirm question actually mentions crypto
+                q_lower = summary["question"].lower()
+                if not any(p in q_lower for p in CONFIRM_PATTERNS):
+                    continue
+
+                seen_ids.add(mid)
+                results.append(summary)
+
+            time.sleep(0.2)  # polite rate limit between keyword searches
+
+        # Sort by vol_liq_ratio (activity) descending
+        results.sort(key=lambda x: x.get("vol_liq_ratio", 0), reverse=True)
+        return results
+
     def get_market_by_id(self, market_id: str) -> Optional[dict]:
         """Fetch single market by Polymarket ID."""
         raw = self._get(f"{GAMMA_BASE}/markets/{market_id}")

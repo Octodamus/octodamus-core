@@ -1,0 +1,67 @@
+# Logs - never need to read these when editing code
+logs/
+*.log
+nohup.out
+
+# Data files - large JSON caches, snapshots, state files
+data/snapshots/
+data/cot_cache.json
+data/brain_index.json
+data/octo_boto_brain_index.json
+data/dashboard_metrics.json
+data/watchdog_state.json
+data/octo_mentions_state.json
+data/moonshot_state.json
+data/reports/
+
+# Trading data - read via commands, not file reads
+octo_boto_trades.json
+octo_boto_trades_v1.json
+octo_predictions.json
+octo_posted_log.json
+octo_post_queue.json
+octo_skill_log.json
+octo_engage_state.json
+octo_engage_proactive.json
+xstats.json
+backtest_results.json
+octodamus_memory.json
+
+# Secrets - never read these
+octo_extra_secrets.json
+octo_boto_wallet.json
+octo_acp_key.txt
+octo_quiver_key.txt
+octo_twitter_user_id.txt
+data/api_keys.json
+
+# Backup files - always use the live version
+*.bak
+*.bak2
+*.bak3
+*.bak4
+*.bak_*
+*.final_bak
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Charts/images - binary files
+charts/
+*.png
+octo_logo_b64.txt
+
+# HTML reports - generated output
+*.html
+test_report.html
+
+# Unrelated dirs
+__MACOSX/
+journals/
+OCTODAMUS\ MASTER\ DATA\ FILES_All\ Chats/
+
+# Keys/certs
+*.pem
+*.key

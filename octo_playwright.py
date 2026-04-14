@@ -257,24 +257,214 @@ def tv_chart_url(ticker: str = "BTC", timeframe: str = "4h") -> str:
     """Build a dark-theme TradingView chart URL."""
     sym = urllib.parse.quote(_tv_symbol(ticker), safe="")
     interval = _tv_interval(timeframe)
+    # range=3M shows ~3 months of history — matches Octodamus reference chart style
     return (
         f"https://www.tradingview.com/chart/"
         f"?symbol={sym}&interval={interval}"
-        f"&theme=dark&style=1&hide_side_toolbar=1&locale=en"
+        f"&theme=dark&style=1&hide_side_toolbar=1&hide_top_toolbar=1"
+        f"&locale=en"
     )
+
+# CSS injected into TradingView to strip all UI chrome, leaving only the chart canvas
+_TV_HIDE_CHROME_CSS = """
+    /* Top header / toolbar */
+    .chart-toolbar,
+    .header-chart-panel,
+    .tv-header,
+    [class*="topBar"],
+    [class*="header-chart"],
+    .layout__area--top { display: none !important; }
+
+    /* Right side panel (watchlist, performance) */
+    .layout__area--right,
+    .right-toolbar,
+    [class*="widgetbar"],
+    [class*="right-toolbar"] { display: none !important; }
+
+    /* Bottom timeframe bar + navigation */
+    .layout__area--bottom,
+    .bottom-widgetbar-content,
+    [class*="bottomBar"],
+    [class*="bottom-toolbar"] { display: none !important; }
+
+    /* Left drawing tools (belt and suspenders) */
+    .layout__area--left,
+    [class*="left-toolbar"],
+    [class*="drawingToolbar"] { display: none !important; }
+
+    /* Hide any toast / snackbar / notification banners (scroll hints etc.) */
+    [class*="toast"],
+    [class*="snackbar"],
+    [class*="notification-bar"],
+    [class*="NotificationToast"],
+    [class*="notificationToast"],
+    [data-name="notification"],
+    .tv-toast { display: none !important; }
+
+    /* Make chart fill the full viewport */
+    .layout__area--center,
+    .chart-container,
+    .chart-page,
+    body, html { width: 100% !important; height: 100% !important; }
+"""
 
 
 async def chart_screenshot(ticker: str = "BTC", timeframe: str = "4h") -> bytes:
-    """Screenshot a TradingView chart. Returns PNG bytes."""
+    """
+    Screenshot a TradingView chart — chart canvas only, no UI chrome.
+    Returns PNG bytes.
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError("playwright not installed. Run: python -m playwright install chromium")
+
     url = tv_chart_url(ticker, timeframe)
     log.info(f"[OctoPlaywright] TV chart: {ticker} {timeframe}")
-    return await screenshot_url(
-        url=url,
-        wait_ms=6_000,        # TV canvas needs 5-6s to fully render
-        viewport_width=1400,
-        viewport_height=800,
-        dismiss_popups=True,
-    )
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        ctx = await browser.new_context(
+            viewport={"width": 1280, "height": 720},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        await ctx.add_init_script("""
+            try {
+                localStorage.setItem('cookiesSettings', '{"analytics":true,"advertising":true}');
+                localStorage.setItem('tv_release_channel', 'stable');
+            } catch(e) {}
+        """)
+
+        page = await ctx.new_page()
+
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30_000)
+        except Exception:
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            except Exception as e:
+                log.warning(f"[OctoPlaywright] Load warning: {e}")
+
+        # Let chart canvas render
+        await page.wait_for_timeout(5_000)
+
+        # Dismiss ALL "Got it!" / "Accept" / "Close" tooltips — loop until none left
+        for _ in range(8):
+            dismissed = False
+            for label in ["Got it!", "Got it", "Accept all", "Accept", "I Agree", "Close"]:
+                try:
+                    btns = page.get_by_role("button", name=label, exact=False)
+                    count = await btns.count()
+                    for i in range(count):
+                        await btns.nth(i).click(timeout=800)
+                        await page.wait_for_timeout(200)
+                        dismissed = True
+                except Exception:
+                    pass
+            # Also press Escape to clear any remaining overlays
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(200)
+            if not dismissed:
+                break
+
+        # Inject CSS to hide all UI chrome
+        await page.add_style_tag(content=_TV_HIDE_CHROME_CSS)
+        await page.wait_for_timeout(800)
+
+        # Scroll down over the chart to zoom out and show ~3 months of history
+        # (TradingView: scroll down = zoom out / more bars visible)
+        try:
+            await page.mouse.move(600, 350)
+            await page.wait_for_timeout(200)
+            for _ in range(8):
+                await page.mouse.wheel(0, 200)
+                await page.wait_for_timeout(80)
+            await page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        # Dismiss any scroll-triggered tooltips ("Press and hold Ctrl...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+        # JS sweep — find Ctrl/zoom notification by text, walk up to full container
+        try:
+            await page.evaluate("""
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT, null
+                );
+                let node;
+                while ((node = walker.nextNode())) {
+                    if (node.textContent.includes('Ctrl') &&
+                        node.textContent.toLowerCase().includes('zoom')) {
+                        let el = node.parentElement;
+                        // Walk up until we find a fixed/absolute positioned container
+                        // (the full toast wrapper) rather than just the text span
+                        for (let i = 0; i < 15 && el && el !== document.body; i++) {
+                            const style = window.getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+                            if (style.position === 'fixed' || style.position === 'absolute') {
+                                el.style.display = 'none';
+                                break;
+                            }
+                            // Fallback: large enough to be the whole toast
+                            if (r.width > 300 && r.height > 40) {
+                                el.style.display = 'none';
+                                break;
+                            }
+                            el = el.parentElement;
+                        }
+                    }
+                }
+            """)
+        except Exception:
+            pass
+
+        # Move mouse fully off the chart to clear crosshair + hover markers
+        await page.mouse.move(5, 5)
+        await page.wait_for_timeout(800)
+
+        # Try to screenshot just the chart canvas element
+        chart_selectors = [
+            ".chart-container",
+            ".layout__area--center",
+            "[class*='chart-container']",
+            "canvas",
+        ]
+        img_bytes = None
+        for sel in chart_selectors:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0:
+                    box = await el.bounding_box()
+                    if box and box["width"] > 400 and box["height"] > 300:
+                        img_bytes = await page.screenshot(
+                            type="png",
+                            clip={
+                                "x": box["x"],
+                                "y": box["y"],
+                                "width": box["width"],
+                                "height": box["height"],
+                            },
+                        )
+                        log.info(f"[OctoPlaywright] Clipped to {sel}: {box['width']:.0f}x{box['height']:.0f}")
+                        break
+            except Exception:
+                pass
+
+        # Fallback: full viewport if no element matched
+        if not img_bytes:
+            log.warning("[OctoPlaywright] Element clip failed — falling back to viewport screenshot")
+            img_bytes = await page.screenshot(type="png")
+
+        await browser.close()
+        log.info(f"[OctoPlaywright] {ticker} {timeframe} -> {len(img_bytes) // 1024}KB")
+        return img_bytes
 
 
 async def chart_and_analyze(

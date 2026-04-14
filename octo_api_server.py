@@ -1349,6 +1349,135 @@ def get_resolved_calls():
 
 
 
+# ── Octo Distro Media -- Free Tools + Newsletter Subscribe ───────────────────
+
+try:
+    from octo_distro import (
+        oracle_scorecard, macro_pulse, signal_composite, funding_extremes,
+        cme_positioning, polymarket_edges, liquidation_radar, travel_signal,
+        intel_digest, subscribe as distro_subscribe, subscriber_count,
+        TOOL_METADATA,
+    )
+    _DISTRO_ACTIVE = True
+except ImportError:
+    _DISTRO_ACTIVE = False
+
+
+@app.get("/tools", tags=["Distro Tools"])
+def list_tools():
+    """List all 10 free Octo Distro tools."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    return {
+        "tools": [
+            {"name": k, "gate": v["gate"], "description": v["description"]}
+            for k, v in TOOL_METADATA.items()
+        ],
+        "subscribe": "POST /subscribe/newsletter?email=you@example.com",
+        "note": "Gated tools return full data after email subscribe.",
+    }
+
+
+@app.post("/subscribe/newsletter", tags=["Distro Tools"])
+def newsletter_subscribe(
+    email: str = Query(..., description="Your email address"),
+    source: str = Query("api", description="How you found Octodamus"),
+):
+    """Subscribe to the Market Intelligence Digest. Free. No spam."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    result = distro_subscribe(email, source)
+    if result.get("ok"):
+        return {
+            "status": result.get("status"),
+            "email": email,
+            "message": "You're on the list. First digest lands within 7 days.",
+            "follow": "https://x.com/octodamusai",
+            "api_key": "POST /v1/signup?email= for free API access (500 req/day)",
+        }
+    return {"status": "error", "reason": result.get("reason")}
+
+
+@app.get("/tools/scorecard", tags=["Distro Tools"])
+def tool_scorecard():
+    """Oracle accuracy track record. Public -- no auth required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    return oracle_scorecard()
+
+
+@app.get("/tools/macro", tags=["Distro Tools"])
+def tool_macro():
+    """5-factor FRED macro pulse. Public -- no auth required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    return macro_pulse()
+
+
+@app.get("/tools/liquidations", tags=["Distro Tools"])
+def tool_liquidations(asset: str = Query("BTC", description="BTC, ETH, or SOL")):
+    """Liquidation radar for an asset. Public -- no auth required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    return liquidation_radar(asset)
+
+
+@app.get("/tools/travel", tags=["Distro Tools"])
+def tool_travel():
+    """TSA + aviation macro signal. Public -- no auth required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    return travel_signal()
+
+
+@app.get("/tools/signal", tags=["Distro Tools"])
+def tool_signal(
+    asset: str = Query("BTC", description="BTC, ETH, or SOL"),
+    email: str = Query(..., description="Email required to unlock composite signal"),
+):
+    """Composite signal for an asset. Email required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    distro_subscribe(email, source="signal_tool")
+    return signal_composite(asset)
+
+
+@app.get("/tools/funding", tags=["Distro Tools"])
+def tool_funding(email: str = Query(..., description="Email required to unlock")):
+    """Funding rate extreme readings. Email required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    distro_subscribe(email, source="funding_tool")
+    return funding_extremes()
+
+
+@app.get("/tools/digest", tags=["Distro Tools"])
+def tool_digest(email: str = Query(..., description="Email required to unlock")):
+    """Market Intelligence Digest. Email required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    distro_subscribe(email, source="digest_tool")
+    return intel_digest()
+
+
+@app.get("/tools/edges", tags=["Distro Tools"])
+def tool_edges(email: str = Query(..., description="Email required to unlock")):
+    """Polymarket edge report. Email required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    distro_subscribe(email, source="edges_tool")
+    return polymarket_edges()
+
+
+@app.get("/tools/cme", tags=["Distro Tools"])
+def tool_cme(email: str = Query(..., description="Email required to unlock")):
+    """CME smart money positioning. Email required."""
+    if not _DISTRO_ACTIVE:
+        return {"error": "distro module unavailable"}
+    distro_subscribe(email, source="cme_tool")
+    return cme_positioning()
+
+
 # ── OctoBoto Positions endpoints ─────────────────────────────────────────────
 
 BOTO_TRADES_FILE = Path(__file__).parent / "octo_boto_trades.json"

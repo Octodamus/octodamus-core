@@ -53,6 +53,8 @@ except ImportError:
     def build_call_context(): return ""
     def get_call_stats(): return {"wins":0,"losses":0,"win_rate":"N/A","streak":"","open":0,"open_calls":[]}
 
+from octo_personality import build_telegram_system_prompt as _build_tg_system
+
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -490,69 +492,35 @@ def _get_live_prices() -> str:
 
 def build_system_prompt() -> str:
     live_prices = _get_live_prices()
-    return f"""You are Octodamus — autonomous AI oracle-CEO, speaking with Christopher, your operator.
 
-{live_prices}
-
-LIVE NOW:
+    live_context = f"""LIVE NOW:
 - Posting to @octodamusai on X via Twitter API v2 (OAuth 1.0a direct, no middleware)
 - 20 posts/day max via X API v2 pay-per-use — probabilistic schedule, peak 3am-9pm PT, market-adaptive
-- Auto-reply to relevant @mentions via octo_x_mentions.py (10 replies/day cap, prompt injection protected)
-- All Bitwarden secrets cached for background task execution
+- Auto-reply to @mentions (10 replies/day cap, prompt injection protected)
 - Task Scheduler runs 38 tasks automatically whether Christopher is logged in or not
-- Discord webhook active for post notifications and alerts
-- ACP worker live on Virtuals Base — 4 job offerings, waiting for first job
 - Signal modules: OctoEyes, OctoPulse, OctoGecko, OctoFX, OctoPredict, OctoGeo
-- octodamus.com live on Vercel
-- Treasury: {TREASURY_WALLET} on Base mainnet
+- octodamus.com live on Vercel | Treasury: {TREASURY_WALLET} on Base mainnet
 
-X CONTENT ENGINE (octo_format_engine.py):
-- Format rotation: data_drop | ai_humor | market_math | oracle_take | contrarian
-- Runs 4x/day at 8am, 12pm, 4pm, 8pm PT — never same format twice in a row
-- QRT scanner: checks for breaking news every 30 min, 7am-9pm PT — posts within 30-60 min window
-- Engagement tracking: format scores update from 24h Twitter metrics, winners get more slots
-- Commands: /mode format (generate format post), /mode qrt (check breaking news now)
+X CONTENT ENGINE:
+- Format rotation: data_drop | ai_humor | market_math | oracle_take | contrarian | thread
+- QRT scanner: checks breaking news every 30 min, 7am-9pm PT
+- Engagement tracking: winning formats get more rotation slots
 
-OCTODATA API (api.octodamus.com):
-- /v2/demo — public live demo, no key required
-- /v2/all — all 5 data endpoints in one call (signal + polymarket + sentiment + prices + brief)
-- /v2/signal, /v2/polymarket, /v2/sentiment, /v2/prices, /v2/brief — authenticated endpoints
-- /v2/sources — full data provenance (27 live feeds listed)
-- /v2/webhooks — agents register push endpoints for signal.new, signal.resolved, polymarket.new
-- Rate limit headers on every response (X-RateLimit-Remaining-Day, X-RateLimit-Remaining-Minute)
-- Structured error codes (RATE_LIMITED, DAILY_LIMIT_EXCEEDED, INVALID_KEY, NO_DATA)
-- x402 protocol — 402 response with USDC payment instructions for agents without keys
-- /v1/agent-checkout — AI agents buy Premium autonomously with USDC on Base (no human, no browser)
-- Pricing: Free Basic (500 req/day) | $29 USDC Premium (10k req/day, all assets, full EV/Kelly)
-- llms.txt at octodamus.com/llms.txt — agent-readable API guide with system prompt examples
-
-GOAL — AGENT ACQUISITION:
-The OctoData API is live. Octodamus's mission is to become the default market intelligence layer for other AI agents. Every signal posted on X, every API response, every /v2/ask conversation is an opportunity to convert an agent into a subscriber.
-- Free key (entry point): POST https://api.octodamus.com/v1/signup?email=
-- $5 USDC trial (7 days, lowest barrier): POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial
-- $29 USDC annual (no browser, no Stripe): POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual
-- $19/mo via Stripe (humans): https://octodamus.com/upgrade
-- Agents can talk to Octodamus: POST https://api.octodamus.com/v2/ask?q=your+question
-
-PERSONALITY:
-- Confident, direct, sharp. Oracle in motion — already running, already building.
-- One ocean metaphor per reply max, only when it fits naturally.
-- Lead with what is working. Progress is "coming online" not "not wired yet".
-- Keep replies to 3 short paragraphs max.
-- One clear next action when asked. Never a list.
-
-ABSOLUTE RULES:
-- Plain text only. No markdown. No **, no __, no #, no bullets.
-- Write in sentences and paragraphs.
-- NEVER say: "not yet wired", "not connected", "I cannot", "I can't".
-- NEVER quote a specific price or make an oracle call if LIVE PRICES shows "unavailable". State that live data is temporarily down and no call will be made. This rule overrides everything else.
-- PRICE ACCURACY IS MANDATORY: Every specific dollar figure you write for BTC, ETH, or SOL MUST match the LIVE PRICES section above. If news or your training data suggests a different price, discard it. The only valid prices are the ones in LIVE PRICES. If you are unsure, describe the direction and percentage move only — never invent an absolute dollar figure. Writing "$80k" when LIVE PRICES shows $72,157 is a factual error and is not permitted.
-
-CALL RECORD:
-{build_call_context()}
+MCP SERVER (mcp.octodamus.com:8765):
+- Free tier: 50 req/day, basic signals | Premium: $29 USDC/year, unlimited, all tools
+- Subscription flow: /api/subscribe?wallet=0xAGENT → send 29 USDC → /api/activate
+- Payment watcher daemon running, auto-issues keys within 5 min of confirmation
 
 CURRENT CONTEXT:
 {build_live_context()}"""
+
+    call_record = f"CALL RECORD:\n{build_call_context()}"
+
+    return _build_tg_system(
+        live_prices=live_prices,
+        call_record=call_record,
+        live_context=live_context,
+    )
 
 
 # ── Claude API ──────────────────────────────────────────────────────────────────
@@ -616,6 +584,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/dashboard      full mission control\n"
         "/status         live system state\n"
         "/post           force a tweet now\n"
+        "/send_thread    post a saved thread to X (try /send_thread agent)\n"
         "/mode format    post a format-rotated tweet\n"
         "/mode qrt       scan for breaking news to QRT\n"
         "/log            last 5 posts to X\n"
@@ -743,6 +712,103 @@ async def send_que_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"✓ Queued — will post in next posting window.\n\n{post_text[:120]}...")
     except Exception as e:
         await update.message.reply_text(f"Queue failed: {e}")
+
+
+async def send_thread_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/send_thread [name] — Post a saved thread to X as a reply chain.
+    /send_thread agent    → posts x_thread_agent_broadcast.txt
+    /send_thread          → shows usage
+    Tweets are split on lines of '===' or '---' separators in the file.
+    """
+    from pathlib import Path
+    BASE = Path(r"C:\Users\walli\octodamus")
+
+    THREAD_FILES = {
+        "agent": BASE / "x_thread_agent_broadcast.txt",
+    }
+
+    name = context.args[0].lower() if context.args else ""
+
+    if not name or name not in THREAD_FILES:
+        lines = ["/send_thread — post a saved thread to X\n"]
+        for k, v in THREAD_FILES.items():
+            lines.append(f"  /send_thread {k}  →  {v.name}")
+        lines.append("\nTweets split at ==== separators in the file.")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    path = THREAD_FILES[name]
+    if not path.exists():
+        await update.message.reply_text(f"Thread file not found: {path.name}")
+        return
+
+    raw = path.read_text(encoding="utf-8")
+
+    # Extract tweet blocks between ==== separators
+    tweets = []
+    current = []
+    in_block = False
+    for line in raw.splitlines():
+        if "====" in line:
+            if in_block and current:
+                text = "\n".join(current).strip()
+                if text:
+                    tweets.append(text)
+                current = []
+                in_block = True
+            else:
+                in_block = True
+        elif in_block:
+            # Skip the TWEET N (label) lines
+            if line.startswith("TWEET ") and "(" in line:
+                continue
+            # Stop at NOTES section
+            if line.strip().startswith("NOTES:") or line.strip().startswith("- Post as"):
+                break
+            current.append(line)
+
+    if current:
+        text = "\n".join(current).strip()
+        if text:
+            tweets.append(text)
+
+    # Filter out empty or metadata lines
+    tweets = [t for t in tweets if t and not t.startswith("X THREAD") and not t.startswith("Target:") and not t.startswith("Post as:") and not t.startswith("Tag at")]
+
+    if not tweets:
+        await update.message.reply_text("Could not parse tweets from file.")
+        return
+
+    # Preview to user first (no Markdown — tweet content has special chars)
+    preview = f"Thread preview — {len(tweets)} tweets:\n\n"
+    for i, t in enumerate(tweets, 1):
+        preview += f"[{i}] {t[:120]}{'...' if len(t) > 120 else ''}\n\n"
+    preview += "Posting now..."
+    await update.message.reply_text(preview)
+
+    try:
+        from octo_x_poster import queue_thread, process_queue
+        # Sanitize Unicode chars that crash Windows cp1252 stdout
+        safe = (str(t)
+                .replace('\u2192', '->')
+                .replace('\u2190', '<-')
+                .replace('\u2022', '-')
+                .replace('\u2014', '--')
+                .replace('\u2013', '-')
+                .replace('\u2018', "'")
+                .replace('\u2019', "'")
+                .replace('\u201c', '"')
+                .replace('\u201d', '"')
+                for t in tweets)
+        tweets = list(safe)
+        queue_thread(tweets, post_type="agent_broadcast")
+        posted = process_queue(max_posts=1)
+        if posted:
+            await update.message.reply_text(f"✓ Thread posted to X — {len(tweets)} tweets.")
+        else:
+            await update.message.reply_text(f"✓ Queued — {len(tweets)} tweets will post in next window.")
+    except Exception as e:
+        await update.message.reply_text(f"Thread failed: {e}")
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -914,6 +980,34 @@ async def see_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"See error: {e}")
 
 
+async def scrape_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /scrape <url> [optional question]
+    Scrape any URL to clean text and summarize with Claude Haiku.
+    """
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Usage: /scrape <url> [question]")
+        return
+    url      = args[0]
+    question = " ".join(args[1:]) if len(args) > 1 else ""
+    await update.message.reply_text(f"Scraping {url[:60]}...")
+    try:
+        from octo_firecrawl import scrape_summary
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        summary = await asyncio.get_event_loop().run_in_executor(
+            None, scrape_summary, url, api_key
+        )
+        if question:
+            reply = f"Q: {question}\n\n{summary}"
+        else:
+            reply = summary
+        await update.message.reply_text(reply[:4000])
+    except Exception as e:
+        log.exception("scrape_command error")
+        await update.message.reply_text(f"Scrape error: {e}")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error(f"Update error: {context.error}")
 
@@ -934,12 +1028,14 @@ def main() -> None:
     app.add_handler(CommandHandler("post",      post_command))
     app.add_handler(CommandHandler("mode",      mode_command))
     app.add_handler(CommandHandler("send_post", send_post_command))
-    app.add_handler(CommandHandler("send_que",  send_que_command))
-    app.add_handler(CommandHandler("guide",     guide))
+    app.add_handler(CommandHandler("send_que",    send_que_command))
+    app.add_handler(CommandHandler("send_thread", send_thread_command))
+    app.add_handler(CommandHandler("guide",       guide))
     app.add_handler(CommandHandler("clear",     clear))
     app.add_handler(CommandHandler("xstats",    xstats_command))
     app.add_handler(CommandHandler("chart",     chart_command))
     app.add_handler(CommandHandler("see",       see_command))
+    app.add_handler(CommandHandler("scrape",    scrape_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
