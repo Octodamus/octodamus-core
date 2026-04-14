@@ -51,6 +51,13 @@ try:
 except Exception as _e:
     print(f"[API] Renewal scheduler skipped: {_e}")
 
+# Start background payment scanner (polls Base/ETH/BTC every 30s for incoming payments)
+try:
+    from octo_agent_pay import start_payment_scanner
+    start_payment_scanner()
+except Exception as _e:
+    print(f"[API] Payment scanner skipped: {_e}")
+
 import httpx
 
 from fastapi import FastAPI, HTTPException, Security, Depends, Query, Request
@@ -1015,6 +1022,79 @@ def erc8004_well_known():
 def erc8004_root():
     """ERC-8004 agent card — root fallback for registries that don't use .well-known."""
     return _ERC8004_CARD
+
+@app.get("/.well-known/agent.json", tags=["ERC-8004"], include_in_schema=False)
+def well_known_agent_json():
+    """Agent card alias — some crawlers probe agent.json instead of agent-registration.json."""
+    return _ERC8004_CARD
+
+
+@app.get("/.well-known/x402.json", include_in_schema=False)
+@app.get("/.well-known/x402", include_in_schema=False)
+def well_known_x402():
+    """
+    x402 discovery document -- auto-indexed by x402scan.com and Coinbase AgentKit.
+    Describes all paywalled endpoints, accepted payment schemes, and pricing.
+    """
+    return {
+        "version": "x402/1",
+        "provider": {
+            "name":        "Octodamus Market Intelligence",
+            "description": "Real-time crypto oracle signals, Fear & Greed, funding rates, Polymarket edges. 27 live data feeds. 9/11 consensus system.",
+            "url":         "https://api.octodamus.com",
+            "x":           "@octodamusai",
+            "docs":        "https://api.octodamus.com/docs",
+        },
+        "treasury":  _X402_TREASURY,
+        "chain":     "eip155:8453",
+        "asset":     _X402_USDC,
+        "currency":  "USDC",
+        "endpoints": [
+            {
+                "path":        "/v2/agent-signal",
+                "method":      "GET",
+                "description": "Primary signal endpoint -- BUY/SELL/HOLD with confidence, Fear & Greed, BTC trend, Polymarket edge. Poll every 15 minutes.",
+                "pricing": [
+                    {"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"},
+                    {"product": "premium_trial",  "amount_usdc":  5.0, "description": "7-day trial, 10k req/day"},
+                ],
+                "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+                "returns":  {"action": "BUY|SELL|HOLD", "confidence": "0.0-1.0", "signal": "BULLISH|BEARISH|NEUTRAL", "fear_greed": "0-100"},
+            },
+            {
+                "path":        "/v2/polymarket",
+                "method":      "GET",
+                "description": "Top Polymarket prediction markets with expected-value scoring and recommended side.",
+                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+            },
+            {
+                "path":        "/v2/sentiment",
+                "method":      "GET",
+                "description": "AI sentiment scores for BTC, ETH, SOL. Score -1.0 to +1.0.",
+                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+            },
+            {
+                "path":        "/v2/brief",
+                "method":      "GET",
+                "description": "Full AI market briefing in narrative format -- ideal for agent reasoning context.",
+                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+            },
+        ],
+        "free_endpoints": [
+            {"path": "/v2/demo",    "method": "GET",  "description": "Public signal preview -- no key required"},
+            {"path": "/v2/sources", "method": "GET",  "description": "All 27 live data feeds"},
+            {"path": "/v1/signup",  "method": "POST", "description": "Get free Basic key (500 req/day) with email"},
+        ],
+        "checkout_flow": {
+            "step1": "POST /v1/agent-checkout?product=premium_trial&chain=base&agent_wallet=0xYOUR_WALLET",
+            "step2": "Send exact USDC amount to payment_address on Base",
+            "step3": "GET /v1/agent-checkout/status?payment_id=xxx -- poll every 15s",
+            "step4": "Receive api_key in response when confirmed (~2s on Base)",
+        },
+    }
 
 
 # â"€â"€ ACP Resource endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -3539,12 +3619,15 @@ _mcp_thread = _threading.Thread(target=_start_mcp_server, daemon=True)
 _mcp_thread.start()
 
 
-@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-async def mcp_proxy(path: str, request: Request):
-    """Proxy /mcp/* → local MCP server on port 8743."""
+async def _proxy_to_mcp(path: str, request: Request):
+    """Shared proxy logic: forward request to MCP server on port 8743."""
     import httpx as _hx
     target = f"http://127.0.0.1:8743/{path}"
     body = await request.body()
+    # Forward query string too
+    qs = str(request.url.query)
+    if qs:
+        target = f"{target}?{qs}"
     async with _hx.AsyncClient() as client:
         try:
             r = await client.request(
@@ -3563,6 +3646,39 @@ async def mcp_proxy(path: str, request: Request):
             )
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def mcp_proxy_root(request: Request):
+    """Proxy bare /mcp → MCP server root. Prevents FastAPI 307 redirect that breaks Smithery scanner."""
+    return await _proxy_to_mcp("", request)
+
+
+@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def mcp_proxy(path: str, request: Request):
+    """Proxy /mcp/* → local MCP server on port 8743."""
+    return await _proxy_to_mcp(path, request)
+
+
+@app.get("/.well-known/mcp/server-card.json", include_in_schema=False)
+def mcp_server_card():
+    """Smithery MCP server card — used by the Smithery scanner to verify MCP availability."""
+    return {
+        "name": "Octodamus Market Intelligence",
+        "description": (
+            "Real-time crypto market intelligence for AI agents. Oracle trading signals "
+            "(9/11 consensus), Fear & Greed, Polymarket edges, BTC trend across 27 live feeds."
+        ),
+        "url": "https://api.octodamus.com/mcp",
+        "transport": ["streamable-http"],
+        "version": "1.0",
+        "auth": {
+            "type": "api_key",
+            "in": "query",
+            "name": "api_key",
+            "signup": "https://api.octodamus.com/v1/signup",
+        },
+    }
 
 
 # -- llms.txt — machine-readable API index for LLMs --------------------------

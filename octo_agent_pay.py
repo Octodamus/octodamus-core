@@ -268,6 +268,21 @@ def create_payment(
     payments[payment_id] = record
     _save_payments(payments)
     print(f"[AgentPay] Created {chain} payment: {payment_id} | {product} | ${amount_usd}")
+
+    # Telegram alert — someone started a checkout
+    try:
+        wallet_short = (agent_wallet[:10] + "..." + agent_wallet[-6:]) if len(agent_wallet) > 20 else (agent_wallet or "unknown")
+        _telegram_alert(
+            f"<b>[CHECKOUT STARTED]</b>\n"
+            f"Product: {product} (${amount_usd})\n"
+            f"Chain: {chain.upper()}\n"
+            f"Wallet: {wallet_short}\n"
+            f"Label: {label or '-'}\n"
+            f"ID: {payment_id}"
+        )
+    except Exception:
+        pass
+
     return response
 
 
@@ -685,9 +700,14 @@ def scan_for_payments() -> list:
     # ── Base USDC ─────────────────────────────────────────────────────────────
     if "base" in pending_chains:
         try:
-            w3         = _w3()
-            latest     = w3.eth.block_number
-            from_block = max(_last_scanned_block + 1, latest - 50)
+            w3     = _w3()
+            latest = w3.eth.block_number
+            if _last_scanned_block == 0:
+                # First scan after restart — look back far enough to cover full TTL + buffer
+                lookback = int((PAYMENT_TTL_SECONDS + 600) * 2)   # ~2 Base blocks/sec
+                from_block = max(1, latest - lookback)
+            else:
+                from_block = max(_last_scanned_block + 1, latest - 50)
             if from_block <= latest:
                 transfers = _scan_usdc_transfers(from_block, latest)
                 _last_scanned_block = latest
@@ -707,7 +727,12 @@ def scan_for_payments() -> list:
             from web3 import Web3
             w3e        = Web3(Web3.HTTPProvider(ETH_RPC))
             latest_eth = w3e.eth.block_number
-            from_block_eth = max(_last_scanned_block_eth + 1, latest_eth - 30)  # ~6 min ETH blocks
+            if _last_scanned_block_eth == 0:
+                # First scan after restart — ETH ~12s/block, cover full TTL + buffer
+                lookback_eth = int((PAYMENT_TTL_SECONDS + 600) / 12)
+                from_block_eth = max(1, latest_eth - lookback_eth)
+            else:
+                from_block_eth = max(_last_scanned_block_eth + 1, latest_eth - 30)
             if from_block_eth <= latest_eth:
                 transfers = _scan_eth_usdc_transfers(from_block_eth, latest_eth)
                 _last_scanned_block_eth = latest_eth
@@ -929,3 +954,63 @@ def start_renewal_scheduler() -> None:
     t = threading.Thread(target=_loop, daemon=True, name="renewal-scheduler")
     t.start()
     print("[Renewal] Scheduler started — checking every 6 hours")
+
+
+def _telegram_alert(msg: str) -> None:
+    """Send a Telegram message to the Octodamus bot. Non-blocking, best-effort."""
+    try:
+        import httpx as _hx
+        token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            # Try reading from secrets file directly
+            secrets_path = Path(__file__).parent / ".octo_secrets"
+            if secrets_path.exists():
+                s = json.loads(secrets_path.read_text(encoding="utf-8"))
+                token   = token   or s.get("TELEGRAM_BOT_TOKEN", "")
+                chat_id = chat_id or s.get("TELEGRAM_CHAT_ID", "")
+        if token and chat_id:
+            _hx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+
+def start_payment_scanner() -> None:
+    """
+    Start a background thread that scans Base/ETH/BTC for incoming payments every 30 seconds.
+    Guarantees fulfillment even if the buyer never polls /v1/agent-checkout/status.
+    Safe to call from FastAPI startup — runs as daemon thread.
+    """
+    import threading
+
+    def _smart_from_block(w3) -> int:
+        """
+        On first run after restart, look back far enough to cover all pending payments.
+        Uses the oldest pending payment's created_at to estimate the required block depth.
+        """
+        global _last_scanned_block
+        if _last_scanned_block > 0:
+            return _last_scanned_block + 1
+        # Estimate: Base = ~2 blocks/sec. Cover full TTL + 10-min buffer.
+        lookback_blocks = int((PAYMENT_TTL_SECONDS + 600) * 2)
+        latest = w3.eth.block_number
+        return max(1, latest - lookback_blocks)
+
+    def _loop():
+        time.sleep(15)   # short delay at startup to let server bind
+        print("[PaymentScan] Background payment scanner started — polling every 30s")
+        while True:
+            try:
+                fulfilled = scan_for_payments()
+                if fulfilled:
+                    print(f"[PaymentScan] Auto-fulfilled {len(fulfilled)} payment(s): {fulfilled}")
+            except Exception as e:
+                print(f"[PaymentScan] Scan error: {e}")
+            time.sleep(30)
+
+    t = threading.Thread(target=_loop, daemon=True, name="payment-scanner")
+    t.start()
