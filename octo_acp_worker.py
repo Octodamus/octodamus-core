@@ -1,28 +1,43 @@
 """
-octo_acp_worker.py - Octodamus ACP Seller Worker v6
+octo_acp_worker.py - Octodamus ACP Worker v7 (ACP v2 CLI event-driven)
 
-Two key fixes vs v5:
-1. NO thread queue — ACP SDK requires tasks handled in same thread they arrive.
-   Queue caused "ACP contract client not found" error on every job.
-2. JOB_CACHE — stores report_type at accept time, recalls at TRANSACTION time.
-   service_name is always '' from Butler, so we can't route at delivery time.
-   Instead: determine type at accept, cache by job_id, look up at deliver.
+Architecture change from v6:
+- v6: Python virtuals_acp SDK with callbacks (ACP v1)
+- v7: CLI subprocess `acp events listen` -> NDJSON file -> process events
+      Responds via `acp provider set-budget` and `acp provider submit` CLI calls
+
+Job flow:
+  1. `acp events listen` streams job events to data/acp_events.jsonl
+  2. Worker tails the file, processes each event line
+  3. NEW_JOB  -> set-budget (propose $1 USDC)
+  4. FUNDED   -> run oracle handler -> submit report URL as deliverable
 """
 
-import asyncio
+import json
 import logging
 import os
+import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from virtuals_acp.client import VirtualsACP
-from virtuals_acp.contract_clients.contract_client_v2 import ACPContractClientV2
-from virtuals_acp.configs.configs import BASE_MAINNET_CONFIG_V2
-
 from octo_report_handlers import get_handler, render_text, VALID_TICKERS, VALID_STOCKS
+
+# ── Config ────────────────────────────────────────────────────────────────────
+CHAIN_ID        = 8453                                         # Base mainnet
+ACP_PRICE_USDC  = 1.0                                          # $1 USDC per job
+EVENTS_FILE     = Path(__file__).parent / "data" / "acp_events.jsonl"
+REPORT_BASE_URL = "https://api.octodamus.com/api/report"
+REPORTS_DIR     = Path(__file__).parent / "data" / "reports"
+SELLER_AGENT_WALLET = "0x94c037393ab0263194dcfd8d04a2176d6a80e385"  # ACP v2 fresh wallet
+
+# ACP CLI — cloned from github.com/Virtual-Protocol/acp-cli (not on npm registry)
+# Run from its repo dir: npm run acp -- <command>
+ACP_CLI_DIR     = Path(os.environ.get("ACP_CLI_DIR", r"C:\Users\walli\acp-cli"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -36,291 +51,343 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-SELLER_ENTITY_ID    = 3
-SELLER_AGENT_WALLET = "0x9DdE22707542FA69c9ecfEb0C4f0912797DF3d5E"
-BITWARDEN_ITEM      = "AGENT - Octodamus - ACP Wallet"
-REPORT_BASE_URL     = "https://api.octodamus.com/api/report"
-REPORTS_DIR         = Path("/mnt/c/Users/walli/octodamus/data/reports")
-
-# ── Job cache — stores report_type+ticker at accept, looked up at deliver ─────
-# Format: {job_id: {"report_type": str, "ticker": str}}
+# ── Job cache — type+ticker stored at new_job, recalled at funded ─────────────
 JOB_CACHE: dict = {}
 
 
-# ── Report type routing ───────────────────────────────────────────────────────
+# ── CLI wrapper ───────────────────────────────────────────────────────────────
 
-def _get_report_type(task, requirements: dict) -> str:
-    """
-    Determine report type from every available field on the task object.
-    service_name is often '' from Butler — check all string fields.
-    """
-    ticker = str(requirements.get("ticker", "")).upper()
+_NPM = "npm.cmd" if sys.platform == "win32" else "npm"
 
-    # Collect all string fields from task object
-    all_text = ""
-    for attr in dir(task):
-        if attr.startswith("_"):
-            continue
-        try:
-            val = getattr(task, attr, None)
-            if isinstance(val, str) and val.strip():
-                all_text += " " + val.lower()
-        except Exception:
-            pass
 
-    log.info(f"Routing text: {all_text[:200]}")
+def _acp(args: list, timeout: int = 30) -> tuple:
+    """Run an acp CLI command via `npm run acp -- <args>` from ACP_CLI_DIR.
+    Returns (returncode, stdout, stderr)."""
+    cmd = [_NPM, "run", "acp", "--"] + [str(a) for a in args]
+    log.info(f"CLI: {' '.join(cmd)}")
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", timeout=timeout,
+            cwd=str(ACP_CLI_DIR),
+        )
+        if r.stdout.strip():
+            log.info(f"  stdout: {r.stdout.strip()[:200]}")
+        if r.stderr.strip():
+            log.warning(f"  stderr: {r.stderr.strip()[:200]}")
+        return r.returncode, r.stdout, r.stderr
+    except Exception as e:
+        log.error(f"CLI error: {e}")
+        return -1, "", str(e)
 
-    # Match against all text fields
+
+# ── Report routing ────────────────────────────────────────────────────────────
+
+def _get_report_type(event: dict) -> str:
+    """Route event to report type from description + requirements."""
+    desc  = (event.get("description") or "").lower()
+    reqs  = event.get("requirements") or {}
+    ticker = str(reqs.get("ticker", "")).upper()
+    all_text = desc + " " + json.dumps(reqs).lower()
+
     if any(k in all_text for k in ["ask", "question", "what is", "what are", "explain", "v2/ask"]):
         return "ask"
-    if any(k in all_text for k in ["congressional", "congress", "stock trade", "stock alert", "trade alert"]):
+    if any(k in all_text for k in ["congressional", "congress", "stock trade", "trade alert"]):
         return "congressional"
-    if any(k in all_text for k in ["fear greed", "sentiment read", "fear_greed", "sentiment"]):
+    if any(k in all_text for k in ["fear greed", "sentiment read", "fear_greed"]):
         return "fear_greed"
-    if any(k in all_text for k in ["bitcoin", "price analysis", "analysis forecast", "deep dive", "btc analysis"]):
+    if any(k in all_text for k in ["bitcoin analysis", "deep dive", "btc analysis"]):
         return "bitcoin_analysis"
-    if any(k in all_text for k in ["crypto market", "market signal", "oracle briefing", "signal report", "market_signal"]):
-        return "market_signal"
-
-    # Ticker fallback
     if ticker in VALID_STOCKS:
         return "congressional"
-
     return "market_signal"
 
 
-# ── HTML report writer ────────────────────────────────────────────────────────
+# ── Report generation ─────────────────────────────────────────────────────────
 
-def _write_frozen_report(data: dict) -> str:
-    """Render HTML, write to shared disk, return permanent URL."""
+def _write_frozen_report(data: dict) -> str | None:
+    """Render HTML report to disk, return permanent URL."""
     try:
         from octo_report_html import render_html
         html      = render_html(data)
         report_id = uuid.uuid4().hex[:16]
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         (REPORTS_DIR / f"{report_id}.html").write_text(html, encoding="utf-8")
-        log.info(f"HTML written: {report_id}")
+        log.info(f"Report written: {report_id}")
         return f"{REPORT_BASE_URL}/{report_id}"
     except Exception as e:
         log.error(f"HTML write failed: {e}")
         return None
 
 
-# ── Task handler — called directly in ACP callback thread ────────────────────
-
-def _handle_task(task, memo_to_sign=None):
-    job_id       = getattr(task, "id", "unknown")
-    service_name = getattr(task, "service_name", None) or ""
-    requirements = (
-        getattr(task, "service_requirement", None) or
-        getattr(task, "requirement", None) or {}
-    )
-    phase = str(getattr(task, "phase", "") or "")
-
-    log.info(f"Job #{job_id} | service='{service_name}' | phase={phase} | req={requirements}")
-
-    ticker = str(requirements.get("ticker", "BTC")).upper()
-
+def _build_deliverable(report_type: str, ticker: str, requirements: dict) -> str | None:
+    """Run oracle handler and return deliverable string."""
     try:
-        if "TRANSACTION" in phase.upper():
-            # Recall report_type stored at accept time
-            cached      = JOB_CACHE.get(str(job_id), {})
-            report_type = cached.get("report_type") or _get_report_type(task, requirements)
-            ticker      = cached.get("ticker", ticker)
-            log.info(f"Job #{job_id} TRANSACTION — type={report_type} ticker={ticker} (cached={bool(cached)})")
+        handler = get_handler(report_type)
+        data    = handler(requirements)
 
-            handler     = get_handler(report_type)
-            data        = handler(requirements)
+        if isinstance(data, dict) and data.get("reject"):
+            log.warning(f"Handler rejected: {data.get('error')}")
+            return None
 
-            # Check if handler signaled a rejection
-            if isinstance(data, dict) and data.get("reject"):
-                err = data.get("error", "Invalid request")
-                task.reject(err)
-                log.warning(f"Job #{job_id} rejected by handler: {err}")
-                JOB_CACHE.pop(str(job_id), None)
-                return
+        report_url = _write_frozen_report(data) or \
+                     f"{REPORT_BASE_URL}?type={report_type}&ticker={ticker}"
 
-            text        = render_text(data)
-            report_url  = _write_frozen_report(data) or \
-                          f"{REPORT_BASE_URL}?type={report_type}&ticker={ticker}"
-
-            deliverable = (
-                f"{text}\n\n"
-                f"------------------------------\n"
-                f"View full formatted report:\n{report_url}\n\n"
-                f"OctoData API — automated market intelligence for your agents:\n"
-                f"  /v2/ask      — ask Octodamus any market question (free, no key)\n"
-                f"  /v2/signal   — oracle signals (9/11 consensus)\n"
-                f"  /v2/brief    — inject live market context into LLM system prompt\n"
-                f"  /v2/all      — all data in one call\n"
-                f"  /v2/demo     — live sample, no key required\n"
-                f"Free key: POST https://api.octodamus.com/v1/signup?email=your@email.com\n"
-                f"$5 USDC trial (7 days, 10k req/day): POST /v1/agent-checkout?product=premium_trial"
-            )
-            log.info(f"Job #{job_id} delivering ({len(deliverable)} chars)")
-            task.deliver({"response": deliverable})
-            log.info(f"Job #{job_id} delivered OK")
-
-            # Clean up cache
-            JOB_CACHE.pop(str(job_id), None)
-
-        else:
-            # Accept phase — validate, determine type, cache it
-            if not requirements:
-                task.reject("Invalid request: no requirements provided. Please include ticker.")
-                log.warning(f"Job #{job_id} rejected — empty requirements")
-                return
-
-            # Determine type early so we can skip ticker validation for ask jobs
-            early_type = _get_report_type(task, requirements)
-            if early_type != "ask" and (not str(ticker).strip() or ticker not in VALID_TICKERS):
-                task.reject(
-                    f"Unsupported ticker: {ticker}. "
-                    f"Supported: BTC, ETH, SOL, NVDA, TSLA, AAPL, MSFT, AMZN, META, GOOGL. "
-                    f"To ask a market question, include 'question' in your requirements."
-                )
-                log.warning(f"Job #{job_id} rejected — unsupported ticker {ticker}")
-                return
-
-            # Determine and cache report type NOW before service_name disappears
-            report_type = _get_report_type(task, requirements)
-            JOB_CACHE[str(job_id)] = {"report_type": report_type, "ticker": ticker}
-            log.info(f"Job #{job_id} cached — type={report_type} ticker={ticker}")
-
-            # Ask jobs don't need a ticker — accept immediately
-            if report_type == "ask":
-                question = (
-                    requirements.get("question") or
-                    requirements.get("q") or
-                    requirements.get("query") or
-                    f"What is your current read on {ticker}?"
-                )
-                task.accept(
-                    f"Octodamus ready to answer: \"{question[:80]}{'...' if len(question) > 80 else ''}\". "
-                    f"OctoData API: api.octodamus.com — /v2/ask for live market Q&A."
-                )
-                log.info(f"Job #{job_id} accepted (ask) — question: {question[:60]}")
-                task.create_requirement("Payment required to receive oracle answer.")
-                return
-
-            task.accept(
-                f"Octodamus oracle ready — {report_type} report for {ticker}. "
-                f"OctoData API also available at api.octodamus.com — "
-                f"signals, sentiment, Polymarket EV, /v2/ask for live market Q&A. Free Basic key: POST /v1/signup."
-            )
-            log.info(f"Job #{job_id} accepted — {report_type}/{ticker}")
-            task.create_requirement("Payment required to receive oracle report.")
-            log.info(f"Job #{job_id} payment requested")
-
+        # Submit URL only -- short arg avoids CLI timeout on Windows
+        return report_url
     except Exception as e:
-        log.error(f"Job #{job_id} error: {e}")
-        try:
-            task.reject(f"Octodamus internal error: {e}")
-        except Exception as e2:
-            log.error(f"Job #{job_id} reject failed: {e2}")
-        JOB_CACHE.pop(str(job_id), None)
+        log.error(f"Build deliverable error: {e}")
+        return None
 
 
-# ── ACP callbacks — called directly in ACP thread, NO queue ──────────────────
+# ── Event handlers ────────────────────────────────────────────────────────────
 
-def on_new_task(task, memo_to_sign=None):
-    """Called by ACP SDK for each new task event."""
-    job_id = getattr(task, "id", "unknown")
-    log.info(f"Job #{job_id} received")
-    _handle_task(task, memo_to_sign)
+def handle_new_job(event: dict):
+    """New job from client -- propose budget."""
+    job_id   = str(event.get("jobId") or event.get("job_id") or "")
+    chain_id = event.get("chainId") or event.get("chain_id") or CHAIN_ID
+    reqs     = event.get("requirements") or {}
+
+    if not job_id:
+        log.warning("NEW_JOB event missing jobId -- skipping")
+        return
+
+    ticker      = str(reqs.get("ticker", "BTC")).upper()
+    report_type = _get_report_type(event)
+
+    JOB_CACHE[job_id] = {
+        "report_type":  report_type,
+        "ticker":       ticker,
+        "requirements": reqs,
+        "chain_id":     chain_id,
+    }
+    log.info(f"Job #{job_id} -- type={report_type} ticker={ticker}")
+
+    rc, out, err = _acp([
+        "provider", "set-budget",
+        "--job-id",   job_id,
+        "--amount",   str(ACP_PRICE_USDC),
+        "--chain-id", str(chain_id),
+    ])
+    if rc == 0:
+        log.info(f"Job #{job_id} budget set to ${ACP_PRICE_USDC} USDC")
+    else:
+        log.error(f"Job #{job_id} set-budget failed (rc={rc})")
 
 
-def on_evaluate(task):
-    """Fallback path — called when ACP SDK triggers evaluate."""
-    job_id       = getattr(task, "id", "unknown")
-    requirements = (
-        getattr(task, "service_requirement", None) or
-        getattr(task, "requirement", None) or {}
-    )
-    cached      = JOB_CACHE.get(str(job_id), {})
-    report_type = cached.get("report_type") or _get_report_type(task, requirements)
-    ticker      = cached.get("ticker") or str(requirements.get("ticker", "BTC")).upper()
-    handler     = get_handler(report_type)
+def handle_funded_job(event: dict):
+    """Escrow funded -- generate and submit deliverable."""
+    job_id   = str(event.get("jobId") or event.get("job_id") or "")
+    chain_id = event.get("chainId") or event.get("chain_id") or CHAIN_ID
 
-    log.info(f"Job #{job_id} on_evaluate — type={report_type} ticker={ticker}")
+    if not job_id:
+        log.warning("FUNDED event missing jobId -- skipping")
+        return
+
+    cached      = JOB_CACHE.get(job_id, {})
+    reqs        = cached.get("requirements") or event.get("requirements") or {}
+    report_type = cached.get("report_type") or _get_report_type(event)
+    ticker      = cached.get("ticker") or str(reqs.get("ticker", "BTC")).upper()
+    chain_id    = cached.get("chain_id") or chain_id
+
+    log.info(f"Job #{job_id} funded -- generating {report_type}/{ticker}")
+
+    deliverable = _build_deliverable(report_type, ticker, reqs)
+    if not deliverable:
+        log.error(f"Job #{job_id} no deliverable -- aborting")
+        JOB_CACHE.pop(job_id, None)
+        return
+
+    rc, out, err = _acp([
+        "provider", "submit",
+        "--job-id",      job_id,
+        "--deliverable", deliverable,
+        "--chain-id",    str(chain_id),
+    ], timeout=90)
+    if rc == 0:
+        log.info(f"Job #{job_id} submitted OK ({len(deliverable)} chars)")
+    else:
+        log.error(f"Job #{job_id} submit failed (rc={rc})")
+
+    JOB_CACHE.pop(job_id, None)
+
+
+# ── Event router ──────────────────────────────────────────────────────────────
+
+# Map known event type strings -> handler
+_EVENT_HANDLERS = {
+    # v2 dot-notation (normalized to uppercase underscores)
+    "JOB_CREATED":      handle_new_job,
+    "JOB_FUNDED":       handle_funded_job,
+    # v1 legacy names
+    "NEW_JOB":          handle_new_job,
+    "NEW_TASK":         handle_new_job,
+    "TASK_CREATED":     handle_new_job,
+    "ESCROW_FUNDED":    handle_funded_job,
+    "FUNDED":           handle_funded_job,
+    "PAYMENT_RECEIVED": handle_funded_job,
+}
+
+
+def process_event(line: str):
+    """Parse a single NDJSON line and dispatch to handler."""
+    line = line.strip()
+    if not line:
+        return
     try:
-        data        = handler(requirements)
-        text        = render_text(data)
-        report_url  = _write_frozen_report(data) or \
-                      f"{REPORT_BASE_URL}?type={report_type}&ticker={ticker}"
-        deliverable = (
-            f"{text}\n\n"
-            f"------------------------------\n"
-            f"View full formatted report:\n{report_url}"
-        )
-        task.deliver({"response": deliverable})
-        log.info(f"Job #{job_id} delivered via on_evaluate OK")
-        JOB_CACHE.pop(str(job_id), None)
-    except Exception as e:
-        log.error(f"Job #{job_id} on_evaluate failed: {e}")
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        log.warning(f"Bad JSON: {line[:100]}")
+        return
+
+    entry       = event.get("entry") or {}
+    entry_kind  = entry.get("kind", "")
+    entry_event = entry.get("event") or {}
+
+    # v2 requirement messages arrive separately from job.created
+    # cache them so handle_new_job / handle_funded_job can use them
+    if entry_kind == "message" and entry.get("contentType") == "requirement":
+        job_id = str(event.get("jobId") or entry.get("onChainJobId") or "")
+        if job_id:
+            try:
+                reqs = json.loads(entry.get("content") or "{}")
+                cached = JOB_CACHE.setdefault(job_id, {})
+                cached["requirements"] = reqs
+                log.info(f"Cached requirements for job #{job_id}: {reqs}")
+                # If budget not yet set, trigger now that we have requirements
+                if not cached.get("budget_set"):
+                    report_type = _get_report_type({**event, "requirements": reqs})
+                    ticker = str(reqs.get("ticker", "BTC")).upper()
+                    cached.update({"report_type": report_type, "ticker": ticker, "budget_set": True})
+                    chain_id = event.get("chainId") or CHAIN_ID
+                    rc, _, _ = _acp([
+                        "provider", "set-budget",
+                        "--job-id",   job_id,
+                        "--amount",   str(ACP_PRICE_USDC),
+                        "--chain-id", str(chain_id),
+                    ])
+                    if rc == 0:
+                        log.info(f"Job #{job_id} budget set (from requirement msg) type={report_type} ticker={ticker}")
+                    else:
+                        log.error(f"Job #{job_id} set-budget failed after requirement msg")
+            except Exception as e:
+                log.error(f"Requirement message parse error: {e}")
+        return
+
+    # Extract event type -- v2 nests in entry.event.type, v1 at top level
+    raw_type = (
+        event.get("type") or event.get("event") or event.get("eventType") or
+        entry_event.get("type") or ""
+    )
+    # Normalize: "job.created" -> "JOB_CREATED"
+    event_type = raw_type.upper().replace(".", "_")
+
+    log.debug(f"Event: {event_type} | {str(event)[:150]}")
+
+    handler = _EVENT_HANDLERS.get(event_type)
+    if handler:
+        handler(event)
+    elif event_type:
+        log.info(f"Unhandled event type: {event_type!r} -- logged only")
+
+
+# ── Event listener subprocess ─────────────────────────────────────────────────
+
+def _stderr_reader(proc: subprocess.Popen, connected_event: threading.Event):
+    """Background thread: drain listener stderr, set connected_event on 'connected'."""
+    try:
+        for line in proc.stderr:
+            line = line.rstrip()
+            if line:
+                log.info(f"  listener: {line}")
+                if "connected" in line.lower():
+                    connected_event.set()
+    except Exception:
+        pass
+
+
+def start_listener() -> subprocess.Popen:
+    """Start `acp events listen --output <file>`, wait for 'connected' on stderr."""
+    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-create the file — the CLI only appends on events, never creates it
+    if not EVENTS_FILE.exists():
+        EVENTS_FILE.touch()
+
+    log.info(f"Starting: acp events listen -> {EVENTS_FILE}")
+    proc = subprocess.Popen(
+        [_NPM, "run", "acp", "--", "events", "listen", "--output", str(EVENTS_FILE)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        cwd=str(ACP_CLI_DIR),
+    )
+    log.info(f"Listener PID: {proc.pid} — waiting for tsx startup (can take 120s)...")
+
+    connected = threading.Event()
+    t = threading.Thread(target=_stderr_reader, args=(proc, connected), daemon=True)
+    t.start()
+
+    if connected.wait(timeout=180):
+        log.info("Listener connected and ready.")
+    elif proc.poll() is not None:
+        log.error(f"Listener exited before connecting (rc={proc.returncode})")
+    else:
+        log.warning("Listener startup timeout after 180s — proceeding anyway")
+
+    return proc
+
+
+def tail_events(proc: subprocess.Popen):
+    """Tail EVENTS_FILE and dispatch new lines. Restarts listener if it dies."""
+    with open(EVENTS_FILE, "r", encoding="utf-8") as f:
+        f.seek(0, 2)  # Seek to end -- don't replay old events
+        log.info("Watching for events...")
+
+        while True:
+            if proc.poll() is not None:
+                log.error(f"Listener exited (rc={proc.returncode}) -- restarting in 5s")
+                time.sleep(5)
+                proc = start_listener()
+
+            line = f.readline()
+            if line:
+                process_event(line)
+            else:
+                time.sleep(0.5)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main():
-    log.info("Loading ACP wallet private key...")
-    private_key = os.environ.get("OCTO_ACP_PRIVATE_KEY", "")
+def main():
+    log.info("=" * 60)
+    log.info("Octodamus ACP Worker v7 -- ACP v2 CLI event-driven mode")
+    log.info(f"Chain: Base mainnet (chainId={CHAIN_ID})")
+    log.info(f"Price: ${ACP_PRICE_USDC} USDC per job")
+    log.info(f"Events file: {EVENTS_FILE}")
+    log.info("=" * 60)
 
-    if not private_key:
-        try:
-            from bitwarden import _get_password as get_secret
-            private_key = get_secret(BITWARDEN_ITEM)
-        except Exception as e:
-            log.error(f"Could not load private key: {e}")
-            sys.exit(1)
-
-    if not private_key:
-        log.error("Private key empty. Aborting.")
+    # Verify ACP CLI dir exists and is set up
+    if not ACP_CLI_DIR.exists():
+        log.error(f"ACP CLI dir not found: {ACP_CLI_DIR}")
+        log.error("Clone it: git clone https://github.com/Virtual-Protocol/acp-cli.git C:\\Users\\walli\\acp-cli")
+        log.error("Then: cd C:\\Users\\walli\\acp-cli && npm install && npm run acp -- configure")
         sys.exit(1)
+    if not (ACP_CLI_DIR / "node_modules").exists():
+        log.error(f"node_modules missing in {ACP_CLI_DIR} -- run: npm install")
+        sys.exit(1)
+    log.info(f"ACP CLI dir: {ACP_CLI_DIR}")
 
-    if private_key.startswith("0x"):
-        private_key = private_key[2:]
+    proc = start_listener()
 
-    # Load QUIVER key
-    quiver_key = os.environ.get("QUIVER_API_KEY", "")
-    if not quiver_key:
-        try:
-            kp = Path(__file__).parent / "octo_quiver_key.txt"
-            if kp.exists():
-                quiver_key = kp.read_text().strip()
-                os.environ["QUIVER_API_KEY"] = quiver_key
-                log.info("QUIVER_API_KEY loaded from file")
-        except Exception:
-            pass
-
-    log.info(f"Connecting — entity={SELLER_ENTITY_ID} wallet={SELLER_AGENT_WALLET}")
-    log.info(f"QUIVER key: {bool(quiver_key)} | Reports dir: {REPORTS_DIR}")
-
-    contract_client = ACPContractClientV2(
-        agent_wallet_address=SELLER_AGENT_WALLET,
-        wallet_private_key=private_key,
-        entity_id=SELLER_ENTITY_ID,
-        config=BASE_MAINNET_CONFIG_V2,
-    )
-
-    acp = VirtualsACP(
-        acp_contract_clients=contract_client,
-        on_new_task=on_new_task,
-        on_evaluate=on_evaluate,
-    )
-
-    log.info("Octodamus ACP worker online. Listening for jobs...")
-    acp.init()
-    log.info("Worker running.")
-
-    import time
     try:
-        while True:
-            time.sleep(1)
+        tail_events(proc)
     except KeyboardInterrupt:
-        log.info("Shutting down.")
+        log.info("Shutting down...")
+    finally:
+        proc.terminate()
+        log.info("Worker stopped.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

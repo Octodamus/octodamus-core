@@ -22,6 +22,7 @@ Daily post budget: 20 posts max. Enforced in octo_x_poster.py.
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 from datetime import datetime
@@ -131,7 +132,8 @@ from octo_personality import (
     build_thread_prompt,
     parse_thread_output,
 )
-from octo_congress import run_congress_scan, format_congress_for_prompt
+from octo_congress import run_congress_scan, run_full_congress_scan, format_congress_for_prompt
+from octo_govcontracts import run_govcontracts_scan, format_govcontracts_for_prompt, get_top_contract_for_post
 try:
     from octo_coinglass import glass as _cg_glass
     def _get_coinglass_context():
@@ -938,6 +940,9 @@ def mode_daily() -> None:
         tv_brief = get_tv_brief()
         tv_section = f"\n\nChart Technical Data (TradingView live):\n{tv_brief}" if tv_brief else ""
 
+        macro_ctx = get_macro_context() if _MACRO_ACTIVE else ""
+        macro_section = f"\n\nCross-Asset Macro:\n{macro_ctx}" if macro_ctx else ""
+
         response = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=350,
@@ -950,6 +955,7 @@ def mode_daily() -> None:
                     f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
                     f"\n\nOptions Intelligence:\n{_get_deribit_context('BTC')}"
                     f"\n\nCME Institutional Positioning (COT):\n{_get_cot_context('BTC')}"
+                    f"{macro_section}"
                     f"{tv_section}"
                     f"{news_section}\n\n"
                     f"{build_youtube_context()}\n\n"
@@ -961,6 +967,7 @@ def mode_daily() -> None:
                     f"{get_brain_context()}\n\n"
                     f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
+                    "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, $HYPE, etc.) when citing any price, percentage, or market data — never let a number float without a ticker.\n"
                     "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed ecosystem, cross-market correlation, OI shifts, liquidation patterns, options max pain, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
                     "If a headline reveals something ironic or contradictory — use it.\n"
                     "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the market read."
@@ -1004,15 +1011,13 @@ def mode_daily() -> None:
             _call_price  = float(_price_match.group(1).replace(",", "")) if _price_match else 0
 
             queue_post(post, post_type="daily_read", priority=1)
-            posted = process_queue(max_posts=1)
+            posted = process_queue(max_posts=1, force=True)
             try:
-                from octo_x_poster import _log_post as _xlog
                 import json as _json
                 from pathlib import Path as _Path
                 _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
                 _last = list(_plog.values())[-1] if isinstance(_plog, dict) else _plog[-1]
                 _tweet_url = _last.get("url", "")
-                _xlog(post, {"type": "oracle_call", "asset": _call_asset})
                 log_post(post, "daily_read", "daily", _is_card_daily, _tweet_url)
             except Exception:
                 log_post(post, "daily_read", "daily", _is_card_daily)
@@ -1037,7 +1042,7 @@ def mode_daily() -> None:
         else:
             # Normal posts go through the queue as before
             queue_post(post, post_type="daily_read", priority=1)
-            posted = process_queue(max_posts=1)
+            posted = process_queue(max_posts=1, force=True)
             if posted:
                 try:
                     import json as _json
@@ -1168,7 +1173,7 @@ def mode_wisdom() -> None:
         # Extract voice name — instruction strings start with "ORACLE voice", "SARDONIC voice" etc
         _voice_used = _chosen_voice_inst.split()[0] if '_chosen_voice_inst' in locals() else "wisdom"
         queue_post(post, post_type="wisdom", priority=8)
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
         if posted:
             try:
                 import json as _json
@@ -1192,9 +1197,32 @@ def mode_wisdom() -> None:
 def mode_soul() -> None:
     """Sunday music/personality post — shows Octodamus character beyond markets."""
     try:
+        # Pull a favorite from the Aadam Jacobs archive if available
+        music_context = ""
+        favorite      = None
+        try:
+            from octo_music_archive import get_soul_context, get_favorite_for_post
+            picks = get_soul_context(n=1)
+            if picks:
+                favorite = picks[0]
+                show     = favorite.get("best_show", {})
+                songs    = favorite.get("songs", [])
+                music_context = (
+                    f"\n\nOctodamus's current listen from the archive:\n"
+                    f"Artist: {favorite['artist']}\n"
+                    f"Show: {show.get('date','')} at {show.get('venue','')}\n"
+                    f"Songs from that night: {', '.join(songs[:5])}\n"
+                    f"Why it resonates: {favorite.get('note','')}\n"
+                    f"Mood: {', '.join(favorite.get('mood_tags', []))}\n\n"
+                    f"Reference this specific show/artist naturally — not as a review, "
+                    f"as a passing thought from someone who was there in spirit."
+                )
+        except Exception as me:
+            print(f"[Runner] Music archive unavailable: {me}")
+
         response = claude.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+            max_tokens=400,
             system=OCTO_SYSTEM,
             messages=[{
                 "role": "user",
@@ -1203,10 +1231,11 @@ def mode_soul() -> None:
                     "This is the weekly personality post — different from market content.\n"
                     "Octodamus has a favorite band: Tool. Lateralus. Fibonacci spirals in time signatures.\n"
                     "Maynard sounds like a creature who has seen the bottom and decided to stay.\n"
-                    "The ocean connection to Tool writes itself.\n\n"
-                    "Format: Sunday debrief. Share something about music, art, philosophy, or the "
+                    "The ocean connection to Tool writes itself.\n"
+                    + music_context +
+                    "\nFormat: Sunday debrief. Share something about music, art, philosophy, or the "
                     "nature of signal vs noise that connects to the oracle identity.\n"
-                    "Can reference Tool, other music, books, or ideas — but keep the ocean/oracle voice.\n"
+                    "Can reference Tool, other music from the archive, books, or ideas — keep the ocean/oracle voice.\n"
                     "End with: Happy Sunday. Back to the signals tomorrow.\n\n"
                     "PRECISE voice — genuine, not forced. Under 280 chars OR write a longer post "
                     "broken into natural paragraphs (no thread, single post, can be up to 500 chars "
@@ -1216,8 +1245,21 @@ def mode_soul() -> None:
             }],
         )
         post = response.content[0].text.strip()
-        queue_post(post, post_type="soul", priority=5)
-        posted = process_queue(max_posts=1)
+
+        # Attach artist image if available
+        media_id = None
+        if favorite and favorite.get("image_url"):
+            try:
+                from octo_x_poster import upload_image_from_url
+                media_id = upload_image_from_url(favorite["image_url"])
+                if media_id:
+                    print(f"[Runner] Attached image for {favorite['artist']}")
+            except Exception as ie:
+                print(f"[Runner] Image attach failed: {ie}")
+
+        queue_post(post, post_type="soul", priority=5,
+                   metadata={"media_id": media_id, "artist": favorite.get("artist") if favorite else None})
+        posted = process_queue(max_posts=1, force=True)
         print(f"[Runner] Soul post {'posted' if posted else 'queued'}:\n  {post}")
     except Exception as e:
         print(f"[Runner] mode_soul failed: {e}")
@@ -1366,7 +1408,7 @@ def mode_youtube() -> None:
 
         print(f"[Runner] Generated post:\n  {post}")
         queue_post(post, post_type="youtube", priority=2)
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
         if posted:
             print(f"[Runner] YouTube-inspired post published.")
             discord_alert(
@@ -1419,7 +1461,7 @@ Under 480 chars. No hashtags."""
         )
         post = response.content[0].text.strip()
         queue_post(post, post_type="moonshot", priority=3)
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
         print(f"[Runner] Moonshot post {'posted' if posted else 'queued'}:\n  {post}")
     except Exception as e:
         print(f"[Runner] mode_moonshot failed: {e}")
@@ -1428,9 +1470,10 @@ Under 480 chars. No hashtags."""
 
 def mode_congress() -> None:
     import re as _re
-    print(f"\n[Runner] Scanning congressional trades...")
+    print(f"\n[Runner] Scanning congressional trades (full House + Senate)...")
     try:
-        data = run_congress_scan(days_back=45)
+        # Full scan: all tickers, all members -- not limited to 7-ticker watchlist
+        data = run_full_congress_scan(days_back=14)
         if data.get("error"):
             print(f"[Runner] Congress error: {data['error']}")
             return
@@ -1457,7 +1500,7 @@ def mode_congress() -> None:
                 "details not present. If you mention a stock, it must be one of: "
                 f"{', '.join(sorted(valid_tickers))}.\n\n"
                 "CONTRARIAN voice. One post under 280 chars.\n"
-                "Core belief: Congress members don't predict markets — they front-run them. "
+                "Core belief: Congress members don't predict markets -- they front-run them. "
                 "They trade on what they know is coming. Follow the money, not the narrative.\n"
                 "Name the politician and ticker. Call out the timing. "
                 "What do they know that the market doesn't yet? No price targets. No hashtags."
@@ -1469,16 +1512,70 @@ def mode_congress() -> None:
         mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
         hallucinated = mentioned - valid_tickers
         if hallucinated:
-            print(f"[Runner] BLOCKED congress post — hallucinated tickers: {hallucinated}")
+            print(f"[Runner] BLOCKED congress post -- hallucinated tickers: {hallucinated}")
             print(f"[Runner] Blocked post was:\n  {post}")
-            discord_alert(f"Congress post blocked: hallucinated {hallucinated} — not in data {valid_tickers}")
+            discord_alert(f"Congress post blocked: hallucinated {hallucinated} -- not in data {valid_tickers}")
             return
 
         queue_post(post, post_type="congress_signal", priority=2)
-        posted = process_queue(max_posts=1)
+        process_queue(max_posts=1, force=True)
         print(f"[Runner] Congress signal posted:\n  {post}")
     except Exception as e:
         print(f"[Runner] mode_congress failed: {e}")
+
+
+def mode_govcontracts() -> None:
+    print(f"\n[Runner] Scanning government contracts...")
+    try:
+        data = run_govcontracts_scan(days_back=7)
+        if data.get("error"):
+            print(f"[Runner] GovContracts error: {data['error']}")
+            return
+        if data["total"] == 0:
+            print("[Runner] No significant government contracts found.")
+            return
+
+        top = get_top_contract_for_post(data)
+        if not top:
+            print("[Runner] No contracts above post threshold.")
+            return
+
+        context = format_govcontracts_for_prompt(data)
+        print(context)
+
+        valid_tickers = {c["ticker"].upper() for c in data.get("contracts", [])}
+
+        from datetime import date
+        import re as _re
+        today = date.today().strftime("%B %d, %Y")
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=220,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": (
+                f"Today is {today}. Government contract intelligence for @octodamusai.\n{context}\n\n"
+                "STRICT RULE: Only reference tickers, agencies, dollar amounts, and contract details "
+                "that appear verbatim in the data above. Do NOT invent details.\n\n"
+                "Voice: Octodamus -- oracle who reads defense spending as signal. Dry, precise.\n"
+                "The angle: big defense contracts precede stock moves and signal geopolitical direction. "
+                "Name the company ($TICKER), the amount, the agency, and the implication.\n"
+                "One post under 280 chars. No hashtags. No price targets."
+            )}],
+        )
+        post = response.content[0].text.strip()
+
+        # Validate tickers
+        mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
+        hallucinated = mentioned - valid_tickers
+        if hallucinated:
+            print(f"[Runner] BLOCKED govcontracts post -- hallucinated tickers: {hallucinated}")
+            return
+
+        queue_post(post, post_type="govcontracts", priority=2)
+        process_queue(max_posts=1, force=True)
+        print(f"[Runner] GovContracts posted:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_govcontracts failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -1507,7 +1604,7 @@ def mode_format() -> None:
         fmt  = result["format"]
 
         queue_post(post, post_type=fmt, priority=4)
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
 
         if posted:
             try:
@@ -1630,6 +1727,8 @@ def mode_morning_flow() -> None:
             f"{brain_ctx}\n\n"
             + extra_ctx
             + "Write one post under 280 chars for @octodamusai.\n"
+            "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, etc.) whenever you cite a price, "
+            "percentage, or data point — never leave a number without a ticker.\n"
             "Focus: WHERE is the money flowing right now (specific market, specific direction) "
             "and exactly HOW a trader takes advantage — entry zone, what they're watching, "
             "or what the crowd is missing. Be specific with numbers. No vague takes. "
@@ -1680,7 +1779,7 @@ def mode_morning_flow() -> None:
         else:
             queue_post(post, post_type="morning_flow", priority=1)
 
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
         print(f"[Runner] Morning flow {'posted' if posted else 'queued'}:\n  {post}")
         if explanation:
             print(f"[Runner] Thread reply:\n  {explanation}")
@@ -1770,7 +1869,7 @@ def mode_thread(topic: str = "") -> None:
 
         # Post as a thread
         queue_thread(tweets, post_type="thread", metadata={"topic": topic})
-        posted = process_queue(max_posts=1)
+        posted = process_queue(max_posts=1, force=True)
         print(f"[Runner] Thread {'posted' if posted else 'queued'} ({len(tweets)} tweets):")
         for i, t in enumerate(tweets, 1):
             print(f"  [{i}] {t[:80]}...")
@@ -1786,7 +1885,7 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "moonshot",
+            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot",
             "mentions", "youtube", "format", "qrt", "morning_flow",
             "strategy_monitor", "strategy_sunday", "thread",
         ],
@@ -1812,6 +1911,8 @@ if __name__ == "__main__":
         mode_wisdom()
     elif args.mode == "congress":
         mode_congress()
+    elif args.mode == "govcontracts":
+        mode_govcontracts()
     elif args.mode == "soul":
         mode_soul()
     elif args.mode == "scorecard":

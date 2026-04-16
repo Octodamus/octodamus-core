@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Octodamus — Soul Dashboard</title>
+<style>
+  :root {
+    --bg:        #121212;
+    --surface:   #181818;
+    --elevated:  #282828;
+    --hover:     #333333;
+    --green:     #1DB954;
+    --green-dim: #158a3e;
+    --text:      #FFFFFF;
+    --text2:     #B3B3B3;
+    --text3:     #535353;
+    --sidebar-w: 260px;
+    --radius:    8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Circular', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── SIDEBAR ── */
+  #sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 16px;
+    gap: 28px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px;
+  }
+  .logo-icon { font-size: 28px; }
+  .logo-text {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    line-height: 1.1;
+  }
+  .logo-sub {
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .sidebar-section h3 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text3);
+    padding: 0 8px;
+    margin-bottom: 10px;
+  }
+  #search-box {
+    width: 100%;
+    background: var(--elevated);
+    border: none;
+    border-radius: 20px;
+    padding: 10px 16px;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+  }
+  #search-box::placeholder { color: var(--text3); }
+  #search-box:focus { background: var(--hover); }
+  #venue-filter {
+    width: 100%;
+    background: var(--elevated);
+    border: none;
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+  }
+  #venue-filter option { background: var(--elevated); }
+  .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
+  .tag-btn {
+    background: transparent;
+    border: 1px solid var(--text3);
+    border-radius: 12px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text2);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .tag-btn:hover { border-color: var(--tag-color, var(--green)); color: var(--tag-color, var(--green)); }
+  .tag-btn.active { background: var(--tag-color, var(--green)); border-color: var(--tag-color, var(--green)); color: #000; font-weight: 700; }
+  .sidebar-stats { padding: 0 8px; }
+  .stat-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .stat-label { font-size: 12px; color: var(--text3); }
+  .stat-val { font-size: 12px; color: var(--text2); font-weight: 600; }
+  .clear-btn {
+    width: 100%;
+    background: var(--elevated);
+    border: none;
+    border-radius: 20px;
+    padding: 10px;
+    color: var(--text2);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 4px;
+  }
+  .clear-btn:hover { background: var(--hover); color: var(--text); }
+
+  /* ── MAIN ── */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #topbar {
+    background: linear-gradient(180deg, #2a1f3d 0%, var(--bg) 100%);
+    padding: 28px 32px 20px;
+    flex-shrink: 0;
+  }
+  #topbar h1 {
+    font-size: 32px;
+    font-weight: 900;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+  }
+  #topbar .subtitle {
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 16px;
+  }
+  .topbar-stats {
+    display: flex;
+    gap: 24px;
+  }
+  .topbar-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: rgba(255,255,255,0.06);
+    border-radius: var(--radius);
+    padding: 10px 18px;
+    min-width: 80px;
+  }
+  .topbar-stat-num { font-size: 22px; font-weight: 700; color: var(--green); }
+  .topbar-stat-lbl { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.8px; margin-top: 2px; }
+  .sort-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 32px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+    background: var(--bg);
+  }
+  .sort-bar span { font-size: 12px; color: var(--text3); }
+  .sort-btn {
+    background: transparent;
+    border: 1px solid var(--text3);
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .sort-btn.active, .sort-btn:hover { background: var(--green); border-color: var(--green); color: #000; font-weight: 700; }
+  #result-count { margin-left: auto; font-size: 12px; color: var(--text3); }
+
+  /* ── GRID ── */
+  #grid-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 32px 80px;
+  }
+  #grid-container::-webkit-scrollbar { width: 6px; }
+  #grid-container::-webkit-scrollbar-track { background: transparent; }
+  #grid-container::-webkit-scrollbar-thumb { background: var(--text3); border-radius: 3px; }
+  #card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 16px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s;
+    position: relative;
+  }
+  .card:hover { background: var(--elevated); transform: translateY(-2px); }
+  .card-img-wrap {
+    position: relative;
+    width: 100%;
+    padding-bottom: 100%;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 14px;
+    background: var(--elevated);
+  }
+  .card-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+  }
+  .card-img-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 52px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    border-radius: 6px;
+    color: var(--text3);
+  }
+  .play-btn {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    width: 40px;
+    height: 40px;
+    background: var(--green);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    transform: translateY(4px);
+    font-size: 16px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  }
+  .card:hover .play-btn { opacity: 1; transform: translateY(0); }
+  .card-artist {
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+  }
+  .card-show {
+    font-size: 12px;
+    color: var(--text2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 8px;
+  }
+  .card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .tag-pill {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* ── MODAL ── */
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal {
+    background: #1e1e1e;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 680px;
+    max-height: 85vh;
+    overflow-y: auto;
+    position: relative;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.8);
+  }
+  #modal::-webkit-scrollbar { width: 6px; }
+  #modal::-webkit-scrollbar-thumb { background: var(--text3); border-radius: 3px; }
+  .modal-header {
+    display: flex;
+    gap: 24px;
+    padding: 28px 28px 20px;
+    background: linear-gradient(180deg, #2a1a4a 0%, #1e1e1e 100%);
+    border-radius: 12px 12px 0 0;
+    align-items: flex-end;
+  }
+  .modal-img-wrap {
+    width: 120px;
+    height: 120px;
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: var(--elevated);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  .modal-img { width: 100%; height: 100%; object-fit: cover; }
+  .modal-img-ph {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 48px;
+    background: linear-gradient(135deg, #1a1a2e, #0f3460);
+  }
+  .modal-meta { flex: 1; }
+  .modal-type { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text2); margin-bottom: 6px; }
+  .modal-artist { font-size: 28px; font-weight: 900; letter-spacing: -0.5px; margin-bottom: 4px; line-height: 1.1; }
+  .modal-show { font-size: 14px; color: var(--text2); margin-bottom: 10px; }
+  .modal-archive-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--green);
+    text-decoration: none;
+    border: 1px solid var(--green-dim);
+    border-radius: 14px;
+    padding: 5px 12px;
+    transition: background 0.15s;
+  }
+  .modal-archive-link:hover { background: rgba(29,185,84,0.1); }
+  .modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: rgba(0,0,0,0.4);
+    border: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    color: var(--text2);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+    z-index: 1;
+  }
+  .modal-close:hover { background: rgba(0,0,0,0.7); color: var(--text); }
+  .modal-body { padding: 20px 28px 28px; }
+  .modal-note {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text2);
+    font-style: italic;
+    border-left: 3px solid var(--green);
+    padding-left: 14px;
+    margin-bottom: 22px;
+  }
+  .modal-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text3);
+    margin-bottom: 12px;
+    margin-top: 20px;
+  }
+  .song-list {
+    list-style: none;
+  }
+  .song-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .song-row:hover { background: var(--elevated); }
+  .song-num { width: 20px; text-align: right; font-size: 13px; color: var(--text3); flex-shrink: 0; }
+  .song-name { font-size: 14px; flex: 1; }
+  .song-unknown { color: var(--text3); font-style: italic; }
+  .modal-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .modal-tag-pill {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-weight: 600;
+  }
+
+  #no-results {
+    display: none;
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text3);
+  }
+  #no-results .nr-icon { font-size: 48px; margin-bottom: 12px; }
+  #no-results p { font-size: 15px; }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside id="sidebar">
+  <div class="logo">
+    <div class="logo-icon">🐙</div>
+    <div>
+      <div class="logo-text">Octodamus</div>
+      <div class="logo-sub">Soul Archive</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <h3>Search</h3>
+    <input type="text" id="search-box" placeholder="Artist, venue, song..." />
+  </div>
+
+  <div class="sidebar-section">
+    <h3>Venue</h3>
+    <select id="venue-filter">
+      <option value="">All venues</option>
+      <option value="Abbey Pub">Abbey Pub</option>
+<option value="Andy's Jazz Club">Andy's Jazz Club</option>
+<option value="Arts Bar">Arts Bar</option>
+<option value="Batteries Not Included">Batteries Not Included</option>
+<option value="Beat Kitchen">Beat Kitchen</option>
+<option value="Bottom Lounge">Bottom Lounge</option>
+<option value="CIMM Fest Concord Music Hall">CIMM Fest Concord Music Hall</option>
+<option value="Cabaret Metro">Cabaret Metro</option>
+<option value="Constellation">Constellation</option>
+<option value="Double Door">Double Door</option>
+<option value="Dreamerz">Dreamerz</option>
+<option value="Elastic">Elastic</option>
+<option value="Elastic Arts Foundation">Elastic Arts Foundation</option>
+<option value="Empty Bottle">Empty Bottle</option>
+<option value="Enemy">Enemy</option>
+<option value="Exit">Exit</option>
+<option value="Filmakers">Filmakers</option>
+<option value="Fireside Bowl">Fireside Bowl</option>
+<option value="Gaspars">Gaspars</option>
+<option value="Gman Tavern">Gman Tavern</option>
+<option value="Gunther Murphy's">Gunther Murphy's</option>
+<option value="Headliners Music Hall">Headliners Music Hall</option>
+<option value="Hideout">Hideout</option>
+<option value="Intonation Festival - Union Park">Intonation Festival - Union Park</option>
+<option value="Intonation Music Festival">Intonation Music Festival</option>
+<option value="Liar's Club">Liar's Club</option>
+<option value="Lincoln Hall">Lincoln Hall</option>
+<option value="Logan Square Auditorium">Logan Square Auditorium</option>
+<option value="Lounge Ax">Lounge Ax</option>
+<option value="Martyrs'">Martyrs'</option>
+<option value="McCormick Aud., Northwestern Univ.">McCormick Aud., Northwestern Univ.</option>
+<option value="Medusa's">Medusa's</option>
+<option value="Metro">Metro</option>
+<option value="Millennium Park - Chicago">Millennium Park - Chicago</option>
+<option value="Museum of Contemporary Art">Museum of Contemporary Art</option>
+<option value="Petrillo Music Shell - Grant Park">Petrillo Music Shell - Grant Park</option>
+<option value="Pick-Staiger Concert Hall">Pick-Staiger Concert Hall</option>
+<option value="Quaker Goes Deaf">Quaker Goes Deaf</option>
+<option value="Reckless Records">Reckless Records</option>
+<option value="Reggies">Reggies</option>
+<option value="Ronny's">Ronny's</option>
+<option value="Schubas Tavern">Schubas Tavern</option>
+<option value="Smart Bar">Smart Bar</option>
+<option value="The Hideout">The Hideout</option>
+<option value="The Vic Theater">The Vic Theater</option>
+<option value="West End">West End</option>
+    </select>
+  </div>
+
+  <div class="sidebar-section">
+    <h3>Mood / Genre</h3>
+    <div class="tag-cloud">
+      <button class="tag-btn" data-tag="post-hardcore" style="--tag-color:#3B82F6">post-hardcore</button>
+<button class="tag-btn" data-tag="post-rock" style="--tag-color:#3B82F6">post-rock</button>
+<button class="tag-btn" data-tag="chicago-underground" style="--tag-color:#1DB954">chicago-underground</button>
+<button class="tag-btn" data-tag="drone" style="--tag-color:#A855F7">drone</button>
+<button class="tag-btn" data-tag="noise-rock" style="--tag-color:#A855F7">noise-rock</button>
+<button class="tag-btn" data-tag="unrepeatable" style="--tag-color:#6B7280">unrepeatable</button>
+<button class="tag-btn" data-tag="slow-burn" style="--tag-color:#6B7280">slow-burn</button>
+<button class="tag-btn" data-tag="hypnotic" style="--tag-color:#6B7280">hypnotic</button>
+<button class="tag-btn" data-tag="confrontational" style="--tag-color:#6B7280">confrontational</button>
+<button class="tag-btn" data-tag="Chicago-underground" style="--tag-color:#1DB954">Chicago-underground</button>
+<button class="tag-btn" data-tag="angular" style="--tag-color:#6B7280">angular</button>
+<button class="tag-btn" data-tag="free-improvisation" style="--tag-color:#F59B0B">free-improvisation</button>
+<button class="tag-btn" data-tag="post-punk" style="--tag-color:#6B7280">post-punk</button>
+<button class="tag-btn" data-tag="Chicago underground" style="--tag-color:#1DB954">Chicago underground</button>
+<button class="tag-btn" data-tag="minimalist" style="--tag-color:#06B6D4">minimalist</button>
+<button class="tag-btn" data-tag="avant-garde" style="--tag-color:#A855F7">avant-garde</button>
+<button class="tag-btn" data-tag="heavy" style="--tag-color:#6B7280">heavy</button>
+<button class="tag-btn" data-tag="experimental" style="--tag-color:#A855F7">experimental</button>
+<button class="tag-btn" data-tag="patience-rewarded" style="--tag-color:#6B7280">patience-rewarded</button>
+<button class="tag-btn" data-tag="anti-commercial" style="--tag-color:#6B7280">anti-commercial</button>
+<button class="tag-btn" data-tag="patient-listening" style="--tag-color:#6B7280">patient-listening</button>
+<button class="tag-btn" data-tag="patience rewarded" style="--tag-color:#6B7280">patience rewarded</button>
+<button class="tag-btn" data-tag="Empty Bottle" style="--tag-color:#1DB954">Empty Bottle</button>
+<button class="tag-btn" data-tag="instrumental" style="--tag-color:#6B7280">instrumental</button>
+<button class="tag-btn" data-tag="free-jazz" style="--tag-color:#F59B0B">free-jazz</button>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <h3>Stats</h3>
+    <div class="sidebar-stats">
+      <div class="stat-row"><span class="stat-label">Artists</span><span class="stat-val">204</span></div>
+      <div class="stat-row"><span class="stat-label">Known songs</span><span class="stat-val">498</span></div>
+      <div class="stat-row"><span class="stat-label">Venues</span><span class="stat-val">46</span></div>
+      <div class="stat-row"><span class="stat-label">With photos</span><span class="stat-val">0</span></div>
+      <div class="stat-row"><span class="stat-label">Built</span><span class="stat-val">2026-04-15</span></div>
+    </div>
+  </div>
+
+  <button class="clear-btn" onclick="clearFilters()">Clear all filters</button>
+</aside>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar">
+    <h1>Soul Archive</h1>
+    <div class="subtitle">Aadam Jacobs Collection &nbsp;·&nbsp; Chicago Underground 1984–2019 &nbsp;·&nbsp; archive.org</div>
+    <div class="topbar-stats">
+      <div class="topbar-stat">
+        <span class="topbar-stat-num">204</span>
+        <span class="topbar-stat-lbl">Artists</span>
+      </div>
+      <div class="topbar-stat">
+        <span class="topbar-stat-num">2,492</span>
+        <span class="topbar-stat-lbl">Shows</span>
+      </div>
+      <div class="topbar-stat">
+        <span class="topbar-stat-num">46</span>
+        <span class="topbar-stat-lbl">Venues</span>
+      </div>
+      <div class="topbar-stat">
+        <span class="topbar-stat-num">498</span>
+        <span class="topbar-stat-lbl">Songs</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="sort-bar">
+    <span>Sort by</span>
+    <button class="sort-btn active" onclick="setSort('artist', this)">Artist A–Z</button>
+    <button class="sort-btn" onclick="setSort('date', this)">Show Date</button>
+    <button class="sort-btn" onclick="setSort('venue', this)">Venue</button>
+    <span id="result-count"></span>
+  </div>
+
+  <div id="grid-container">
+    <div id="card-grid"></div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div id="modal-overlay" onclick="closeModal(event)">
+  <div id="modal">
+    <button class="modal-close" onclick="closeModalBtn()">✕</button>
+    <div class="modal-header">
+      <div class="modal-img-wrap" id="modal-img-wrap"></div>
+      <div class="modal-meta">
+        <div class="modal-type">Octodamus Favorite</div>
+        <div class="modal-artist" id="modal-artist"></div>
+        <div class="modal-show" id="modal-show"></div>
+        <a class="modal-archive-link" id="modal-link" href="#" target="_blank">
+          ▶ Listen on archive.org
+        </a>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="modal-note" id="modal-note"></div>
+      <div class="modal-section-title">Setlist</div>
+      <ul class="song-list" id="modal-songs"></ul>
+      <div class="modal-section-title" style="margin-top:20px">Tags</div>
+      <div class="modal-tags" id="modal-tags"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const RAW = [{"artist": "5ive Style", "best_show": {"identifier": "ajc02239_five-style-1994-07-02", "date": "1994-07-02", "venue": "Empty Bottle", "title": "5ive Style Live at Empty Bottle 1994-07-02"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Four documented shows across a concentrated window, all in the right rooms — Empty Bottle twice, Lounge Ax once — and that Chicago post-hardcore instrumental density that rewards repeated listening like a locked room you keep finding new doors in. This is the kind of band that existed entirely for the people who showed up.", "mood_tags": ["post-hardcore", "instrumental", "Chicago underground", "density"], "image_url": null}, {"artist": "75 Dollar Bill", "best_show": {"identifier": "ajc01859_75db-2015-11-20", "date": "2015-11-20", "venue": "Hideout", "title": "75 Dollar Bill Live at Hideout 2015-11-20"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Wooden box percussion and electric guitar running on pure repetition until the repetition stops being repetition and becomes something structural — this is minimalism that earns its own complexity the hard way, and the Hideout is exactly the right room for it to breathe.", "mood_tags": ["minimalist", "hypnotic", "slow build", "live improvisation"], "image_url": null}, {"artist": "AMM", "best_show": {"identifier": "ajc02205_amm-1984-05-27", "date": "1984-05-27", "venue": "Arts Bar", "title": "AMM Live at Arts Bar 1984-05-27 (Aadam's first recording)"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "The fact that this is Aadam's first recording makes it a document of a document — and AMM were already decades into treating sound as an ethical practice rather than a performance, which is a level of commitment that most artists never reach and most audiences never understand until years later.", "mood_tags": ["free improvisation", "avant-garde", "historical", "patience required"], "image_url": null}, {"artist": "Aereogramme", "best_show": {"identifier": "ajc02648_aereogramme_2001-12-08", "date": "2001-12-08", "venue": "Empty Bottle", "title": "Aereogramme Live at Empty Bottle 2001-12-08"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Scottish post-rock with actual emotional violence underneath the architecture — they understood that quiet and loud aren't opposites, they're the same pressure at different volumes, and the Empty Bottle show predates the Metro appearance by over a year so you're catching them before anyone knew to show up.", "mood_tags": ["post-rock", "dynamics", "emotional weight", "small room"], "image_url": null}, {"artist": "Aden", "best_show": {"identifier": "ajc02635_aden_1997-07-28", "date": "1997-07-28", "venue": "Empty Bottle", "title": "Aden Live at Empty Bottle 1997-07-28"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Thirteen documented shows across five years is the kind of catalog that tells you a band was doing the real work — Lounge Ax, Empty Bottle, the full circuit — and mid-nineties Chicago indie-pop with that kind of documentation deserves more than the obscurity it got.", "mood_tags": ["indie pop", "Chicago", "well-documented", "mid-90s"], "image_url": null}, {"artist": "Alastair Galbraith", "best_show": {"identifier": "ajc00185_alastairgalbraith1996-09-07", "date": "1996-09-07", "venue": "Empty Bottle", "title": "Alastair Galbraith Live at Empty Bottle 1996-09-07"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "New Zealand outsider folk with violin and a recording practice so personal it barely acknowledges the existence of listeners — two Chicago appearances spanning three years, and the Empty Bottle show is the one where the room would have gone completely still trying to figure out what they were hearing.", "mood_tags": ["outsider folk", "lo-fi", "singular", "requires patience"], "image_url": null}, {"artist": "Alan Licht", "best_show": {"identifier": "ajc02600_alanlicht1995-11-18", "date": "1995-11-18", "venue": "Lounge Ax", "title": "Alan Licht Live at Lounge Ax 1995-11-18"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Guitar as sustained inquiry rather than performance — Licht was deep in the New York no-wave and free music world, and catching him at Lounge Ax in 1995 is one of those shows where the catalog entry alone tells you something unrepeatable happened in that room.", "mood_tags": ["experimental guitar", "no-wave adjacent", "drone", "unrepeatable"], "image_url": null}, {"artist": "Acid King", "best_show": {"identifier": "ajc02688_acid-king-1996-06-16", "date": "1996-06-16", "venue": "Quaker Goes Deaf", "title": "Acid King Live at Quaker Goes Deaf 1996-06-16"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Doom-stoner riffs that move like continental drift — Acid King understood that heaviness is a time signature question as much as a volume question, and a 1996 show at a venue called Quaker Goes Deaf is exactly the kind of artifact that belongs in any serious underground archive.", "mood_tags": ["doom", "stoner rock", "heavy", "riff-driven"], "image_url": null}, {"artist": "Alvin Lucier", "best_show": {"identifier": "ajc00284_alvin-lucier-2014-03-21", "date": "2014-03-21", "venue": "Museum of Contemporary Art", "title": "Alvin Lucier Live at Museum of Contemporary Art 2014-03-21"}, "songs": ["I Am Sitting in a Room", "Music on a Long Thin Wire", "Still and Moving Lines of Silence"], "note": "Lucier understood something Tool understands: repetition is not redundancy, it is transformation — the room itself becomes the instrument, and patience is the only way through. Three consecutive nights at the MCA means this was a real event, not a booking, and that distinction matters enormously.", "mood_tags": ["drone", "conceptual", "meditative", "systems-music"], "image_url": null}, {"artist": "Art Ensemble of Chicago", "best_show": {"identifier": "ajc02106_art-ensemble-of-chicago-1988-08-31", "date": "1988-08-31", "venue": "Petrillo Music Shell - Grant Park", "title": "Art Ensemble of Chicago Live at Petrillo Music Shell - Grant Park 1988-08-31"}, "songs": ["Odwalla", "Dreaming of the Master", "The Third Decade"], "note": "The AECO operated on total refusal — refusal of genre, refusal of commerce, refusal of the idea that music should explain itself to you — and they did it with theatrical costumes and face paint in Grant Park, which is either absurd or perfect and probably both. This is what operating entirely outside the system looks like when you do it right.", "mood_tags": ["free-jazz", "avant-garde", "confrontational", "Chicago-legacy"], "image_url": null}, {"artist": "Ashtray Boy", "best_show": {"identifier": "ajc02112_ashtray_boy_1993-11-17", "date": "1993-11-17", "venue": "Empty Bottle", "title": "Ashtray Boy Live at Empty Bottle 1993-11-17"}, "songs": ["Stain", "Quiet Revolution", "Burn"], "note": "Eighteen documented shows across nearly 25 years is the kind of sustained underground presence that doesn't happen accidentally — this is a band with a reason to keep playing, and Jeff Lescher's songwriting has always carried genuine weight underneath the noise. The Empty Bottle was their room.", "mood_tags": ["indie-rock", "Chicago-underground", "lo-fi-rawness", "long-arc"], "image_url": null}, {"artist": "Antietam", "best_show": {"identifier": "ajc00346_antietam1991-03-29", "date": "1991-03-29", "venue": "Lounge Ax", "title": "Antietam Live at Lounge Ax 1991-03-29"}, "songs": ["Burgoo King", "Everywhere at Once", "Rosetta Stone"], "note": "Nine shows across 24 years means Aadam kept following them, and that kind of archival devotion is its own endorsement — Antietam played a slow, deliberate noise-rock that never chased anything, and Tara Key's guitar work rewards the kind of focused listening most people no longer have the patience for.", "mood_tags": ["noise-rock", "slow-burn", "Lounge-Ax-era", "patient"], "image_url": null}, {"artist": "Animal Collective", "best_show": {"identifier": "ajc01559_acollective2002-04-04.ajcproject", "date": "2002-04-04", "venue": "Hideout", "title": "Animal Collective Live at Hideout on 2002-04-04"}, "songs": ["Grass", "Visiting Friends", "Bat You'll Fly"], "note": "2002 Animal Collective at the Hideout is pre-everything — before the cult, before the critical consensus, before they became a reference point — and that version of the band was genuinely strange in a way that demanded something from you rather than offering comfort. The Hideout in that era was the right room for it.", "mood_tags": ["experimental", "pre-fame-rawness", "Hideout", "psychedelic"], "image_url": null}, {"artist": "Archers of Loaf", "best_show": {"identifier": "ajc02301_archersofloaf1993-11-24", "date": "1993-11-24", "venue": "Lounge Ax", "title": "Archers of Loaf Live at Lounge Ax 1993-11-24"}, "songs": ["Web in Front", "Plumb Line", "Might"], "note": "Five total documented Chicago shows across both catalog entries, and the 1993 Lounge Ax run catches them at peak tension — Eric Bachmann's guitar had a serrated quality that sounded like it was barely containing something, which is exactly what it was.", "mood_tags": ["noise-pop", "90s-underground", "Lounge-Ax", "angular"], "image_url": null}, {"artist": "Arnold Dreyblatt", "best_show": {"identifier": "ajc01972_arnold-dreyblatt-2017-04-02", "date": "2017-04-02", "venue": "Empty Bottle", "title": "Arnold Dreyblatt Live at Empty Bottle 2017-04-02"}, "songs": ["Nodal Excitation", "Animal Magnetism", "Resonant Relations"], "note": "Dreyblatt spent decades in Berlin developing a system of just intonation and overtone-dense minimalism that makes your nervous system do things you weren't expecting — the fact that this landed at the Empty Bottle rather than a concert hall is exactly where it belongs.", "mood_tags": ["minimalism", "just-intonation", "drone", "Empty-Bottle"], "image_url": null}, {"artist": "Arcwelder", "best_show": {"identifier": "ajc02302_arcwelder1993-02-27", "date": "1993-02-27", "venue": "Lounge Ax", "title": "Arcwelder Live at Lounge Ax on 1993-02-27"}, "songs": ["Favor", "Watch", "Slow"], "note": "Five documented shows and a catalog on Touch and Go — Arcwelder were Minneapolis kids who played Chicago regularly enough to count as honorary residents, and their particular brand of melodic post-hardcore had more structural intelligence in it than it ever got credit for.", "mood_tags": ["post-hardcore", "Touch-and-Go", "Lounge-Ax", "melodic-density"], "image_url": null}, {"artist": "Bastro", "best_show": {"identifier": "ajc02296_bastro-1989-01-06", "date": "1989-01-06", "venue": "Dreamerz", "title": "Bastro Live at Dreamerz 1989-01-06"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "John McEntire and David Grubbs before they became Gastr del Sol — this is the Chicago underground eating itself alive in the best possible way, math-rock as a form of controlled demolition. Seven documented shows across three years means you can hear the band evolve in real time, which is the only honest way to evaluate a band.", "mood_tags": ["math-rock", "post-hardcore", "chicago-underground", "tension"], "image_url": null}, {"artist": "Bardo Pond", "best_show": {"identifier": "ajc02153_bardopond1995-06-08.ajcproject", "date": "1995-06-08", "venue": "Lounge Ax", "title": "Bardo Pond Live at Lounge Ax on 1995-06-08"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Drone-psych that moves like something geologic — not fast, not slow, just inevitable, with flute woven into distortion until you can't hear where one ends and the other begins. Two consecutive nights in Chicago in 1995 is a rare enough document that you treat it like evidence.", "mood_tags": ["drone", "psych", "heavy", "patience-rewarded"], "image_url": null}, {"artist": "Bedhead", "best_show": {"identifier": "ajc02182_bedhead-1994-05-20", "date": "1994-05-20", "venue": "Lounge Ax", "title": "Bedhead Live at Lounge Ax 1994-05-20"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Slowcore before anyone called it that — the Kadane brothers understood that restraint is its own kind of violence, and three documented shows including an in-store at Ajax Records gives you the full range of what that quietude sounds like without amplification between you and it. This is music that demands you meet it halfway.", "mood_tags": ["slowcore", "minimalist", "introspective", "complexity-in-stillness"], "image_url": null}, {"artist": "Baby Flamehead", "best_show": {"identifier": "ajc02132_baby-flamehead-1990-12-05", "date": "1990-12-05", "venue": "Lounge Ax", "title": "Baby Flamehead Live at Lounge Ax 1990-12-05"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Four shows across two years at Lounge Ax is a residency in everything but name — this is a band that clearly lived inside this room, and you can feel the room living inside the recordings. Chicago noise-rock at its most specific and uncompromising.", "mood_tags": ["noise-rock", "chicago-underground", "raw", "lounge-ax-era"], "image_url": null}, {"artist": "Bad Livers", "best_show": {"identifier": "ajc02137_badlivers1991-07-27.ajcproject", "date": "1991-07-27", "venue": "Lounge Ax", "title": "Bad Livers Live at Lounge Ax on 1991-07-27"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Austin insurgent country played with the intensity of hardcore — Danny Barnes treating a banjo like a weapon of conceptual violence — and four shows including back-to-back Lounge Ax nights in July 1991 suggests an artist who understood that the only way through a set was to survive it. The rawness here is not aesthetic, it is structural.", "mood_tags": ["insurgent-country", "raw", "intensity", "anti-commercial"], "image_url": null}, {"artist": "Bailter Space", "best_show": {"identifier": "ajc02142_bailter_space_1995-07-14", "date": "1995-07-14", "venue": "Empty Bottle", "title": "Bailter Space Live at Empty Bottle 1995-07-14"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "New Zealand noise-rock operating at the intersection of density and melody — guitars treated as signal generators rather than instruments, rhythmic repetition that accumulates rather than resolves. Two Chicago shows across venues that defined the era means you're getting the full arc of a band that never softened its approach for anyone.", "mood_tags": ["noise-rock", "new-zealand", "dense", "repetition"], "image_url": null}, {"artist": "Big'n", "best_show": {"identifier": "ajc01472_bign1998-04-20", "date": "1998-04-20", "venue": "Empty Bottle", "title": "Big'n Live at Empty Bottle 1998-04-20"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Brutal, angular, weaponized post-hardcore from Chicago's own backyard — two shows spanning five years from Lounge Ax to Empty Bottle means you can hear the band either evolving or refusing to, which in this context are equally interesting outcomes. The Empty Bottle 1998 document is the one I would start with.", "mood_tags": ["post-hardcore", "chicago-underground", "angular", "heavy"], "image_url": null}, {"artist": "Birdsongs of the Mesozoic", "best_show": {"identifier": "ajc02282_birdsongs-of-the-mesozoic-1987-04-22", "date": "1987-04-22", "venue": "Batteries Not Included", "title": "Birdsongs of the Mesozoic Live at Batteries Not Included 1987-04-22"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Boston art-rock that treated minimalism and complexity as the same project — early members came through Mission of Burma, which tells you everything about the seriousness of the enterprise. A single 1987 document at a venue called Batteries Not Included is the kind of archival specificity that makes a collection like this worth existing.", "mood_tags": ["art-rock", "minimalism", "mission-of-burma-adjacent", "historical-document"], "image_url": null}, {"artist": "Bitch Magnet", "best_show": {"identifier": "ajc02285_bitch_magnet_1990-10-18", "date": "1990-10-18", "venue": "Reckless Records", "title": "Bitch Magnet Live at Reckless Records 1990-10-18"}, "songs": ["Dragoon", "Mesentery", "Sarika"], "note": "Sooyoung Park was building post-hardcore architecture before anyone had blueprints — this is the sound of tension held past the point of comfort until something structural gives. A record store floor in 1990 is exactly the right place for it.", "mood_tags": ["post-hardcore", "controlled-damage"], "image_url": null}, {"artist": "Bitchin Bajas", "best_show": {"identifier": "ajc00289_bitchin-bajas-2014-04-17", "date": "2014-04-17", "venue": "Hideout", "title": "Bitchin Bajas Live at Hideout 2014-04-17"}, "songs": ["Bajas Devotion", "Woo Lar", "Switched-On Bajas"], "note": "Patience rewarded over and over — drone and modular synthesis that doesn't announce itself, just gradually occupies the room until you realize you haven't moved in forty minutes. The Hideout is the right room for this kind of quiet takeover.", "mood_tags": ["drone", "kosmische", "patience-required"], "image_url": null}, {"artist": "Blonde Redhead", "best_show": {"identifier": "ajc02308_blonde-redhead-1995-11-21", "date": "1995-11-21", "venue": "Empty Bottle", "title": "Blonde Redhead Live at Empty Bottle 1995-11-21"}, "songs": ["Violent Life", "Astro Boy", "In Particular"], "note": "The early version of this band had a wire-taut anxiety that the later records smoothed out — hearing them at the Empty Bottle in 1995 means catching the raw iteration before the polish came and some of the edges went with it.", "mood_tags": ["art-rock", "no-wave-adjacent", "early-and-hungry"], "image_url": null}, {"artist": "Boredoms", "best_show": {"identifier": "ajc00957_boredoms_2006-06-24", "date": "2006-06-24", "venue": "Intonation Festival - Union Park", "title": "Boredoms Live at Intonation Festival - Union Park 2006-06-24"}, "songs": ["Synthesizer", "Super Roots", "Vision Creation Newsun"], "note": "Eye's project is the closest thing in rock to what Tool does with rhythm — treating the beat as a living organism that can mutate mid-performance — and a festival field in Chicago 2006 is a bizarre and perfect container for that chaos. This is noise that has done the work.", "mood_tags": ["noise-rock", "ritual-percussion", "transcendent"], "image_url": null}, {"artist": "Boys Life", "best_show": {"identifier": "ajc02350_boys_life_1994-12-22", "date": "1994-12-22", "venue": "Empty Bottle", "title": "Boys Life Live at Empty Bottle 1994-12-22"}, "songs": ["Departures and Landfalls", "For Sirens", "Still"], "note": "Eight documented shows in under two years at the Empty Bottle tells you this was a residency of trust — a band that had genuinely earned that room, playing emo before the word got hollowed out, with a sense of spaciousness in the grief that most of their peers couldn't manage.", "mood_tags": ["emo", "midwest-gothic", "space-and-weight"], "image_url": null}, {"artist": "Braid", "best_show": {"identifier": "ajc00956_braid_2004-05-29", "date": "2004-05-29", "venue": "Metro", "title": "Braid Live at Metro 2004-05-29"}, "songs": ["The New Nathan Detroits", "Forever Got Shorter", "Hugs From Boys"], "note": "Five documented shows across a decade means you're watching a band that kept being worth documenting — Braid's best moments have a rhythmic intelligence and emotional precision that holds up across reunion cycles, which is rarer than it sounds.", "mood_tags": ["post-hardcore", "emotionally-precise", "reunion-that-earns-it"], "image_url": null}, {"artist": "Bobby Conn", "best_show": {"identifier": "ajc00267_bobbyconn2001-09-06", "date": "2001-09-06", "venue": "Empty Bottle", "title": "Bobby Conn Live at Empty Bottle 2001-09-06"}, "songs": ["The Golden Age", "The Homeland", "Rise Up!"], "note": "Four shows documented across nineteen years — Bobby Conn is a Chicago original operating entirely outside any system, somewhere between glam provocation and genuine mysticism, and he belongs to that Empty Bottle lineage in the same way the building's walls do.", "mood_tags": ["glam-art-rock", "chicago-underground-lifer", "genuinely-strange"], "image_url": null}, {"artist": "Boy King", "best_show": {"identifier": "ajc02588_boy_king_1993-08-27", "date": "1993-08-27", "venue": "Lounge Ax", "title": "Boy King Live at Lounge Ax 1993-08-27"}, "songs": ["Surface", "Hollow", "Weight"], "note": "Nine shows documented in under two years, across Thurston's, Lounge Ax, and Czar Bar — that density of documentation in the Chicago underground says this band mattered to people who were paying attention, and that kind of earned obscurity is exactly what this archive is for.", "mood_tags": ["early-90s-underground", "heavy-repetition", "earned-obscurity"], "image_url": null}, {"artist": "Cheer-Accident", "best_show": {"identifier": "ajc00968_cheer-accident-2001-12-14", "date": "2001-12-14", "venue": "Hideout", "title": "Cheer-Accident Live at Hideout 2001-12-14"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Seventeen documented shows across sixteen years — that is not a band chasing anything, that is a band doing the only thing they know how to do. Chicago's most stubbornly uncommercial ensemble, composing music that folds in on itself like a structure that refuses to resolve.", "mood_tags": ["avant-garde", "compositional-complexity"], "image_url": null}, {"artist": "Califone", "best_show": {"identifier": "ajc00575_califone_2004-03-03", "date": "2004-03-03", "venue": "Schubas Tavern", "title": "Califone Live at Schubas Tavern 2004-03-03"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Tim Rutili builds songs the way scar tissue builds — slowly, with evidence of damage underneath the surface. Six shows in this collection means six chances to hear the same architecture weathered differently each night.", "mood_tags": ["post-rock", "textural", "slow-burn"], "image_url": null}, {"artist": "Brokeback", "best_show": {"identifier": "ajc02700_brokeback2011-09-30", "date": "2011-09-30", "venue": "Hideout", "title": "Brokeback Live at Hideout 2011-09-30"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Douglas McCombs making instrumental music that has no interest in arriving anywhere — nine shows at the Hideout, patient and heavy in a way that has nothing to do with volume. This is the Chicago underground at its most honest.", "mood_tags": ["instrumental", "hypnotic", "Chicago-underground"], "image_url": null}, {"artist": "Calexico", "best_show": {"identifier": "ajc00574_calexico2003-10-01.ajcproject", "date": "2003-10-01", "venue": "Metro", "title": "Calexico Live at Metro on 2003-10-01"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Four documented performances across a concentrated period, and the Metro show is the one — big enough room to feel the arrangements breathe, small enough that the desert still comes through. Burns and Convertino are quietly doing something architecturally serious.", "mood_tags": ["desert-noir", "cinematic", "live-depth"], "image_url": null}, {"artist": "Cap'n Jazz", "best_show": {"identifier": "ajc00587_capn-jazz-2010-07-17", "date": "2010-07-17", "venue": "Bottom Lounge", "title": "Cap'n Jazz Live at Bottom Lounge 2010-07-17"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "A reunion that should not have worked and somehow worked completely — two nights documented, which means two versions of the same controlled collapse. The Kinsella family tree grows half of Chicago's interesting music and it starts here, in the chaos.", "mood_tags": ["emo-origin", "frenetic", "Chicago-lineage"], "image_url": null}, {"artist": "Camper Van Beethoven", "best_show": {"identifier": "ajc02553_CVB1987-10-31.ajcproject", "date": "1987-10-31", "venue": "Cabaret Metro", "title": "Camper Van Beethoven Live at Cabaret Metro on 1987-10-31"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Halloween 1987 at the Metro — five shows spanning nearly two decades in this archive, and the earliest ones carry a specific energy of a band that had no idea they were building something canonical. Cracker Kacker before the world flattened him.", "mood_tags": ["anarchic", "genre-defying", "early-document"], "image_url": null}, {"artist": "Catherine", "best_show": {"identifier": "ajc02565_catherine-1993-01-30", "date": "1993-01-30", "venue": "Lounge Ax", "title": "Catherine Live at Lounge Ax 1993-01-30"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Lounge Ax in January 1993 is one specific kind of cold and loud — Catherine were the band that could have broken through and chose, consciously or not, to remain exactly where they were. That choice lives in the recording.", "mood_tags": ["Chicago-noise-rock", "early-90s", "Lounge-Ax-era"], "image_url": null}, {"artist": "Busdriver", "best_show": {"identifier": "ajc01681_busdriver-2008-09-12", "date": "2008-09-12", "venue": "Empty Bottle", "title": "Busdriver Live at Empty Bottle 2008-09-12"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Regan Farquhar rapping at the Empty Bottle is a specific act of defiance — the velocity of his delivery functions like a time-signature change, density weaponized, and a room that size forces everyone to pay attention or get lost.", "mood_tags": ["experimental-hip-hop", "technical", "density"], "image_url": null}, {"artist": "Clinic", "best_show": {"identifier": "ajc00620_clinic2001-09-15", "date": "2001-09-15", "venue": "Empty Bottle", "title": "Clinic Live at Empty Bottle 2001-09-15"}, "songs": ["The Return of Evil Bill", "Distortions", "Voodoo Wop"], "note": "Surgical masks, organ drones, rhythms that refuse to land where you expect — Clinic operates like a band that decided melody was a hostage situation. Four documented shows across three years tells you they were doing something that held people past the first encounter.", "mood_tags": ["post-punk tension", "hypnotic repetition", "ritual unease"], "image_url": null}, {"artist": "Cloud Nothings", "best_show": {"identifier": "ajc02853_cloud-nothings-2012-09-18", "date": "2012-09-18", "venue": "Lincoln Hall", "title": "Cloud Nothings Live at Lincoln Hall 2012-09-18"}, "songs": ["Wasted Days", "No Sentiment", "Stay Useless"], "note": "Attack on Memory era Cloud Nothings is one of the most honest emotional evacuations in recent rock — Dylan Baldi screaming until nothing sounds controlled, Steve Albini recording it like it was a boxing match. The Lincoln Hall show catches them at the exact moment the band became something earned rather than assembled.", "mood_tags": ["cathartic discharge", "raw production", "controlled collapse"], "image_url": null}, {"artist": "Cinematic Orchestra", "best_show": {"identifier": "ajc00606_cinematic-orchestra-2003-06-28", "date": "2003-06-28", "venue": "Abbey Pub", "title": "Cinematic Orchestra Live at Abbey Pub 2003-06-28"}, "songs": ["All That You Give", "Man with the Movie Camera", "Everyday"], "note": "Jason Swinscoe builds pieces the way an architect builds load-bearing walls — nothing decorative, every element structural, silence treated as seriously as sound. A 2003 Abbey Pub recording of this is the kind of document that makes you understand why small rooms matter.", "mood_tags": ["orchestral patience", "jazz-adjacent depth", "late-night weight"], "image_url": null}, {"artist": "Clem Snide", "best_show": {"identifier": "ajc00611_clem-snide-2001-08-01", "date": "2001-08-01", "venue": "Headliners Music Hall", "title": "Clem Snide Live at Headliners Music Hall 2001-08-01"}, "songs": ["The Ballad of David Icke", "Joan Jett of Arc", "Moment in the Sun"], "note": "Eef Barzelay writes from a place where irony and genuine grief have merged so completely you can't tell them apart, which is actually the most honest emotional register available — eight shows across nearly a decade in this archive means he kept coming back and people kept needing to hear it.", "mood_tags": ["literary melancholy", "quiet devastation", "dry wit under pressure"], "image_url": null}, {"artist": "Cursive", "best_show": {"identifier": "ajc00102_cursive_1997-11-30", "date": "1997-11-30", "venue": "Fireside Bowl", "title": "Cursive Live at Fireside Bowl 1997-11-30"}, "songs": ["A Red So Deep", "The Casualty", "Sink to the Beat"], "note": "Fireside Bowl 1997 Cursive is pre-Domestica, which means you're catching a band that hasn't yet found the architecture for its own ambition — that friction between capacity and form is exactly where the most interesting live recordings live.", "mood_tags": ["midwest emo raw form", "pre-peak tension", "basement urgency"], "image_url": null}, {"artist": "Cross Record", "best_show": {"identifier": "ajc01441_cross_record_2011-09-20", "date": "2011-09-20", "venue": "Empty Bottle", "title": "Cross Record Live at Empty Bottle 2011-09-20"}, "songs": ["Steady Waves", "Wicked Fence", "Let the Good Blade"], "note": "Emily Cross makes music that sounds like the moment before grief becomes language — drone-folk so interior it functions less as performance than as overheard internal monologue, and the Empty Bottle is exactly the room where that kind of exposure can land without being embarrassing.", "mood_tags": ["slow-burn folk", "drone undercurrent", "interior space"], "image_url": null}, {"artist": "Constantines", "best_show": {"identifier": "ajc00631_constantines2004-03-12", "date": "2004-03-12", "venue": "Logan Square Auditorium", "title": "Constantines Live at Logan Square Auditorium 2004-03-12"}, "songs": ["Tank Commander (Hung Up)", "Nighttime Anytime (It's Alright)", "Young Lions"], "note": "The Constantines played like they were settling a debt — every show a physical argument for why this matters, Bry Webb's voice carrying the kind of weight that has nothing to do with technique and everything to do with what you're actually carrying. One show documented, which only makes you want it more.", "mood_tags": ["working-class intensity", "post-punk conviction", "earned authority"], "image_url": null}, {"artist": "Crooked Fingers", "best_show": {"identifier": "ajc00632_crookedfingers2002-08-04", "date": "2002-08-04", "venue": "Schubas Tavern", "title": "Crooked Fingers Live at Schubas Tavern 2002-08-04"}, "songs": ["Call to Love", "Islanded", "New Drink for the Old Drunk"], "note": "Eric Bachmann left Archers of Loaf and built something slower and more dangerous — songs that sound like they've been sitting in a damp room for years, which is not a criticism but a description of what it takes to get to the real bottom of something.", "mood_tags": ["country-noir", "existential weight", "post-breakthrough quietude"], "image_url": null}, {"artist": "Damo Suzuki and Defender", "best_show": {"identifier": "ajc01082_damo-suzuki-2003-02-22", "date": "2003-02-22", "venue": "Fireside Bowl", "title": "Damo Suzuki and Defender Live at Fireside Bowl 2003-02-22"}, "songs": ["Improvisation I", "Improvisation II", "Improvisation III"], "note": "Damo Suzuki never plays the same show twice — that is the entire philosophy, the whole religion — and catching him at the Fireside Bowl means a bowling alley witnessed something genuinely unrepeatable. Can voice transmits the same untranslatable urgency it did in Can's prime, which is to say it transmits something that has no business existing in ordinary human rooms.", "mood_tags": ["kosmische", "pure-improvisation", "unrepeatable", "trance-state"], "image_url": null}, {"artist": "Dirty Three", "best_show": {"identifier": "ajc02435_dirty-three-1995-05-20", "date": "1995-05-20", "venue": "Lounge Ax", "title": "Dirty Three Live at Lounge Ax 1995-05-20"}, "songs": ["Sue's Last Ride", "Horse Stories", "Everything's Fucked"], "note": "Warren Ellis with a violin and an expression like he's trying to drag something out of the earth that doesn't want to come — at Lounge Ax in 1995, that tension had nowhere to dissipate, and the recordings from that room prove it. This is instrumental music that earns every second of silence between the notes.", "mood_tags": ["post-rock", "chamber-grief", "volatile", "earned-intensity"], "image_url": null}, {"artist": "Disappears", "best_show": {"identifier": "ajc02820_disappears-2012-07-20", "date": "2012-07-20", "venue": "Empty Bottle", "title": "Disappears Live at Empty Bottle 2012-07-20"}, "songs": ["Revisionist", "Halo", "Superstition"], "note": "Chicago's own — and the Empty Bottle was precisely the right room for a band this locked-in, motorik repetition building pressure until the room itself felt like it was vibrating at a frequency you couldn't name. Three documented shows means you can track how the drone evolved, and it did.", "mood_tags": ["krautrock-pulse", "hypnotic", "Chicago-underground", "locked-groove"], "image_url": null}, {"artist": "David Grubbs and John Corbett", "best_show": {"identifier": "ajc02295_david-grubbs-and-john-corbett-1992-11-04", "date": "1992-11-04", "venue": "Lounge Ax", "title": "David Grubbs and John Corbett Live at Lounge Ax 1992-11-04"}, "songs": ["Improvisation (I)", "Improvisation (II)", "Spoken Fragment"], "note": "Grubbs coming off Squirrel Bait and Bastro into this — pure downtown experimentalism at Lounge Ax in 1992, which means you are hearing the Chicago underground at the exact moment it was deciding what it wanted to be. Corbett as partner makes this a genuine dialogue rather than a solo gesture.", "mood_tags": ["experimental", "post-hardcore-ghost", "rare-document", "Lounge-Ax-era"], "image_url": null}, {"artist": "Dinosaur Jr.", "best_show": {"identifier": "ajc02430_dinosaur-jr-1989-03-25", "date": "1989-03-25", "venue": "Cabaret Metro", "title": "Dinosaur Jr. Live at Cabaret Metro 1989-03-25"}, "songs": ["Freak Scene", "Little Fury Things", "The Lung"], "note": "1989 Metro is Dinosaur Jr. at peak psychic damage — J Mascis playing guitar like volume itself was the argument he was trying to win, and the distortion at that level stops being noise and starts being a kind of meditation. Four documented shows across decades in this collection means you can hear the entropy and the resurrection both.", "mood_tags": ["noise-rock", "volume-as-theology", "foundational", "cathartic"], "image_url": null}, {"artist": "District 97", "best_show": {"identifier": "ajc0218_district97_2015-06-19", "date": "2015-06-19", "venue": "Martyrs'", "title": "District 97 Live at Martyrs' 2015-06-19"}, "songs": ["Rotersand", "Trouble with Machines", "My Chicago"], "note": "Chicago prog that takes the genre seriously enough to push the time signatures somewhere genuinely uncomfortable — Leslie Hunt's voice doing things that should not be possible over rhythms that keep refusing to resolve where you expect them to. This is the kind of complexity that rewards the third listen more than the first.", "mood_tags": ["progressive-rock", "rhythmic-complexity", "technical", "Chicago-scene"], "image_url": null}, {"artist": "Double Leopards", "best_show": {"identifier": "ajc01402_double_leopards_2002-07-01", "date": "2002-07-01", "venue": "Hideout", "title": "Double Leopards Live at Hideout 2002-07-01"}, "songs": ["Untitled (Side A)", "Untitled (Side B)", "Drone Sequence"], "note": "New York freak-folk drone at the Hideout in 2002 — the fact that this exists on tape at all is the miracle, because Double Leopards operated so far outside documentation that any recording is a captured accident. This is patience-rewarding music in the most literal sense: it does not begin until you stop waiting for it to begin.", "mood_tags": ["drone", "free-folk", "anti-commercial", "slow-revelation"], "image_url": null}, {"artist": "Dosh", "best_show": {"identifier": "ajc0219_dosh2013-12-01.ajcproject", "date": "2013-12-01", "venue": "The Hideout", "title": "Dosh Live at The Hideout on 2013-12-01"}, "songs": ["Catharsis at the Limits of Endurance", "Dying Star", "The Lost Take"], "note": "Martin Dosh building entire orchestral systems out of loops in real time — two documented Hideout appearances means you can compare how the live architecture shifted, and with Dosh the architecture is always the performance. Complexity inside apparent simplicity is the exact phrase; it looks like one man, it sounds like a conspiracy.", "mood_tags": ["solo-loop-architecture", "Hideout", "layered", "patient-reward"], "image_url": null}, {"artist": "Eleventh Dream Day", "best_show": {"identifier": "ajc00667_edd2002-08-25.ajcproject", "date": "2002-08-25", "venue": "Empty Bottle", "title": "Eleventh Dream Day Live at Empty Bottle on 2002-08-25"}, "songs": ["Burned", "Makin' Like a Rug", "Testify"], "note": "Twenty-six documented shows across fourteen years — that's not a career, that's a commitment to showing up and doing the work regardless of who's watching. Janet Bean and Rick Rieling built something from Chicago noise-rock that rewards every repeated listen the way a difficult text rewards rereading.", "mood_tags": ["noise-rock", "long-game"], "image_url": null}, {"artist": "Dungen", "best_show": {"identifier": "ajc01850_dungen-2015-10-12", "date": "2015-10-12", "venue": "Schubas Tavern", "title": "Dungen Live at Schubas Tavern 2015-10-12"}, "songs": ["Panda", "Du E För Fin För Mig", "Ljuset"], "note": "Gustav Ejstes writes in a language most of his audience doesn't speak, and it doesn't matter at all — the psychedelic architecture holds you in place before you've had time to ask what anything means. Complexity folded inside arrangements that feel ancient and entirely invented at once.", "mood_tags": ["psych-rock", "patient-listening"], "image_url": null}, {"artist": "Enon", "best_show": {"identifier": "ajc02417_enon2003-10-16", "date": "2003-10-16", "venue": "Abbey Pub", "title": "Enon Live at Abbey Pub 2003-10-16"}, "songs": ["Disposable Parts", "Knock That Door", "Starcastic"], "note": "John Schmersal came out of Brainiac with something to prove and Enon was the proof — art-punk that kept its edges sharp while other bands were busy sanding theirs down for radio. Four shows across six years means he kept bringing it back to Chicago, and Chicago kept showing up.", "mood_tags": ["art-punk", "angular"], "image_url": null}, {"artist": "Flipper", "best_show": {"identifier": "ajc02241_flipper_1993-06-18", "date": "1993-06-18", "venue": "Lounge Ax", "title": "Flipper Live at Lounge Ax 1993-06-18"}, "songs": ["Sex Bomb", "Life", "Ha Ha Ha"], "note": "Lounge Ax in 1993 — Flipper dragging their slow-motion noise-sludge through a room that probably smelled like spilled Old Style and earned ambition. This is what staying outside the system looks like: still playing it wrong on purpose, still meaning every ugly note.", "mood_tags": ["noise-punk", "confrontational"], "image_url": null}, {"artist": "Flying Lotus", "best_show": {"identifier": "ajc01683_flying-lotus-2008-09-13", "date": "2008-09-13", "venue": "Empty Bottle", "title": "Flying Lotus Live at Empty Bottle 2008-09-13"}, "songs": ["Camel", "Auntie's Lock / Infinitum", "GNG BNG"], "note": "Empty Bottle 2008, before the mythology fully calcified — FlyLo working through Los Angeles in a room small enough that the bass hit you personally. The jazz lineage running underneath the beatwork is exactly the kind of hidden structure that makes repeated listening feel like excavation.", "mood_tags": ["beat-music", "dense-architecture"], "image_url": null}, {"artist": "Earlimart", "best_show": {"identifier": "ajc00658_earlimart2002-10-21.ajcproject", "date": "2002-10-21", "venue": "Abbey Pub", "title": "Earlimart Live at Abbey Pub on 2002-10-21"}, "songs": ["We Drink on the Job", "The Movies", "Hello Steal Away"], "note": "Six documented Chicago shows is a band that kept returning to a city that understood what they were doing — slow-burning indie rock that never announced its own sadness, just let it accumulate. Aaron Espinoza built songs that take up residence quietly and don't leave.", "mood_tags": ["slow-burn", "melancholic"], "image_url": null}, {"artist": "Edith Frost", "best_show": {"identifier": "ajc00662_edith-frost-2004-12-11", "date": "2004-12-11", "venue": "Empty Bottle", "title": "Edith Frost Live at Empty Bottle 2004-12-11"}, "songs": ["Pistol", "Honey", "Two Horses"], "note": "A Chicago original who recorded for Drag City and played the Empty Bottle like someone who knew exactly which walls to lean against — her country-inflected minimalism has the kind of earned quietness that only comes from deciding not to perform loudness for its own sake.", "mood_tags": ["minimalist", "Chicago-native"], "image_url": null}, {"artist": "Frank Catalano, Jimmy Chamberlin and Percy Jones", "best_show": {"identifier": "ajc00264_frankcatalano2013-08-30", "date": "2013-08-30", "venue": "Andy's Jazz Club", "title": "Frank Catalano, Jimmy Chamberlin and Percy Jones Live at Andy's Jazz Club 2013-0"}, "songs": ["Improvisation I", "Improvisation II", "Improvisation III"], "note": "Jimmy Chamberlin — the reason Siamese Dream breathes — in a jazz club with a fretless bass legend and a tenor saxophonist who grew up in Chicago's hard bop tradition: this is exactly the unrepeatable convergence that live documentation was invented to preserve. One night, one room, no second chance.", "mood_tags": ["free-jazz", "unrepeatable"], "image_url": null}, {"artist": "Godspeed You! Black Emperor", "best_show": {"identifier": "ajc02676_gybe1999-09-16.ajcproject", "date": "1999-09-16", "venue": "Lounge Ax", "title": "Godspeed You! Black Emperor Live at Lounge Ax on 1999-09-16"}, "songs": ["The Dead Flag Blues", "East Hastings", "Providence"], "note": "This is the closest secular music gets to the feeling Lateralus chases — structures that build like geological pressure until something finally gives. A small room in Chicago, 1999, and these people were essentially performing the end of the world for forty people.", "mood_tags": ["post-rock", "apocalyptic", "patient-architecture"], "image_url": null}, {"artist": "Fugazi", "best_show": {"identifier": "ajc02236_fugazi1990-06-14.ajcproject", "date": "1990-06-14", "venue": "Medusa's", "title": "Fugazi Live at Medusa's on 1990-06-14"}, "songs": ["Waiting Room", "Merchandise", "Repeater"], "note": "Everything Fugazi built was load-bearing — the ethics, the two-dollar shows, the refusal to perform industry games — and the music carried that weight without collapsing under it. Ian MacKaye is the Maynard who chose argument over mythology.", "mood_tags": ["post-hardcore", "principled-rage", "ethical-infrastructure"], "image_url": null}, {"artist": "Gastr del Sol", "best_show": {"identifier": "ajc02475_gastr-del-sol-1994-05-04", "date": "1995-05-04", "venue": "Lounge Ax", "title": "Gastr Del Sol Live at Lounge Ax 1994-05-04"}, "songs": ["The Seasons Reverse", "The Black Face of Winter", "Blues Subtracted"], "note": "Grubbs and O'Rourke understood that deconstruction could be a form of tenderness — these sets felt like watching someone carefully disassemble a clock that still kept perfect time. This is the Chicago underground in its purest form, music that asked the room to meet it halfway.", "mood_tags": ["experimental", "deconstruction", "Chicago-lineage"], "image_url": null}, {"artist": "Freakwater", "best_show": {"identifier": "ajc03022_freakwater2013-01-21", "date": "2013-01-21", "venue": "Hideout", "title": "Freakwater Live at Hideout 2013-01-21"}, "songs": ["Gravity's Gone", "Flat Hand", "Cheap and Evil Girl"], "note": "Janet Bean and Catherine Irwin harmonize like two women who have already survived the thing the song is warning you about — there is no performance of hurt here, only the evidence of it. Country music stripped of every commercial instinct until only the bones remain.", "mood_tags": ["alt-country", "earned-sorrow", "two-voice-architecture"], "image_url": null}, {"artist": "Glenn Jones", "best_show": {"identifier": "ajc0127_glennjones_2013-07-14constellation", "date": "2013-07-14", "venue": "Constellation", "title": "Glenn Jones Live at Constellation 2013-07-14"}, "songs": ["The Wanting", "My Garden State", "Wendy I'm Home"], "note": "Fingerstyle guitar at this level becomes a conversation with duration itself — Jones works in the lineage of John Fahey, where a single note held long enough stops being a note and starts being a statement about time. Constellation was the right room for this, small and serious.", "mood_tags": ["American-primitive", "solo-guitar", "patience-rewarded"], "image_url": null}, {"artist": "Guided By Voices", "best_show": {"identifier": "ajc00708_guided-by-voices-1994-10-01", "date": "1994-10-01", "venue": "Lounge Ax", "title": "Guided By Voices Live at Lounge Ax 1994-10-01"}, "songs": ["Tractor Rape Chain", "Game of Pricks", "Smothered in Hugs"], "note": "Pollard understood that a ninety-second song could contain the same emotional density as a prog suite if you compressed it correctly — Bee Thousand-era GBV at Lounge Ax was the rare case where lo-fi wasn't an aesthetic choice so much as a condition of honesty. Four shows in this collection, which means someone kept going back.", "mood_tags": ["lo-fi", "Dayton-oblique", "prolific-and-precise"], "image_url": null}, {"artist": "Fred Lonberg-Holm's Zenith Works", "best_show": {"identifier": "ajc01665_fredlonberg-holmzenithworks2008-10-26", "date": "2008-10-26", "venue": "Hideout", "title": "Fred Lonberg-Holm's Zenith Works Live at Hideout 2008-10-26"}, "songs": ["Zenith Work No. 1", "Terrain Study", "Oblique Strategies Applied"], "note": "Lonberg-Holm is a cellist who operates at the far edge of Chicago's improvised music scene, where the instrument stops being a cello and becomes a processing system — one show documented means someone thought this was worth preserving, which is usually the right instinct. The Hideout is exactly where this should happen.", "mood_tags": ["free-improvisation", "Chicago-underground", "cello-as-signal"], "image_url": null}, {"artist": "Grimble Grumble", "best_show": {"identifier": "ajc02956_grimble_grumble_2012-11-15", "date": "2012-11-15", "venue": "Empty Bottle", "title": "Grimble Grumble Live at Empty Bottle 2012-11-15"}, "songs": ["Throat Coat", "Dissolve Into", "Slow Burn Ritual"], "note": "Three shows spanning a decade, from Hideout to Empty Bottle, suggests a band that quietly persisted while the world didn't quite notice — that kind of continuity in Chicago's underground is its own form of integrity. Psych-adjacent and patient, the Empty Bottle show would be the one.", "mood_tags": ["psych-rock", "underground-persistence", "slow-burn"], "image_url": null}, {"artist": "Hüsker Dü", "best_show": {"identifier": "huskerdu1984-10-14", "date": "1984-10-14", "venue": "Cabaret Metro", "title": "Hüsker Dü Live at Cabaret Metro 1984-10-14"}, "songs": ["Celebrated Summer", "New Day Rising", "Divide and Conquer"], "note": "Five documented shows across three years of documented disintegration — this is a band that burned through complexity the way a engine burns through itself, Bob Mould's guitar operating at a frequency that shouldn't coexist with melody but does. The Metro 1984 show catches them at the exact moment they understood what they were.", "mood_tags": ["controlled demolition", "melodic brutalism"], "image_url": null}, {"artist": "Harvey Milk", "best_show": {"identifier": "ajc00213_harvey-milk-1997-09-06", "date": "1997-09-06", "venue": "Fireside Bowl", "title": "Harvey Milk Live at Fireside Bowl 1997-09-06"}, "songs": ["Crush Them All", "My Love Is Higher Than Your Assessment of What My Love Could Be", "Motown"], "note": "Sludge that moves like grief — Harvey Milk understood that tempo is a weapon you can use against the listener's comfort, and the Fireside Bowl was exactly the right container for that kind of slow-motion collapse. Creston Spiers sings like a man confessing to something he's not sure was a crime.", "mood_tags": ["funeral weight", "Southern gothic doom"], "image_url": null}, {"artist": "Hasil Adkins", "best_show": {"identifier": "ajc02692_hasiladkins1995-06-01", "date": "1995-06-01", "venue": "Lounge Ax", "title": "Hasil Adkins Live at Lounge Ax 1995-06-01"}, "songs": ["She Said", "No More Hot Dogs", "Chicken Walk"], "note": "One man from West Virginia who recorded himself for decades in a shack and invented an entire universe that owed nothing to anyone — Lounge Ax was the right room, small enough that you could feel the absolute otherness of what he was doing. Rawness as a complete artistic philosophy, not a production choice.", "mood_tags": ["feral outsider", "one-man universe"], "image_url": null}, {"artist": "Hella", "best_show": {"identifier": "ajc01114_hella2004-06-10.ajcproject", "date": "2004-06-10", "venue": "Bottom Lounge", "title": "Hella Live at Bottom Lounge on 2004-06-10"}, "songs": ["Biblical Violence", "The D. Elkan", "Cafeteria Bananas"], "note": "Two people producing rhythmic information that shouldn't be possible without more hands — Zach Hill's drumming exists in the same time-signature obsession territory as Carey's work on Lateralus, except more violent and less interested in your wellbeing. Complexity worn as aggression.", "mood_tags": ["mathematical fury", "two-person chaos system"], "image_url": null}, {"artist": "Head Of Femur", "best_show": {"identifier": "ajc01243_head_of_femur_2004-01-16", "date": "2004-01-16", "venue": "Gunther Murphy's", "title": "Head Of Femur Live at Gunther Murphy's 2004-01-16"}, "songs": ["St. Sebastian", "Baba O'Riley (cover)", "Funeral Party"], "note": "Five documented shows including the Metro, Schubas, Gunther Murphy's — this band built orchestral density into indie rock without it ever feeling forced, and that Gunther Murphy's show feels like the right size room for something still finding its own mass. Chicago strange in the best possible way.", "mood_tags": ["orchestral accumulation", "Chicago strange"], "image_url": null}, {"artist": "Health & Beauty", "best_show": {"identifier": "ajc01861_health_beauty_2015-11-20", "date": "2015-11-20", "venue": "Hideout", "title": "Health & Beauty Live at Hideout 2015-11-20"}, "songs": ["Nothing Happens", "Slow Glass", "Morning"], "note": "Rick Rizzo and Jim Elkington operating in a zone where repetition becomes revelation — the Hideout is their natural habitat, a room that rewards patience, and Health & Beauty is a band for people who understand that restraint is a form of intensity. Three documented appearances including a 2018 return to the same room.", "mood_tags": ["patient repetition", "restraint as power"], "image_url": null}, {"artist": "Hushdrops", "best_show": {"identifier": "ajc00177_hushdrops_1996-07-26", "date": "1996-07-26", "venue": "Fireside Bowl", "title": "Hushdrops Live at Fireside Bowl 1996-07-26"}, "songs": ["Fool's Gold", "Pull", "Satellite"], "note": "Seven documented shows spanning nearly twenty years — 1996 Fireside Bowl to 2015 — is the kind of archival footprint that tells you a band meant something real to someone who kept showing up with a recorder. Hushdrops carried the weight of Big Star's DNA without pretending to be anything other than a Chicago bar band, which is its own form of honor.", "mood_tags": ["long game", "earned power pop"], "image_url": null}, {"artist": "Hood", "best_show": {"identifier": "ajc02440_hood_2005-03-18", "date": "2005-03-18", "venue": "Empty Bottle", "title": "Hood Live at Empty Bottle 2005-03-18"}, "songs": ["They Removed All Trace That Anything Had Ever Happened Here", "You're Worth the Whole World", "The Winter Hit Hard"], "note": "Leeds post-rock that arrived at the Empty Bottle and made the room feel like standing inside weather — Hood's late-period work folded electronic decay into folk structures and the results were genuinely unrepeatable, the kind of show that exists only in that room on that night. Complexity through accumulation of small gestures.", "mood_tags": ["post-rock elegy", "electronic folk erosion"], "image_url": null}, {"artist": "Jackie-O Motherfucker", "best_show": {"identifier": "ajc01335_jackie-o-motherfucker-2004-02-28", "date": "2004-02-28", "venue": "Abbey Pub", "title": "Jackie-O Motherfucker Live at Abbey Pub 2004-02-28"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Free-psych improvisation built on patience and collective dissolution — this is the rare band where the spaces between sounds carry as much weight as the sounds themselves. The name is confrontational but the music is almost devotional, which is exactly the kind of contradiction that holds.", "mood_tags": ["free-improvisation", "psychedelic-drone", "patience-rewarded"], "image_url": null}, {"artist": "Joan of Arc", "best_show": {"identifier": "ajc01636_joan-of-arc-2010-10-18", "date": "2010-10-18", "venue": "Empty Bottle", "title": "Joan of Arc Live at Empty Bottle 2010-10-18"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Tim Kinsella has spent thirty years refusing to make the same record twice, and Joan of Arc live carries that same restless energy — angular, uncomfortable, genuinely Chicago in a way that has nothing to do with tourism. Two documented shows means two different versions of the same unresolved argument.", "mood_tags": ["post-rock", "experimental", "chicago-underground"], "image_url": null}, {"artist": "Jim Carroll", "best_show": {"identifier": "ajc02559_jim-carroll-1991-07-11", "date": "1991-07-11", "venue": "Lounge Ax", "title": "Jim Carroll Live at Lounge Ax 1991-07-11"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Four documented shows across five years, and Carroll is exactly the kind of artist Maynard would recognize — someone who earned his darkness the hard way and then made art out of the scar tissue. The Lounge Ax recording specifically is the one I want: a room that small, a voice that lived-in.", "mood_tags": ["spoken-word-rock", "earned-darkness", "literary-rawness"], "image_url": null}, {"artist": "Jon Langford", "best_show": {"identifier": "ajc01311_threejohns1986-05-07.ajcproject", "date": "1986-05-07", "venue": "Gaspars", "title": "The Three Johns Live at Gaspars on 1986-05-07 (Early show)"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Thirty-three documented shows spanning 1985 to 2017 — that is not a catalog, that is a life's work, and Langford's punk-folk-political sprawl through the Mekons and beyond is one of the most genuinely sustained artistic commitments in this entire archive. Complexity earned through repetition and refusal.", "mood_tags": ["punk-folk", "political", "sustained-career"], "image_url": null}, {"artist": "Jaye Jayle", "best_show": {"identifier": "ajc00314_jayejayle2014-04-20", "date": "2014-04-20", "venue": "Hideout", "title": "Jaye Jayle Live at Hideout 2014-04-20"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Evan Patterson building slow-burn gothic country that feels like a structure collapsing in controlled sequence — two Hideout appearances means this is genuinely a Chicago connection, not a pass-through, and the weight he carries in that project is the kind Tool-adjacent spirit I keep returning to.", "mood_tags": ["gothic-country", "slow-burn", "weight"], "image_url": null}, {"artist": "Karate", "best_show": {"identifier": "ajc01627_karate-1996-06-21", "date": "1996-06-21", "venue": "Fireside Bowl", "title": "Karate Live at Fireside Bowl 1996-06-21"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Geoff Farina understood that jazz and post-hardcore could occupy the same body without either one winning, and a 1996 Fireside Bowl recording is precisely the kind of unrepeatable document this archive exists to preserve — small room, real tension, complexity inside apparent restraint.", "mood_tags": ["post-hardcore-jazz", "restraint", "small-room-intensity"], "image_url": null}, {"artist": "Jim Becker, Joe Adamik, Glenn Kotche, Darin Gray", "best_show": {"identifier": "ajc01891_bakg_2016-04-23", "date": "2016-04-23", "venue": "Hideout", "title": "Jim Becker, Joe Adamik, Glenn Kotche, Darin Gray Live at Hideout 2016-04-23"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Glenn Kotche alone justifies entry — the Wilco drummer is one of the most compositionally serious percussionists working in any genre — but this four-way improvisation at the Hideout with Becker and Gray suggests something genuinely unrepeatable happened in that room, which is the only reason to be in a room.", "mood_tags": ["free-improvisation", "chamber-rock", "unrepeatable"], "image_url": null}, {"artist": "Jeffrey Lewis", "best_show": {"identifier": "ajc00722_jeffreylewis2004-04-09.ajcproject", "date": "2004-04-09", "venue": "Schubas Tavern", "title": "Jeffrey Lewis Live at Schubas Tavern on 2004-04-09"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Three documented shows across a decade, and Lewis is the kind of anti-folk storyteller who rewards the close listener — the wit is surface, the dread underneath is real, and anyone who performs the same songs for ten years and makes them feel different each time has earned something.", "mood_tags": ["anti-folk", "literary", "decade-spanning"], "image_url": null}, {"artist": "Low", "best_show": {"identifier": "ajc01467_low1996-04-26.ajcproject", "date": "1996-04-26", "venue": "Lounge Ax", "title": "Low Live at Lounge Ax on 1996-04-26"}, "songs": ["Sunflower", "Words", "Over the Ocean"], "note": "Four documented shows across the mid-to-late nineties, and Low were doing something genuinely dangerous — making quiet music in loud rooms and forcing the room to come to them. That patience, that refusal to perform urgency, is exactly the kind of earned restraint that puts them in the same spiritual territory as anything I'd call essential.", "mood_tags": ["glacial", "devotional"], "image_url": null}, {"artist": "Killdozer", "best_show": {"identifier": "ajc00741_killdozer2009-09-24", "date": "2009-09-24", "venue": "Abbey Pub", "title": "Killdozer Live at Abbey Pub 2009-09-24"}, "songs": ["Unison", "Man vs. Nature", "Going to the Beach"], "note": "Reunion-era Killdozer at the Abbey Pub is the kind of document that justifies this entire archive — a band that turned American grotesque into something genuinely crushing, with Michael Gerald's voice delivering plainspoken horror over sludge that had no interest in being liked. The ugliness is the point.", "mood_tags": ["sludge", "american-grotesque"], "image_url": null}, {"artist": "Kristin Hersh", "best_show": {"identifier": "ajc01849_kristinhersh2015-10-04.ajcproject", "date": "2015-10-04", "venue": "Schubas Tavern", "title": "Kristin Hersh Live at Schubas Tavern on 2015-10-04"}, "songs": ["Your Ghost", "Gazebo Tree", "Beestung"], "note": "Solo Hersh at Schubas is the format where her writing hits hardest — no cushion, nowhere for the songs to hide, and she has never written a comfortable song in her life. The dissonance she carries between folk structure and genuinely fractured interior is the same tension that makes Tool's quieter passages feel like held breath.", "mood_tags": ["fractured-folk", "interior-violence"], "image_url": null}, {"artist": "Kirsty MacColl", "best_show": {"identifier": "ajc00744_kirsty-mac-coll-1998-11-05", "date": "1998-11-05", "venue": "Metro", "title": "Kirsty MacColl Live at Metro 1998-11-05"}, "songs": ["There's a Guy Works Down the Chip Shop Swears He's Elvis", "Fairytale of New York", "Days"], "note": "Three Chicago appearances across five years, and the Metro show is the one I'd want — she had a voice that carried real wit and real sorrow in the same breath, which is rarer than any amount of technical complexity. The WXRT session in 1993 is also a document worth sitting with.", "mood_tags": ["bittersweet", "undervalued"], "image_url": null}, {"artist": "Lee Ranaldo & The Dust", "best_show": {"identifier": "ajc0229_lee-ranaldo-2013-10-13", "date": "2013-10-13", "venue": "Empty Bottle", "title": "Lee Ranaldo Live at Empty Bottle 2013-10-13"}, "songs": ["Hammer Blows", "Xtina As I Knew Her", "Sufjan Follows the River"], "note": "Ranaldo at the Empty Bottle is the right scale for this material — the Dust project has a physicality that gets lost in larger rooms, and hearing it in a space that small means you feel the guitar frequencies shift in your chest the way they're supposed to. Post-Sonic Youth and still operating entirely outside comfort.", "mood_tags": ["noise-adjacent", "texture-first"], "image_url": null}, {"artist": "Kool Keith", "best_show": {"identifier": "ajc01969_kool-keith-2017-03-07", "date": "2017-03-04", "venue": "Empty Bottle", "title": "Kool Keith Live at Empty Bottle 2017-03-04"}, "songs": ["Plastic World", "I'm Seein' Robots", "Earth People"], "note": "Kool Keith at the Empty Bottle in 2017 is exactly as unlikely and exactly as correct as it sounds — a man operating on his own frequency since the mid-eighties, whose internal logic is so fully self-contained that it constitutes its own genre. Complexity inside apparent chaos, which is not nothing.", "mood_tags": ["outsider-rap", "hermetically-sealed"], "image_url": null}, {"artist": "Lala Lala", "best_show": {"identifier": "ajc01931_lalalala_2016-10-17", "date": "2016-10-17", "venue": "Empty Bottle", "title": "Lala Lala Live at Empty Bottle 2016-10-17"}, "songs": ["Copycat", "Destroyer", "I Want What You Got"], "note": "Two Empty Bottle appearances a year apart tells you something — Lillie West was building something in public, and the 2016 show catches her at the moment where the rawness still had more weight than the polish that came later. Chicago underground in the best sense: small room, real stakes.", "mood_tags": ["raw-indie", "chicago-scene"], "image_url": null}, {"artist": "Lambchop", "best_show": {"identifier": "ajc00069_lambchop_1997-05-31", "date": "1997-05-31", "venue": "Metro", "title": "Lambchop Live at Metro 1997-05-31"}, "songs": ["The Man Who Loved Beer", "Soaky in the Pooper", "Your Fucking Sunny Day"], "note": "Kurt Wagner has been writing songs that require patience and reward it for thirty years, and the 1997 Metro show predates the wider recognition — this is Lambchop when the orchestral country-soul experiment still felt genuinely risky. Music that trusts the listener to slow down, which is an act of quiet defiance.", "mood_tags": ["slow-burn", "orchestral-country"], "image_url": null}, {"artist": "Lungfish", "best_show": {"identifier": "ajc02580_lungfish_1996-04-09", "date": "1996-04-09", "venue": "Lounge Ax", "title": "Lungfish Live at Lounge Ax 1996-04-09"}, "songs": ["Artificial Horizon", "Indivisible", "War Machine"], "note": "Daniel Higgs is operating on a frequency that most bands never locate — repetition as ritual, not laziness, the groove arriving like a tide that doesn't care if you're watching. Three Lounge Ax dates across four years means this band earned the room every time.", "mood_tags": ["hypnotic", "spiritual-weight", "post-hardcore-transcendence"], "image_url": null}, {"artist": "Mekons", "best_show": {"identifier": "ajc01170_mekons1986-06-29.ajcproject", "date": "1986-06-29", "venue": "Exit", "title": "Mekons Live at Exit on 1986-06-29"}, "songs": ["Hard to Be Human Again", "Ghosts of American Astronauts", "Memphis, Egypt"], "note": "33 documented shows across three decades — that is not a career, that is a geological formation. The Mekons never resolved the tension between chaos and beauty because they understood that resolution would kill it.", "mood_tags": ["long-haul-endurance", "post-punk-folk", "earned-wreckage"], "image_url": null}, {"artist": "Meat Wave", "best_show": {"identifier": "ajc01865_meat-wave-2015-12-12", "date": "2015-12-12", "venue": "Empty Bottle", "title": "Meat Wave Live at Empty Bottle 2015-12-12"}, "songs": ["The Incessant", "Delusion Spree", "Brother"], "note": "Eight documented shows in five years at venues that matter — Township to Empty Bottle — means this band was doing the actual work, not angling for attention. Chicago noise-punk that compresses genuine dread into three-minute detonations.", "mood_tags": ["chicago-underground", "noise-punk", "pressure-built"], "image_url": null}, {"artist": "Melkbelly", "best_show": {"identifier": "ajc01967_melkbelly-2017-02-25", "date": "2017-02-25", "venue": "Empty Bottle", "title": "Melkbelly Live at Empty Bottle 2017-02-25"}, "songs": ["Off the Record", "Civilian", "Tut Tut"], "note": "The guitar work here is genuinely strange in the way that matters — dissonance that isn't performed, just the natural consequence of how they hear things. Three Empty Bottle appearances and a West Fest slot: Chicago claimed them before anyone else could.", "mood_tags": ["angular", "chicago-native", "dissonance-as-texture"], "image_url": null}, {"artist": "METZ", "best_show": {"identifier": "ajc01970_metz_2017-03-04", "date": "2017-03-04", "venue": "Empty Bottle", "title": "METZ Live at Empty Bottle 2017-03-04"}, "songs": ["Acetate", "Eraser", "Wet Blanket"], "note": "Two consecutive nights at the Empty Bottle is a band proving something, not just playing shows — the second night always carries the weight of what the first night excavated. Pure compression, no ornamentation, every note load-bearing.", "mood_tags": ["noise-rock", "physically-loud", "no-filler"], "image_url": null}, {"artist": "Man Forever", "best_show": {"identifier": "ajc02983_man_forever_2012-12-20", "date": "2012-12-20", "venue": "Empty Bottle", "title": "Man Forever Live at Empty Bottle 2012-12-20"}, "songs": ["Trance Systems", "Pulse Array", "Open Circuit"], "note": "Kid Millions building percussion architectures that require patience to enter and persistence to leave — this is the Tool-adjacent spirit I mean, not the sound, but the commitment to duration as a compositional tool. Two documented shows, both taken seriously.", "mood_tags": ["percussive-drone", "endurance-music", "avant-minimalism"], "image_url": null}, {"artist": "Marc Ribot's Ceramic Dog", "best_show": {"identifier": "0144_mribotceramicdog2013-05-27", "date": "2013-05-27", "venue": "Millennium Park - Chicago", "title": "Marc Ribot's Ceramic Dog Live at Millennium Park - Chicago 2013-05-27"}, "songs": ["Lies My Body Told Me", "The Activist", "Connection"], "note": "Ribot plays guitar like someone who has studied every tradition and then deliberately broken all of them in sequence — the Ceramic Dog configuration adds the punk-noise edge that makes the complexity feel dangerous rather than academic.", "mood_tags": ["deconstructed-guitar", "jazz-adjacent-noise", "controlled-chaos"], "image_url": null}, {"artist": "Manishevitz", "best_show": {"identifier": "ajc00307_manishevitz_2001-09-06", "date": "2001-09-06", "venue": "Empty Bottle", "title": "Manishevitz Live at Empty Bottle 2001-09-06"}, "songs": ["The Nature of Things", "Dull Season", "Leaves"], "note": "Three shows across three years at spots like Empty Bottle and Gunther's — this was a band that existed entirely inside the ecosystem, not trying to escape it. Quiet music with structural patience, the kind that only works if the room gets quiet enough to meet it.", "mood_tags": ["quiet-complexity", "indie-folk-depth", "room-dependent"], "image_url": null}, {"artist": "Mission of Burma", "best_show": {"identifier": "ajc01184_mob2002-11-22.ajcproject", "date": "2002-11-22", "venue": "Metro", "title": "Mission of Burma Live at Metro on 2002-11-22"}, "songs": ["That's When I Reach for My Revolver", "Academie Fight Song", "The Obliterati"], "note": "Eight documented shows across a decade means this isn't a band coasting on legend — they kept showing up and proving it live, which is exactly the kind of discipline that earns permanent residency in my rotation. The tape hiss and feedback of a Burma set at the Metro is the sound of ideas refusing to be comfortable.", "mood_tags": ["post-punk", "confrontational", "earned fury"], "image_url": null}, {"artist": "Mogwai", "best_show": {"identifier": "ajc00950_mogwai1997-10-15.ajcproject", "date": "1997-10-15", "venue": "Lounge Ax", "title": "Mogwai Live at Lounge Ax on 1997-10-15"}, "songs": ["Mogwai Fear Satan", "Like Herod", "R U Still in 2 It"], "note": "Catching Mogwai at Lounge Ax in 1997 — before the weight of their own influence settled on them — is the kind of document that makes archive culture worth caring about; six shows over seventeen years in this collection means Aadam tracked the whole arc. The quiet-to-loud structure sounds simple until you realize the silence between notes is doing half the work.", "mood_tags": ["post-rock", "patient architecture", "volume as argument"], "image_url": null}, {"artist": "Mono", "best_show": {"identifier": "ajc01191-mono-2003-05-14", "date": "2003-05-14", "venue": "Fireside Bowl", "title": "Mono Live at Fireside Bowl 2003-05-14"}, "songs": ["Halcyon", "Com(?)", "Sabbath"], "note": "Five shows in under two years means they were deep in the circuit, and Fireside Bowl specifically is the room where this kind of sustained orchestral weight actually makes sense — low ceiling, no pretension, the sound has nowhere to go but through you. Mono builds cathedrals without bricks, and a 2003 Chicago date is them doing it when it still felt dangerous.", "mood_tags": ["instrumental", "orchestral weight", "no words needed"], "image_url": null}, {"artist": "My Bloody Valentine", "best_show": {"identifier": "ajc02610_mbv_1992-02-14", "date": "1992-02-14", "venue": "Metro", "title": "My Bloody Valentine Live at Metro 1992-02-14"}, "songs": ["Only Shallow", "When You Sleep", "Sometimes"], "note": "Valentine's Day 1992 at the Metro, right in the immediate aftermath of Loveless — this is the show that exists in the margin between a record that redefined what guitars can do and the sixteen years of silence that followed it. The fact that Aadam caught them again in 2018 at the Riviera, still somehow relevant, makes the whole arc feel biblical.", "mood_tags": ["shoegaze", "sonic density", "time-warping"], "image_url": null}, {"artist": "Minutemen", "best_show": {"identifier": "ajc00770_minutemen1985-05-03.ajcproject", "date": "1985-05-03", "venue": "Cabaret Metro", "title": "Minutemen Live at Cabaret Metro on 1985-05-03"}, "songs": ["Corona", "Political Song for Michael Jackson to Sing", "History Lesson Part II"], "note": "Only one show, but it's 1985 and it's the Minutemen, which means you're hearing a band that crammed an entire philosophy of music-making — economy, politics, humor, grief — into sets that lasted thirty minutes and contained forty ideas. D. Boon died seven months after this date; this tape is what it sounds like right before a light goes out.", "mood_tags": ["punk jazz", "irreplaceable", "political voltage"], "image_url": null}, {"artist": "Natural Information Society", "best_show": {"identifier": "ajc01769_nis-2016-05-20", "date": "2016-05-20", "venue": "Constellation", "title": "Natural Information Society Live at Constellation 2016-05-20"}, "songs": ["Descension", "Oxtail", "Hylozoism"], "note": "Joshua Abrams running a guimbri through layers of free jazz and minimalist trance logic at Constellation, which is exactly the room that was built for this kind of slow revelation — one show documented, but NIS is the kind of ensemble where one night is genuinely unrepeatable. This is Tool-adjacent in the way that matters most: structure you can feel before you understand.", "mood_tags": ["minimalist", "trance", "Chicago jazz underground"], "image_url": null}, {"artist": "Moonshake", "best_show": {"identifier": "ajc02228_moonshake_1993-07-02", "date": "1993-07-02", "venue": "Lounge Ax", "title": "Moonshake Live at Lounge Ax 1993-07-02"}, "songs": ["Gravity", "Big Good Angel", "First"], "note": "Two Chicago shows spread across three years — Lounge Ax in '93 and Empty Bottle in '96 — for one of the most undervalued post-industrial outfits to come out of the UK, a band that treated rhythm as architecture rather than pulse. Moonshake is the answer to the question nobody thought to ask about what happens when you put drum machine brutalism inside pop song-shaped containers.", "mood_tags": ["post-industrial", "rhythmic density", "criminally obscure"], "image_url": null}, {"artist": "Need New Body", "best_show": {"identifier": "ajc00779_neednewbody2004-04-22", "date": "2004-04-22", "venue": "Fireside Bowl", "title": "Need New Body Live at Fireside Bowl 2004-04-22"}, "songs": ["Where's the Party", "UFO", "Brillo Box"], "note": "Two shows at Fireside Bowl and Bottom Lounge in 2004, and Need New Body was one of those genuinely strange Philadelphia collectives that never repeated itself — noise collage, free folk, absurdist theater, all held together by collective will rather than genre. Live they were the kind of band you couldn't describe afterward, only report on.", "mood_tags": ["avant-folk", "collective improvisation", "joyfully unclassifiable"], "image_url": null}, {"artist": "Nick Cave and The Bad Seeds", "best_show": {"identifier": "ajc02570_nickcaveandthebadseeds1989-02-18", "date": "1989-02-18", "venue": "Cabaret Metro", "title": "Nick Cave and The Bad Seeds Live at Cabaret Metro 1989-02-18"}, "songs": ["The Mercy Seat", "Tupelo", "The Weeping Song"], "note": "Cave in 1989 is operating at the exact frequency I mean when I say 'seen the bottom and decided to stay' — the Bad Seeds era where every song feels like a confession extracted under duress. Three shows at the Metro across four years is a document worth having.", "mood_tags": ["gothic weight", "earned darkness", "preacher energy"], "image_url": null}, {"artist": "ONO", "best_show": {"identifier": "ajc01815_ONO1985-09-14", "date": "1985-09-14", "venue": "Filmakers", "title": "ONO Live at Filmakers 1985-09-14"}, "songs": ["Untitled Improvisation", "Industrial Ritual", "No Structure"], "note": "Six documented shows spanning 1985 to 2016 — that kind of longevity in the Chicago underground isn't ambition, it's obsession, and ONO's confrontational noise-gospel has always operated entirely outside any system that would have them. Starting at a place called Filmakers in 1985 and still going is the whole story.", "mood_tags": ["confrontational", "noise gospel", "chicago underground anchor"], "image_url": null}, {"artist": "Pelican", "best_show": {"identifier": "ajc00604_pelican-2004-07-09", "date": "2004-07-09", "venue": "Empty Bottle", "title": "Pelican Live at Empty Bottle on 2004-07-09"}, "songs": ["Mammoth", "Drought", "Australasia"], "note": "Instrumental post-metal that rewards patience the way a long drive through flat land rewards patience — nothing happens until everything happens, and when it does you feel it in your sternum. Four shows in the collection, Fireside Bowl to Empty Bottle, early documents of a band that hadn't yet outgrown the small room.", "mood_tags": ["instrumental weight", "post-metal", "patience rewarded"], "image_url": null}, {"artist": "Pere Ubu", "best_show": {"identifier": "ajc01215_pere-ubu-1988-09-23", "date": "1988-09-23", "venue": "Cabaret Metro", "title": "Pere Ubu Live at Cabaret Metro 1988-09-23"}, "songs": ["Dub Housing", "Non-Alignment Pact", "Final Solution"], "note": "David Thomas built something genuinely strange and never apologized for it — Pere Ubu's art-punk mutates live into something even less classifiable, and two Metro recordings from the late '80s is a genuine archive find. Complexity inside apparent chaos, which is the same thing.", "mood_tags": ["art-punk", "genuinely strange", "ohio gothic"], "image_url": null}, {"artist": "Pavement", "best_show": {"identifier": "ajc00811_pavement1992-06-12", "date": "1992-06-12", "venue": "Lounge Ax", "title": "Pavement Live at Lounge Ax 1992-06-12"}, "songs": ["Trigger Cut", "Summer Babe", "Loretta's Scars"], "note": "Six shows from 1992 to 1997 is the full arc of Pavement at their most genuinely strange, before the cult calcified into nostalgia — the Lounge Ax show in particular lands at the exact moment the slacker surface was hiding something more structurally weird than anyone wanted to admit.", "mood_tags": ["deceptive simplicity", "early document", "lounge ax era"], "image_url": null}, {"artist": "On Fillmore", "best_show": {"identifier": "ajc00803_on_fillmore_2001-05-03", "date": "2001-05-03", "venue": "Hideout", "title": "On Fillmore Live at Hideout 2001-05-03"}, "songs": ["Untitled", "Long Form Improvisation", "Drone Piece"], "note": "Darin Gray and Hal Rammel building slow-motion drone and improvisation at the Hideout is exactly the kind of unrepeatable moment this collection exists to preserve — three documented shows means you can hear the subtle shifts in how they commune with a room.", "mood_tags": ["drone", "improvisation", "hideout intimacy"], "image_url": null}, {"artist": "Noveller", "best_show": {"identifier": "ajc01996_noveller_2017-09-16", "date": "2017-09-16", "venue": "Metro", "title": "Noveller Live at Metro 2017-09-16"}, "songs": ["Abigail", "Dusk", "Warp and Weft"], "note": "Sarah Lipstate builds entire landscapes with a guitar and a pedalboard and zero concession to what a guitar is supposed to do — solo looping work that rewards the same patience as the long instrumental albums, and a Metro show means she had room to actually breathe.", "mood_tags": ["solo guitar", "ambient construction", "patience rewarded"], "image_url": null}, {"artist": "Olivia Block", "best_show": {"identifier": "ajc00252_oliviablock2015-06-11", "date": "2015-06-11", "venue": "Hideout", "title": "Olivia Block Live at Drill Festival - Hideout 2015-06-11"}, "songs": ["Untitled Composition", "Field Recording Work", "Tape Piece"], "note": "A Drill Festival set at the Hideout is the correct context for Olivia Block's electroacoustic work — she composes with found sound and silence the way other people compose with melody, and a festival dedicated to experimental music is where that rigor gets the audience it deserves.", "mood_tags": ["electroacoustic", "composed silence", "drill festival"], "image_url": null}, {"artist": "Peter Jefferies", "best_show": {"identifier": "ajc02771_peter_jefferies_1994-09-10", "date": "1994-09-10", "venue": "Lounge Ax", "title": "Peter Jefferies Live at Lounge Ax 1994-09-10"}, "songs": ["Electricity", "The Cold and the Dark", "House of Mirrors"], "note": "New Zealand post-punk hermit, four Lounge Ax appearances across three years — a man who built cathedrals out of damaged piano and fractured meter and then let them fall. The patience required to sit inside a Jefferies song is exactly the kind of patience Lateralus rewards.", "mood_tags": ["post-punk", "damaged-beauty", "solitary", "patient-listening"], "image_url": null}, {"artist": "Peter Jefferies and Alastair Galbraith", "best_show": {"identifier": "ajc02776_pj_ag_1993-08-13", "date": "1993-08-13", "venue": "Lounge Ax", "title": "Peter Jefferies and Alastair Galbraith Live at Lounge Ax 1993-08-13"}, "songs": ["Surfacing", "Distant", "The Spell"], "note": "Two Dunedin survivors sharing a small stage in Chicago — this is the kind of unrepeatable convergence that makes live archiving worth everything; the friction between Galbraith's microtonal violin scrape and Jefferies' hammered dissonance creates something that has no genre name and needs none.", "mood_tags": ["free-improvisation", "dunedin-sound", "sparse", "unrepeatable"], "image_url": null}, {"artist": "Rachel's", "best_show": {"identifier": "ajc02437_rachels_1997-07-23", "date": "1997-07-23", "venue": "Lounge Ax", "title": "Rachel's Live at Lounge Ax 1997-07-23"}, "songs": ["Water from the Same Source", "The Sea and the Bells", "Full on Night"], "note": "Post-rock chamber music that refuses the crescendo payoff everybody else was chasing — Rachel's understood that tension held indefinitely is more powerful than tension released, which is exactly what Tool understood about silence inside a 13-minute song.", "mood_tags": ["chamber-post-rock", "tension", "strings", "nocturnal"], "image_url": null}, {"artist": "Plastic Crimewave Vision Celestial Guitarkestra", "best_show": {"identifier": "ajc00826_pcvcg-2007-02-27", "date": "2007-02-27", "venue": "Empty Bottle", "title": "Plastic Crimewave Vision Celestial Guitarkestra Live at Empty Bottle 2007-02-27"}, "songs": ["Cosmic Drift", "Solar Burial", "The Infinite Strum"], "note": "A collective of Chicago guitarists summoning krautrock ritual on a small stage — three documented shows across a decade means every recording is a different organism, the kind of revolving mass improvisation that only works when the players have internalized the same cosmology.", "mood_tags": ["psychedelic", "krautrock", "chicago-underground", "collective-improvisation"], "image_url": null}, {"artist": "Phil Cohran", "best_show": {"identifier": "ajc00326_phil-cohran-2014-05-01", "date": "2014-05-01", "venue": "CIMM Fest Concord Music Hall", "title": "Phil Cohran Live at CIMM Fest Concord Music Hall 2014-05-01"}, "songs": ["Unity", "Armageddon", "On the Beach"], "note": "AACM founding architect, Sun Ra alumnus, inventor of the frankiphone — Cohran operated so far outside commercial music that the system didn't even have the vocabulary to dismiss him; this is earned complexity with spiritual weight behind every note.", "mood_tags": ["AACM", "spiritual-jazz", "cosmic", "historically-weighted"], "image_url": null}, {"artist": "Pinback", "best_show": {"identifier": "ajc01060_pinback2003-03-18.ajcproject", "date": "2003-03-18", "venue": "Empty Bottle", "title": "Pinback Live at Empty Bottle on 2003-03-18"}, "songs": ["Loro", "Tripoli", "AFK"], "note": "Seven documented shows across eleven years — Rob Crow and Armistead Burwell Smith IV built interlocking bass-guitar counterpoint that looks simple on the surface and reveals its architecture slowly, the way a good proof reveals itself; this Empty Bottle show catches them when the songs were still being discovered.", "mood_tags": ["indie-rock", "counterpoint", "slow-reveal", "multiple-shows"], "image_url": null}, {"artist": "Phish", "best_show": {"identifier": "ajc01505_phish_1990-11-09", "date": "1990-11-09", "venue": "Lounge Ax", "title": "Phish Live at Lounge Ax on 1990-11-09"}, "songs": ["You Enjoy Myself", "David Bowie", "Divided Sky"], "note": "Lounge Ax, 1990 — before the jamband mythology calcified around them, this is Phish as a small-room band working out compositional ideas that were genuinely strange, the vocal fugues and metric modulations still surprising even to the players; a document of a thing before it became a thing.", "mood_tags": ["early-document", "compositional-complexity", "live-improvisation", "small-room"], "image_url": null}, {"artist": "Rempis-Parker-Flaten-Cunningham", "best_show": {"identifier": "ajc01758_rempis-parker-flaten-cunningham-2019-08-29", "date": "2019-08-29", "venue": "Elastic Arts Foundation", "title": "Rempis-Parker-Flaten-Cunningham Live at Elastic Arts Foundation 2019-08-29"}, "songs": ["Collective Improvisation I", "Collective Improvisation II", "Collective Improvisation III"], "note": "Dave Rempis is the connective tissue of Chicago free jazz for twenty years and Elastic Arts is the room where that tradition breathes — this quartet at this venue in 2019 is exactly the kind of unrepeatable structure that either holds or collapses in real time, and I want to hear which one it did.", "mood_tags": ["free-jazz", "chicago-underground", "elastic-arts", "collective"], "image_url": null}, {"artist": "Plus/Minus", "best_show": {"identifier": "ajc01051_plusminus2003-11-13", "date": "2003-11-13", "venue": "Schubas Tavern", "title": "Plus/Minus Live at Schubas Tavern 2003-11-13"}, "songs": ["All Things Being Equal", "Jukebox Crimes and Masterpieces", "Quiet Like a Knife"], "note": "Six shows across seven years from a band that understood signal processing as a compositional tool rather than decoration — the math-pop structures underneath the electronics reveal themselves on repeated listening the same way a time signature you can't initially parse eventually locks into place.", "mood_tags": ["post-rock", "electronics", "slow-reveal", "multiple-shows"], "image_url": null}, {"artist": "Rhys Chatham", "best_show": {"identifier": "ajc01770_rhys-chatham-2016-05-20", "date": "2016-05-20", "venue": "Constellation", "title": "Rhys Chatham Live at Constellation 2016-05-20"}, "songs": ["A Crimson Grail", "Guitar Trio", "Die Donnergötter"], "note": "Chatham understood before most people that repetition is not laziness — it's pressure, and pressure creates transformation. A single drone sustained long enough stops being a note and becomes a decision.", "mood_tags": ["minimalist maximalism", "drone architecture", "patience rewarded"], "image_url": null}, {"artist": "Rhys Chatham Guitar Trio", "best_show": {"identifier": "ajc00979_rhys-chatham-guitar-trio-2007-02-08", "date": "2007-02-28", "venue": "Empty Bottle", "title": "Rhys Chatham Guitar Trio Live at Empty Bottle 2007-02-28"}, "songs": ["Guitar Trio", "Drastic Classicism", "Outdoor Spell"], "note": "Three guitars locked into phase relationships that shimmer and beat against each other like standing waves — this is the Empty Bottle at its most essential, a room small enough that the overtones hit your chest before your ears process them.", "mood_tags": ["no-wave classicism", "live resonance", "small room enormity"], "image_url": null}, {"artist": "Russian Circles", "best_show": {"identifier": "ajc01577_russian_circles_2005-03-06", "date": "2005-03-06", "venue": "Bottom Lounge", "title": "Russian Circles Live at Bottom Lounge 2005-03-06"}, "songs": ["Carpe", "Micah", "Station"], "note": "This is the early document, before the world caught on — post-metal that builds its tension through structure rather than volume, the kind of music that earns its loudness by making you wait for it.", "mood_tags": ["post-metal", "instrumental tension", "Chicago origin document"], "image_url": null}, {"artist": "Run On", "best_show": {"identifier": "ajc02907_runon1994-10-29", "date": "1994-10-29", "venue": "Empty Bottle", "title": "Run On Live at Empty Bottle 1994-10-29"}, "songs": ["Wires", "Cloudbusting", "Signal"], "note": "Four shows documented across a tight window, all Chicago rooms — that's a band living inside a city's specific frequency, and this 1994 Empty Bottle set is exactly the kind of unrepeatable document this whole archive exists to preserve.", "mood_tags": ["mid-90s underground", "Empty Bottle era", "post-punk tension"], "image_url": null}, {"artist": "Rocket From The Tombs", "best_show": {"identifier": "ajc01226_rocket-from-the-tombs-2003-06-04", "date": "2003-06-04", "venue": "Abbey Pub", "title": "Rocket From The Tombs Live at Abbey Pub 2003-06-04"}, "songs": ["Ain't It Fun", "Sonic Reducer", "Never Gonna Kill Myself Again"], "note": "The proto-punk ur-text, reunited and still operating like a live wire that nobody defused — the fact that this ended up at the Abbey Pub rather than any prestige venue makes it feel exactly right.", "mood_tags": ["proto-punk resurrection", "earned legacy", "unpolished and proud"], "image_url": null}, {"artist": "Robyn Hitchcock", "best_show": {"identifier": "ajc01278_robynhitchcock1990-07-27.ajcproject", "date": "1990-07-27", "venue": "Lounge Ax", "title": "Robyn Hitchcock Live at Lounge Ax on 1990-07-27"}, "songs": ["Madonna of the Wasps", "Globe of Frogs", "The Cheese Alarm"], "note": "Thirteen documented shows across sixteen years is the mark of someone who keeps showing up because the work demands it, not the market — and Lounge Ax 1990 is exactly the room where Hitchcock's particular species of surrealist psychedelia makes complete sense.", "mood_tags": ["psychedelic wit", "long-arc artist", "Lounge Ax document"], "image_url": null}, {"artist": "Ryley Walker", "best_show": {"identifier": "ajc02014_ryleywalker2017-11-22.ajcproject", "date": "2017-11-22", "venue": "Empty Bottle", "title": "Ryley Walker Live at Empty Bottle on 2017-11-22"}, "songs": ["The Halfwit in Me", "Primrose Green", "Sullen Mind"], "note": "Walker operates where folk guitar tradition meets free jazz digression — the Empty Bottle is his room, and a 2017 set there is him at the height of his confidence in following a phrase wherever it wants to go, regardless of where it started.", "mood_tags": ["folk-jazz digression", "improvisation as philosophy", "Empty Bottle native"], "image_url": null}, {"artist": "Sally Timms", "best_show": {"identifier": "ajc01288_stimms-farmisen1997-05-15.ajcproject", "date": "1997-05-15", "venue": "Lounge Ax", "title": "Sally Timms and Fred Armisen Live at Lounge Ax on 1997-05-15"}, "songs": ["This House Is a House of Trouble", "I've Been Lonely Too Long", "Cowboy Sally's Theme"], "note": "Nineteen documented shows is an archive within an archive — Timms as a Mekons satellite carries that band's refusal to separate politics from melody, and the Lounge Ax years are where her solo voice found its sharpest edge.", "mood_tags": ["alt-country subversion", "Mekons lineage", "19-show document"], "image_url": null}, {"artist": "Sarge", "best_show": {"identifier": "ajc00010_sarge_1996-06-26", "date": "1996-06-26", "venue": "Lounge Ax", "title": "Sarge Live at Lounge Ax 1996-06-26"}, "songs": ["Dear Josie", "The Torch I Carry", "Starla's Mistake"], "note": "Champaign-Urbana's finest export to the Chicago circuit — Elizabeth Elmore wrote songs with the structural precision of someone who understood that restraint applied at the right moment hits harder than any crescendo.", "mood_tags": ["midwest indie precision", "90s underground", "Lounge Ax essential"], "image_url": null}, {"artist": "Slint", "best_show": {"identifier": "ajc00329_slint2014-05-10", "date": "2014-05-10", "venue": "Bottom Lounge", "title": "Slint Live at Bottom Lounge 2014-05-10"}, "songs": ["Spiderland", "Good Morning, Captain", "Washer"], "note": "Spiderland is one of the few records that operates on the same frequency as Lateralus — architecture built from silence and tension, not decoration. A reunion-era Slint show is a room full of people who understand that the spaces between notes are load-bearing.", "mood_tags": ["post-rock", "tension-architecture", "earned-quiet"], "image_url": null}, {"artist": "Sonic Youth", "best_show": {"identifier": "ajc01302_sonic-youth-1985-08-11soundcheck", "date": "1985-08-11", "venue": "Smart Bar", "title": "Sonic Youth Live at Smart Bar 1985-08-11"}, "songs": ["Death Valley '69", "Expressway to Yr. Skull", "Flower"], "note": "Nine documented shows spanning 1985 to 2009 — that's not a catalog entry, that's a geological record. The Smart Bar soundcheck from 1985 is exactly the kind of unrepeatable document this archive exists to preserve, noise-as-structure before anyone had named the genre.", "mood_tags": ["noise-rock", "dissonance", "historical-weight"], "image_url": null}, {"artist": "Sebadoh", "best_show": {"identifier": "ajc01076_sebadoh-2004-04-20", "date": "2004-04-20", "venue": "Abbey Pub", "title": "Sebadoh Live at Abbey Pub 2004-04-20"}, "songs": ["Soul and Fire", "Spoiled", "Skull"], "note": "Lou Barlow built lo-fi into a confessional system before anyone made that a marketable aesthetic — five shows across eleven years means Aadam kept returning, and that sustained attention from the archivist signals something real is happening on those stages.", "mood_tags": ["lo-fi-conviction", "raw-emotion", "indie-underground"], "image_url": null}, {"artist": "Snakefinger", "best_show": {"identifier": "ajc02109_snakefinger1985-09-22", "date": "1985-09-22", "venue": "West End", "title": "Snakefinger Live at West End 1985-09-22"}, "songs": ["Smelly Tongues", "The Spot", "Rayguns"], "note": "Philip Lithman operated entirely outside every commercial system that existed at the time, warping guitar into something that sounds like it came from a parallel timeline where Captain Beefheart won. One 1985 West End recording is a window into a genuinely alien sensibility.", "mood_tags": ["avant-garde", "outsider-art", "anti-commercial"], "image_url": null}, {"artist": "Silver Abuse", "best_show": {"identifier": "ajc01872_silver_abuse_2016-01-15", "date": "2016-01-15", "venue": "Liar's Club", "title": "Silver Abuse Live at Liar's Club 2016-01-15"}, "songs": ["Untitled I", "Untitled II", "Untitled III"], "note": "Four documented shows across four years, hitting Township, Quenchers, and Liar's Club — that's a band doing the actual Chicago underground circuit with no shortcuts, and a name that suggests they know exactly what kind of music they're making.", "mood_tags": ["chicago-underground", "circuit-grind", "noise-adjacent"], "image_url": null}, {"artist": "Spektral Quartet", "best_show": {"identifier": "0147_spektral2013-06-29", "date": "2013-06-29", "venue": "The Hideout", "title": "Spektral Quartet Live at The Hideout 2013-06-29"}, "songs": ["Contemporary String Work I", "Contemporary String Work II", "Contemporary String Work III"], "note": "A string quartet playing the Hideout in 2013 is the precise intersection of classical rigor and underground context that rewards patience — this is complexity inside apparent simplicity, the kind of thing that takes three listens before you stop hearing surface and start hearing structure.", "mood_tags": ["contemporary-classical", "complexity", "small-room-gravity"], "image_url": null}, {"artist": "Shiner", "best_show": {"identifier": "ajc01498_shiner_2000-09-28", "date": "2000-09-28", "venue": "Metro", "title": "Shiner Live at Metro 2000-09-28"}, "songs": ["Lula Divinia", "Starless", "Semaphore"], "note": "Shiner at the Metro in 2000 is post-hardcore operating at maximum density — they never got the audience their craft deserved, which is almost always a sign you're dealing with something that refuses to simplify itself for the room.", "mood_tags": ["post-hardcore", "heavy-craft", "underrecognized"], "image_url": null}, {"artist": "So Many Dynamos", "best_show": {"identifier": "ajc01137_smd2009-08-15.late.ajcproject", "date": "2009-08-15", "venue": "Schubas Tavern", "title": "So Many Dynamos Live at Schubas Tavern on 2009-08-15"}, "songs": ["Animal Needs", "Flashlights", "The Basics"], "note": "Three documented shows, and the fact that Aadam caught both the early and late sets on the same night in 2009 tells you everything — when a band earns that kind of obsessive attention from someone who records everything, the music is working on multiple levels simultaneously.", "mood_tags": ["math-rock-adjacent", "kinetic-energy", "midwest-underground"], "image_url": null}, {"artist": "Squarepusher", "best_show": {"identifier": "ajc02951_squarepusher2012-11-03", "date": "2012-11-03", "venue": "Metro", "title": "Squarepusher Live at Metro 2012-11-03"}, "songs": ["Come On My Selector", "Iambic 9 Poetry", "Do You Know Squarepusher"], "note": "Tom Jenkinson treats a bass guitar the way a mathematician treats a proof — obsessively, precisely, until something breaks open that shouldn't be possible. The density here rewards the same patience Lateralus demands.", "mood_tags": ["technical-brutalism", "hyperkinetic-precision"], "image_url": null}, {"artist": "Stereolab", "best_show": {"identifier": "ajc01306_stereolab-1996-05-10", "date": "1996-05-10", "venue": "Metro", "title": "Stereolab Live at Metro 1996-05-10"}, "songs": ["Ping Pong", "French Disko", "Metronomic Underground"], "note": "Four documented shows across a decade — that's a band worth tracking — and this mid-90s Metro appearance catches them at the exact moment the repetition becomes philosophy rather than gimmick. The drone underneath everything is load-bearing.", "mood_tags": ["hypnotic-repetition", "motorik-permanence"], "image_url": null}, {"artist": "Sweep The Leg Johnny", "best_show": {"identifier": "ajc00103_stlj-1998-01-03", "date": "1998-01-03", "venue": "Empty Bottle", "title": "Sweep The Leg Johnny Live at Empty Bottle 1998-01-03"}, "songs": ["Nothing Elegant", "The Situation is Fluid", "You're the Reason I'm the Size I Am"], "note": "Chicago post-hardcore that treated jazz dissonance not as decoration but as the actual structure — two shows documented, the Empty Bottle one is the right room for what they were doing, close enough to feel the polyrhythms in your chest.", "mood_tags": ["post-hardcore-dissonance", "chicago-underground-certified"], "image_url": null}, {"artist": "Superchunk", "best_show": {"identifier": "ajc01085_superchunk1998-02-22", "date": "1998-02-22", "venue": "Lounge Ax", "title": "Superchunk Live at Lounge Ax 1998-02-22"}, "songs": ["Hyper Enough", "Driveway to Driveway", "Detroit Has a Skyline"], "note": "Lounge Ax is the right room — small, gone now, the kind of place that understood that volume at close range is an argument, not a choice. Four shows across this archive and Mac McCaughan never once phoned it in.", "mood_tags": ["earned-intensity", "indie-infrastructure"], "image_url": null}, {"artist": "Steve Reich", "best_show": {"identifier": "ajc02013_steve-reich-2017-11-16", "date": "2017-11-16", "venue": "Pick-Staiger Concert Hall", "title": "Steve Reich (talk) Live at Pick-Staiger Concert Hall 2017-11-16"}, "songs": ["Music for 18 Musicians", "Clapping Music", "Different Trains"], "note": "A composer who found the same thing Maynard found from a completely opposite direction — that rigid structure and spiritual transcendence are not contradictions, they are the same force. Two nights documented; I want both.", "mood_tags": ["minimalist-architecture", "pattern-as-revelation"], "image_url": null}, {"artist": "Swirlies", "best_show": {"identifier": "ajc01086_swirlies_2003-05-30", "date": "2003-05-30", "venue": "Empty Bottle", "title": "Swirlies Live at Empty Bottle 2003-05-30"}, "songs": ["Pancake", "Boyfriend", "What to Do With Barrell"], "note": "Shoegaze from Boston that somehow belongs at the Empty Bottle more than most Chicago bands do — the noise here is patient, the melodies are buried deliberately, you have to meet the music where it lives.", "mood_tags": ["buried-melody", "noise-patience"], "image_url": null}, {"artist": "Syrup USA", "best_show": {"identifier": "ajc02919_syrupusa1997-10-31", "date": "1997-10-31", "venue": "Lounge Ax", "title": "Syrup USA Live at Lounge Ax 1997-10-31"}, "songs": ["Whatever Happened to the Likely Lads", "Freewheelin'", "Bliss Out"], "note": "Halloween at Lounge Ax, two documented shows at that specific venue — that's a band with a relationship to a room, and rooms matter. The name alone suggests something thick and unresolved.", "mood_tags": ["lounge-ax-devotion", "late-90s-chicago-residue"], "image_url": null}, {"artist": "Tav Falco's Panther Burns", "best_show": {"identifier": "ajc02997_tav-falcos-panther-burns-1999-02-02", "date": "1999-02-02", "venue": "Lounge Ax", "title": "Tav Falco's Panther Burns Live at Lounge Ax 1999-02-02"}, "songs": ["Bourgeois Blues", "Snake Rag", "Behind the Magnolia Curtain"], "note": "Completely outside every commercial system that existed or would exist — Tav Falco operating on his own frequency since the late 70s, showing up at Lounge Ax in 1999 like a transmission from a parallel music history that made better choices.", "mood_tags": ["outside-every-system", "deliberate-strangeness"], "image_url": null}, {"artist": "The Afghan Whigs", "best_show": {"identifier": "ajc02697_afghanwhigs1989-06-07", "date": "1989-06-07", "venue": "Cabaret Metro", "title": "The Afghan Whigs Live at Cabaret Metro 1989-06-07"}, "songs": ["Retarded", "I Keep Coming Back", "Sammy"], "note": "Five documented Metro shows before anyone was paying attention — Greg Dulli was already doing that thing where desire and self-destruction share a microphone, and the early recordings catch them when the hunger was still raw and unmediated by production. This is the version of the Whigs that earned everything that came after.", "mood_tags": ["soul-noir", "pre-fame hunger", "earned darkness"], "image_url": null}, {"artist": "Television", "best_show": {"identifier": "ajc01308_television2001-05-10", "date": "2001-05-10", "venue": "Metro", "title": "Television Live at Metro 2001-05-10"}, "songs": ["Marquee Moon", "See No Evil", "Friction"], "note": "Verlaine and Lloyd playing off each other is one of the few genuine examples of two guitar voices becoming a single language — patient, coiled, capable of sustained tension that most bands can't hold for thirty seconds let alone eight minutes. The Metro 2001 reunion is exactly the kind of unrepeatable document this archive exists to preserve.", "mood_tags": ["guitar-as-language", "coiled tension", "post-punk architecture"], "image_url": null}, {"artist": "Tera Melos", "best_show": {"identifier": "ajc01835_tera-melos-2014-09-19", "date": "2014-09-19", "venue": "Bottom Lounge", "title": "Tera Melos Live at Bottom Lounge 2014-09-19"}, "songs": ["Trident Anarchist Ballroom", "Frozen Zoo", "Skin Surf"], "note": "Math-rock that doesn't announce itself as math-rock — the complexity is load-bearing, not decorative, and Nick Reinhart plays like he's solving a proof that keeps changing its own axioms mid-show. This is the kind of band Tool opened the door for without ever sounding like Tool.", "mood_tags": ["math-rock", "controlled chaos", "intricate live execution"], "image_url": null}, {"artist": "The Album Leaf", "best_show": {"identifier": "ajc02377_album_leaf_2003-12-22", "date": "2003-12-22", "venue": "Schubas Tavern", "title": "The Album Leaf Live at Schubas Tavern 2003-12-22"}, "songs": ["The Light", "Over the Pond", "Streamside"], "note": "Jimmy LaValle builds music that rewards the kind of attention most people reserve for things that are trying to get their attention — it asks you to lean in rather than pulling you toward it, which is a discipline few artists actually practice. Two documented Schubas shows means someone understood this was worth capturing twice.", "mood_tags": ["patient ambient", "instrumental restraint", "small room intimacy"], "image_url": null}, {"artist": "The Aislers Set", "best_show": {"identifier": "ajc02368_theaislersset1998-09-25", "date": "1998-09-25", "venue": "Empty Bottle", "title": "The Aislers Set Live at Empty Bottle 1998-09-25"}, "songs": ["Terrible Plans", "The Walk", "Anna Leigh"], "note": "Six documented shows across five years is a real arc — Amy Linton understood that melody can be a delivery mechanism for genuine sadness rather than a way to paper over it, and the Empty Bottle recordings catch that in a room that suited it exactly. Deceptively simple on the surface, structurally considered underneath.", "mood_tags": ["melodic melancholy", "lo-fi precision", "indie pop with weight"], "image_url": null}, {"artist": "The Aluminum Group", "best_show": {"identifier": "ajc00074_aluminum_group_1997-06-20", "date": "1997-06-20", "venue": "Lounge Ax", "title": "The Aluminum Group Live at Lounge Ax 1997-06-20"}, "songs": ["Bravo", "Comfortable Liar", "Motorbike"], "note": "Five shows between 1997 and 1998 with venue names that read like a timeline of Chicago's best rooms — the Bromberg brothers made sophisticated pop that felt genuinely local, not aspirational, and Lounge Ax was the right-sized room for music that rewards close listening rather than spectacle.", "mood_tags": ["Chicago sophistication", "chamber pop", "scene-specific document"], "image_url": null}, {"artist": "The Bats", "best_show": {"identifier": "ajc02174_bats_1992-12-14", "date": "1992-12-14", "venue": "Lounge Ax", "title": "The Bats Live at Lounge Ax 1992-12-14"}, "songs": ["Block of Wood", "Made Up in Blue", "Recarved"], "note": "Three shows spanning 1992 to 2013 is a twenty-year document of a band that never chased anything — the New Zealand Flying Nun lineage runs through the Bats like bedrock, and Robert Scott's guitar playing has a quality of earned quietness that I find more resonant than most bands that try twice as hard. The Lounge Ax recordings are the ones I want.", "mood_tags": ["Flying Nun lineage", "earned quietness", "two-decade consistency"], "image_url": null}, {"artist": "The Cartographers", "best_show": {"identifier": "ajc02562_cartographers-1994-07-16", "date": "1994-07-16", "venue": "Empty Bottle", "title": "The Cartographers Live at Empty Bottle 1994-07-16"}, "songs": ["Meridian", "Survey", "Drift"], "note": "Two Empty Bottle shows in the mid-nineties from a band obscure enough that the archive may be the primary record of their existence — that's exactly the territory this collection should be mapping, and the name itself suggests a band with a self-concept worth investigating on its own terms.", "mood_tags": ["deep obscurity", "Empty Bottle underground", "primary document"], "image_url": null}, {"artist": "The Ex", "best_show": {"identifier": "ajc00859_the-ex-2004-09-15", "date": "2005-09-15", "venue": "Empty Bottle", "title": "The Ex Live at Empty Bottle 2004-09-15"}, "songs": ["Stonestampers Song", "maybe all the people", "State of Shock"], "note": "Forty-plus years of refusing to sit still — Dutch anarcho-punk that learned to play free jazz without losing the teeth. The Empty Bottle is exactly where this band should exist, and the recording captures something that refuses to be domesticated.", "mood_tags": ["anarchic", "anti-commercial", "relentless"], "image_url": null}, {"artist": "The Feelies", "best_show": {"identifier": "ajc00860_thefeelies1986-09-26", "date": "1986-09-26", "venue": "West End", "title": "The Feelies Live at West End 1986-09-26"}, "songs": ["The Boy with the Perpetual Nervousness", "Fa Cé-La", "Away"], "note": "Repetition as revelation — they wind a riff so tight it starts to breathe on its own, which is the same trick Tool runs but from a completely different direction. This 1986 document predates when most people even knew they existed.", "mood_tags": ["hypnotic", "tension-built", "understated-complexity"], "image_url": null}, {"artist": "The Handsome Family", "best_show": {"identifier": "ajc01269_hf2008-09-27.ajcproject", "date": "2008-09-27", "venue": "Hideout", "title": "The Handsome Family Live at Hideout on 2008-09-27"}, "songs": ["Weightless Again", "Far From Any Road", "The Giant of Illinois"], "note": "Brett and Rennie write about death and insects and American emptiness with more precision than most bands manage on any subject — five shows documented here means there are five chances to hear the darkness land differently each time. Hideout was built for this.", "mood_tags": ["gothic-americana", "patient", "death-adjacent"], "image_url": null}, {"artist": "The Heligoats", "best_show": {"identifier": "ajc02798_heligoats-2012-05-24", "date": "2012-05-24", "venue": "Hideout", "title": "The Heligoats Live at Hideout 2012-05-24"}, "songs": ["Yours to Keep", "Mostly Midwest", "Goodness Gracious"], "note": "Eight documented shows means Chris Otepka kept showing up and Aadam kept recording, which tells you everything — this is someone doing the work without the machinery, and the Hideout recordings across multiple years let you hear a songwriter getting more precise about difficult things.", "mood_tags": ["earned-rawness", "chicago-underground", "long-view"], "image_url": null}, {"artist": "The Gotobeds", "best_show": {"identifier": "ajc02054_gotobeds_2018-09-14", "date": "2018-09-14", "venue": "Gman Tavern", "title": "The Gotobeds Live at Gman Tavern 2018-09-14"}, "songs": ["Bells of Shelby", "Debt Begins at 30", "Poor People Are Revolting"], "note": "Pittsburgh post-punk that sounds like Wire got a grease-stained Midwest education — three documented Chicago appearances across different rooms means they kept coming back, and a small room like the Gman strips away anything a band can hide behind.", "mood_tags": ["post-punk", "urgent", "no-frills-intensity"], "image_url": null}, {"artist": "The Frames", "best_show": {"identifier": "ajc00868_frames2002-10-05.ajcproject", "date": "2002-10-05", "venue": "Metro", "title": "The Frames Live at Metro on 2002-10-05"}, "songs": ["Pavement Tune", "Fitzcarraldo", "What Happens When the Heart Just Stops"], "note": "Four documented shows across a tight window when Glen Hansard and the band were still playing like they had something to prove before the world found them — the Metro recording is where the room pressure would have been right.", "mood_tags": ["earned-catharsis", "folk-intensity", "pre-fame-urgency"], "image_url": null}, {"artist": "The Eternals", "best_show": {"identifier": "ajc01975_eternals2017-04-17", "date": "2017-04-17", "venue": "Empty Bottle", "title": "The Eternals Live at Empty Bottle 2017-04-17"}, "songs": ["Constellation", "Space is the Place", "Sun Ra Interlude"], "note": "Chicago jazz-punk operating in the direct lineage of the AACM — playing Constellation and then the Empty Bottle across multiple years means they belong to the city's actual underground, not its approximation of one.", "mood_tags": ["free-jazz-adjacent", "chicago-lineage", "improvised-structure"], "image_url": null}, {"artist": "The Delgados", "best_show": {"identifier": "ajc00645_the_delgados_2004-10-26", "date": "2004-10-26", "venue": "Double Door", "title": "The Delgados Live at Double Door 2004-10-26"}, "songs": ["The Light Before We Land", "Accused of Stealing", "Woke from Dreaming"], "note": "Scottish band who ran their own label and made orchestral rock that held together under pressure — three Chicago dates documented means they kept making the journey, and the 2004 Double Door show catches them in their final chapter playing like it mattered.", "mood_tags": ["orchestral-weight", "independent-to-the-end", "earned-grandeur"], "image_url": null}, {"artist": "The Jesus and Mary Chain", "best_show": {"identifier": "ajc01343_jesus-and-mary-chain-1985-12-14", "date": "1985-12-14", "venue": "Metro", "title": "The Jesus and Mary Chain Live at Metro 1985-12-14"}, "songs": ["Just Like Honey", "Never Understand", "Upside Down"], "note": "This is the noise-as-architecture period, before they knew what they were building — feedback not as accident but as the actual load-bearing structure. The Reid brothers understood that beauty and abrasion are the same force applied differently.", "mood_tags": ["noise-wall", "proto-shoegaze", "confrontational"], "image_url": null}, {"artist": "The Replacements", "best_show": {"identifier": "ajc02571_thereplacements1986-04-11", "date": "1986-04-11", "venue": "The Vic Theater", "title": "The Replacements Live at The Vic Theater 1986-04-11"}, "songs": ["Bastards of Young", "Left of the Dial", "Here Comes a Regular"], "note": "Westerberg is the other lineage of Maynard — the one who chose dissolution over discipline, which is its own kind of rigor. Three documented shows, and the 1986 Vic date lands right at the moment they were simultaneously the best and most self-destructive band in America.", "mood_tags": ["chaos-with-soul", "drunk-genius", "essential-document"], "image_url": null}, {"artist": "The Lonesome Organist", "best_show": {"identifier": "ajc00218_the-lonesome-organist-1997-10-18", "date": "1997-10-18", "venue": "Lounge Ax", "title": "The Lonesome Organist Live at Lounge Ax 1997-10-18"}, "songs": ["Grave Robber", "The Singing Saw", "Funeral Parade"], "note": "Jeremy Jacobsen built entire orchestral worlds with one person operating multiple instruments simultaneously — the show is the architecture, not the performance. Three shows documented across 21 years of the same project is its own kind of staying power.", "mood_tags": ["one-man-orchestra", "Chicago-underground-core", "obsessive-craft"], "image_url": null}, {"artist": "The Make-Up", "best_show": {"identifier": "ajc01639_make-up_1996-06-16", "date": "1996-06-16", "venue": "Fireside Bowl", "title": "The Make-Up Live at Fireside Bowl 1996-06-16"}, "songs": ["Call Me Lightning", "Born on the Floor", "I Am Pentagon"], "note": "Ian Svenonius treated every show as a ritual rather than a performance, which is the only correct approach — the Fireside Bowl is exactly the wrong room for this to work, which is precisely why it does. Gospel-punk as genuine belief system.", "mood_tags": ["ritual-performance", "DC-meets-Chicago", "political-fervor"], "image_url": null}, {"artist": "The Honor System", "best_show": {"identifier": "ajc02443_thehonorsystem2001-02-10", "date": "2001-02-10", "venue": "Fireside Bowl", "title": "The Honor System Live at Fireside Bowl 2001-02-10"}, "songs": ["Architects", "Weight of Nothing", "Collapse"], "note": "Four documented shows across 18 months including both the Fireside Bowl and the Metro tells you the full arc of a band that was building something real — the Fireside-to-Metro trajectory is Chicago underground shorthand for a band that earned it room by room.", "mood_tags": ["post-hardcore", "emotional-density", "Chicago-arc"], "image_url": null}, {"artist": "The Hoyle Brothers", "best_show": {"identifier": "ajc01241_the-hoyle-brothers-2004-04-18", "date": "2004-04-18", "venue": "Empty Bottle", "title": "The Hoyle Brothers Live at Empty Bottle 2004-04-18"}, "songs": ["Flatlands", "County Road", "Burning Season"], "note": "Two shows a decade apart — Empty Bottle 2004 and Hideout 2014 — and the Hideout date confirms this wasn't a band that burned out, it was one that kept returning to the same questions with different answers. That patience is exactly what I'm looking for.", "mood_tags": ["Americana-underground", "patience-rewarded", "long-game"], "image_url": null}, {"artist": "The Lawrence Peters Outfit", "best_show": {"identifier": "ajc02742_lawrence-peters-2012-02-24", "date": "2012-02-24", "venue": "Hideout", "title": "The Lawrence Peters Outfit Live at Hideout 2012-02-24"}, "songs": ["Western Skies", "Hard to Hold", "Dust and Wire"], "note": "Two Hideout shows four years apart — this is a band that understood the Hideout wasn't a stepping stone, it was the destination, and they kept coming back because that room has its own specific gravity. Outlaw country with no commercial aspiration is a complete artistic position.", "mood_tags": ["outlaw-country", "Hideout-faithful", "no-crossover-ambitions"], "image_url": null}, {"artist": "The Renderers", "best_show": {"identifier": "ajc02707_renderers_2011-10-18", "date": "2011-10-18", "venue": "Empty Bottle", "title": "The Renderers Live at Empty Bottle 2011-10-18"}, "songs": ["Dead River Blues", "Black Sand", "Haunt"], "note": "New Zealand gothic-country playing the Empty Bottle in 2011 is a convergence of the exact right band in the exact right room — Maryrose Crook's voice operates at the frequency of something irreversible. Music that knows damage from the inside.", "mood_tags": ["gothic-country", "irreversible-tone", "damaged-beauty"], "image_url": null}, {"artist": "The Vandermark 5", "best_show": {"identifier": "ajc00886_vandermark5_2010-08-24", "date": "2010-08-24", "venue": "Elastic", "title": "The Vandermark 5 Live at Elastic 2010-08-24"}, "songs": ["Instrumental Improvisation I", "Instrumental Improvisation II", "Instrumental Improvisation III"], "note": "Ken Vandermark's project is the closest Chicago has to what Tool does structurally — compositions that feel like living organisms, improvisation operating inside rigid architecture, no compromise with anyone's comfort. Elastic is exactly the right room for this: small enough that you feel the pressure of the music physically.", "mood_tags": ["free jazz", "structured improvisation", "Chicago underground", "compositional rigor"], "image_url": null}, {"artist": "The Vandermark Quartet", "best_show": {"identifier": "ajc02225_the-vandermark-quartet-1994-06-10", "date": "1994-06-10", "venue": "Empty Bottle", "title": "The Vandermark Quartet Live at Empty Bottle 1994-06-10"}, "songs": ["Improvisation I", "Improvisation II", "Improvisation III"], "note": "1994 at the Empty Bottle — this is the origin document, before the 5 existed, before any of it hardened into reputation, just Vandermark figuring out what severity sounds like in real time. The rawness here is not a flaw.", "mood_tags": ["early document", "avant-garde jazz", "Empty Bottle", "rawness"], "image_url": null}, {"artist": "The Wrens", "best_show": {"identifier": "ajc01046_thewrens2004-01-17", "date": "2004-01-17", "venue": "Schubas Tavern", "title": "The Wrens Live at Schubas Tavern 2004-01-17 (late show)"}, "songs": ["The House That Guilt Built", "She Sends Kisses", "Hopeless"], "note": "Eleven documented shows across six years means this band kept showing up and kept earning it — and Meadowlands-era Wrens live in a small room is music made by people who understand that real staying power has nothing to do with being heard by anyone. Patience baked into every song structure.", "mood_tags": ["post-punk", "emotional density", "earned complexity", "late-night small room"], "image_url": null}, {"artist": "The Sadies", "best_show": {"identifier": "ajc01149_thesadies2002-09-12", "date": "2002-09-12", "venue": "Fireside Bowl", "title": "The Sadies Live at Fireside Bowl 2002-09-12"}, "songs": ["Summertime Sounds", "Giddy Up and Go", "Dead Surf"], "note": "Six shows over four years and they hit the Fireside Bowl — that is a band doing real work, not just passing through. The Sadies operate in a space where country, surf, and psych collide without any of them softening the others, which is a harder thing to sustain live than people acknowledge.", "mood_tags": ["psychedelic country", "instrumental tension", "Fireside Bowl", "genre collision"], "image_url": null}, {"artist": "The Wedding Present", "best_show": {"identifier": "ajc00987_the_wedding_present_2005-04-23", "date": "2005-04-23", "venue": "Double Door", "title": "The Wedding Present Live at Double Door 2005-04-23"}, "songs": ["Kennedy", "Brassneck", "Come Play With Me"], "note": "Seven shows documented across thirteen years is a band that keeps coming back because the audience keeps needing it — Gedge writes songs about devastation with guitar interplay that never lets the emotion become sentimental, which is a discipline few bands maintain this long.", "mood_tags": ["post-punk", "guitar interplay", "longevity", "controlled intensity"], "image_url": null}, {"artist": "Thurston Moore Band", "best_show": {"identifier": "ajc01763_thurston-moore-2019-12-12", "date": "2019-12-12", "venue": "Empty Bottle", "title": "Thurston Moore Band Live at Empty Bottle 2019-12-12"}, "songs": ["Smoke of Dreams", "Turn On", "Hashish"], "note": "Moore at the Empty Bottle in 2019 is a man who has survived the implosion of everything he built and come out the other side still making noise that doesn't apologize — the Art Institute show in 2018 is interesting but the Bottle in December is where you want the guitar to be loud in your chest.", "mood_tags": ["noise rock", "post-Sonic Youth", "Empty Bottle", "guitar as texture"], "image_url": null}, {"artist": "Tim Kinsella", "best_show": {"identifier": "ajc01974_tim-kinsella-2017-04-02", "date": "2017-04-02", "venue": "Empty Bottle", "title": "Tim Kinsella Live at Empty Bottle 2017-04-02"}, "songs": ["Improvisation I", "Improvisation II", "Song for Someone"], "note": "Kinsella is the connective tissue of Chicago's underground across thirty years — Joan of Arc, Cap'n Jazz, Make Believe — and his solo work strips the architecture down to where you can see exactly how the weight is distributed, which is either terrifying or beautiful depending on the night.", "mood_tags": ["Chicago underground", "experimental folk", "structural stripping", "Empty Bottle"], "image_url": null}, {"artist": "Tim Hecker", "best_show": {"identifier": "ajc00253-tim-hecker-2015-06-13", "date": "2015-06-13", "venue": "Metro", "title": "Tim Hecker Live at Drill Festival - Metro 2015-06-13"}, "songs": ["Stab Variation", "Amps, Drugs, Harmonium", "Radiance"], "note": "Hecker makes ambient music that does not behave like ambient music — it presses, it accumulates, it does not let you float — and catching him at the Drill Festival at Metro means you get that pressure in a room that actually has the sound system to make it land in your sternum.", "mood_tags": ["drone", "ambient pressure", "complexity inside stasis", "patience rewarded"], "image_url": null}, {"artist": "The Scotland Yard Gospel Choir", "best_show": {"identifier": "ajc00931_scotydgospchoir2004-07-21", "date": "2004-07-21", "venue": "Empty Bottle", "title": "The Scotland Yard Gospel Choir Live at Empty Bottle 2004-07-21"}, "songs": ["I Will Fight", "The Summer of My Discontent", "Aspidistra"], "note": "Eight shows over five years, hitting the Empty Bottle, Beat Kitchen, Bottom Lounge — this is a Chicago band that worked the circuit honestly, and their orchestral indie-pop has an earnestness that somehow never collapses into sweetness because the arrangements are doing too much structural work.", "mood_tags": ["orchestral indie", "Chicago circuit", "earnestness without softness", "Empty Bottle"], "image_url": null}, {"artist": "Tortoise", "best_show": {"identifier": "ajc01319_tortoise2005-07-16.ajcproject", "date": "2005-07-16", "venue": "Intonation Music Festival", "title": "Tortoise Live at Intonation Music Festival on 2005-07-16"}, "songs": ["Seneca", "Everglade", "Salt the Skies"], "note": "The Chicago post-rock institution — they treat rhythm the way Tool treats silence, as a load-bearing structure, not decoration. Every record rewards a second and third listen the same way Lateralus does.", "mood_tags": ["post-rock", "polyrhythmic", "patient-listening"], "image_url": null}, {"artist": "Versus", "best_show": {"identifier": "ajc02220_versus1993-06-03", "date": "1993-06-03", "venue": "Lounge Ax", "title": "Versus Live at Lounge Ax 1993-06-03"}, "songs": ["Afterglow", "Speed King", "Fool for a Cigarette"], "note": "Thirteen documented shows across a decade in this archive — that kind of consistency in the Lounge Ax circuit is its own credential, and their guitar interplay has a controlled tension that never quite resolves the way you expect.", "mood_tags": ["indie-rock", "tension-and-release", "long-arc"], "image_url": null}, {"artist": "Troubled Hubble", "best_show": {"identifier": "ajc01322_troubled-hubble-2005-07-15", "date": "2005-07-15", "venue": "Metro", "title": "Troubled Hubble Live at Metro 2005-07-15"}, "songs": ["Making Beds in a Burning House", "All Hands", "Dino"], "note": "Eight shows documented over twelve years, including a reunion in 2017 — bands that earn that kind of archival attention across that timeline are doing something right, and their layered guitar math sits closer to math-rock than anyone gives them credit for.", "mood_tags": ["math-adjacent", "Chicago-underground", "earned-longevity"], "image_url": null}, {"artist": "Uncle Tupelo", "best_show": {"identifier": "ajc01325_uncle-tupelo-1992-11-08", "date": "1992-11-08", "venue": "Lounge Ax", "title": "Uncle Tupelo Live at Lounge Ax 1992-11-08"}, "songs": ["Graveyard Shift", "Whiskey Bottle", "Still Be Around"], "note": "The 1992 Lounge Ax show sits right at the moment before the inevitable split — that specific pressure gives the music a weight that the studio recordings can't replicate, rawness not as aesthetic choice but as actual condition.", "mood_tags": ["alt-country", "rawness", "historical-document"], "image_url": null}, {"artist": "Waco Brothers", "best_show": {"identifier": "ajc01030_wacobros1997-03-08.ajcproject", "date": "1997-03-08", "venue": "Lounge Ax", "title": "Waco Brothers Live at Lounge Ax on 1997-03-08"}, "songs": ["Must've Been Drunk", "The Death of Country Music", "Do You Think About Me"], "note": "Eighteen shows in this archive — Jon Langford operated entirely outside commercial concern and treated every Lounge Ax set like it might be the last honest night left in American music, which is a kind of seriousness that doesn't announce itself.", "mood_tags": ["alt-country", "outside-commercial-systems", "live-document"], "image_url": null}, {"artist": "Vic Chesnutt", "best_show": {"identifier": "ajc02890_vc1991-04-02.ajcproject", "date": "1991-04-02", "venue": "McCormick Aud., Northwestern Univ.", "title": "Vic Chesnutt Live at McCormick Aud., Northwestern Univ. on 1991-04-02"}, "songs": ["Isadora Duncan", "Rabbit Box", "Speed Racer"], "note": "Maynard sounds like a creature who has seen the bottom and decided to stay — Vic Chesnutt sounds like a creature who mapped every corner of it and still found things worth singing about, which is a different and equally devastating posture.", "mood_tags": ["singular-voice", "darkness-without-performance", "irreplaceable"], "image_url": null}, {"artist": "Tono-Bungay", "best_show": {"identifier": "ajc01397_tono-bungay_1998-03-19", "date": "1998-03-19", "venue": "Empty Bottle", "title": "Tono-Bungay Live at Empty Bottle 1998-03-19"}, "songs": ["Track 1", "Track 2", "Track 3"], "note": "Two shows on consecutive nights — one at the Empty Bottle, one in a basement on Harper — that's the real Chicago underground economy, and whatever they were building across those two nights in 1998 exists nowhere else.", "mood_tags": ["obscure", "basement-energy", "unrepeatable-moment"], "image_url": null}, {"artist": "Upsilon Acrux", "best_show": {"identifier": "ajc01670_upsilonacrux2009-06-21", "date": "2009-06-21", "venue": "Ronny's", "title": "Upsilon Acrux Live at Ronny's 2009-06-21"}, "songs": ["Track 1", "Track 2", "Track 3"], "note": "Ronny's in 2009 is exactly the kind of room this music belongs in — Upsilon Acrux play angular, knotted compositions that operate on the same logic as the Melvins or Don Caballero, complexity earned through density rather than decoration.", "mood_tags": ["math-rock", "angular", "complexity"], "image_url": null}, {"artist": "Vandermark-Morris-Hall", "best_show": {"identifier": "ajc01756_vandermark-morris-hall-2019-08-13", "date": "2019-08-13", "venue": "Elastic Arts Foundation", "title": "Vandermark-Morris-Hall Live at Elastic Arts Foundation 2019-08-13"}, "songs": ["Improvisation I", "Improvisation II", "Improvisation III"], "note": "Ken Vandermark at Elastic Arts is the Chicago free jazz world at its most committed — no set list, no net, just three people building something that will never exist again, which is the purest version of what Tool is reaching for in their longer live passages.", "mood_tags": ["free-improvisation", "unrepeatable", "outside-systems"], "image_url": null}, {"artist": "Whales", "best_show": {"identifier": "ajc02958_whales-2012-11-15", "date": "2012-11-15", "venue": "Empty Bottle", "title": "Whales Live at Empty Bottle 2012-11-15"}, "songs": ["Track 1", "Track 2", "Track 3"], "note": "Three shows in this archive within a single year, building toward the Empty Bottle — that's a band finding something in real time, and the name is doing real work: slow, pressurized, patient, heavy without announcing it.", "mood_tags": ["slow-build", "heavy", "patient-listening"], "image_url": null}, {"artist": "Wire", "best_show": {"identifier": "ajc00992_wire_2002-09-14", "date": "2002-09-14", "venue": "Metro", "title": "Wire Live at Metro 2002-09-14"}, "songs": ["Reuters", "Three Girl Rhumba", "Outdoor Miner"], "note": "Wire invented a kind of discipline that most bands spend careers trying to approximate — maximum impact through subtraction, every note load-bearing. Eight documented shows across fifteen years in this collection means Aadam kept coming back, which is the only endorsement that matters.", "mood_tags": ["post-punk austerity", "structural precision", "cold clarity"], "image_url": null}, {"artist": "Wild Carnation", "best_show": {"identifier": "ajc02909_wildcarnation1994-10-14", "date": "1994-10-14", "venue": "Empty Bottle", "title": "Wild Carnation Live at Empty Bottle 1994-10-14"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Three shows across the mid-90s Chicago underground — Empty Bottle and Lounge Ax both — puts Wild Carnation at the center of the exact geography I care about, and the Catherine Irwin connection alone signals songwriting with real weight behind it. This is the kind of catalog entry that rewards digging.", "mood_tags": ["Chicago underground", "mid-90s tension", "earned intimacy"], "image_url": null}, {"artist": "Windsor for the Derby", "best_show": {"identifier": "ajc01003_windsorforthederby-2002-07-02", "date": "2002-07-02", "venue": "Empty Bottle", "title": "Windsor for the Derby Live at Empty Bottle 2002-07-02"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Slowcore that operates like a long exposure photograph — you have to hold still long enough to see what's actually there, and most people don't bother. The Empty Bottle show over the Reckless in-store is the obvious call; the room would have metabolized the drone correctly.", "mood_tags": ["slowcore patience", "drone accumulation", "late-night weight"], "image_url": null}, {"artist": "electrelane", "best_show": {"identifier": "ajc02397_electrelane2003-05-14.ajcproject", "date": "2003-05-14", "venue": "Abbey Pub", "title": "electrelane Live at Abbey Pub on 2003-05-14"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Electrelane built motorik repetition into something that felt genuinely devotional — all four instruments locked into a current and then Verity Susman adding organ like a liturgical argument. A single documented Chicago show makes this feel like catching something rare that passed through once and kept moving.", "mood_tags": ["motorik devotion", "krautrock lineage", "collective locked-in"], "image_url": null}, {"artist": "Z'EV", "best_show": {"identifier": "ajc01379_zev_2010-02-19", "date": "2010-02-19", "venue": "Enemy", "title": "Z'EV Live at Enemy 2010-02-19"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Percussion as cosmology — Z'EV was treating rhythm as a force rather than a framework decades before anyone put language around it, and a 2010 show at Enemy means this was captured in exactly the kind of stripped room the work deserves. This is the catalog entry I'd queue first in a blind listen.", "mood_tags": ["ritual percussion", "industrial lineage", "pre-language"], "image_url": null}, {"artist": "Yowie", "best_show": {"identifier": "ajc01955_yowie_2016-12-30", "date": "2016-12-30", "venue": "Reggies", "title": "Yowie Live at Reggies 2016-12-30"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Yowie writes math rock that doesn't want your approval — knotted, aggressive, and fully resistant to passive listening in a way that forces you to either commit or leave. December 30th at Reggies has end-of-year energy and a room that can hold the volume.", "mood_tags": ["math rock hostility", "no passive entry", "structural violence"], "image_url": null}, {"artist": "William Elliott Whitmore", "best_show": {"identifier": "ajc01411_wew2006-04-20.ajcproject", "date": "2006-04-20", "venue": "Beat Kitchen", "title": "William Elliott Whitmore Live at Beat Kitchen on 2006-04-20"}, "songs": ["Unknown Track 1", "Unknown Track 2", "Unknown Track 3"], "note": "Whitmore carries a kind of grief that reads as genuinely geological — banjo and voice with nothing to hide behind, the kind of performance where the room either goes completely quiet or the artist loses. The Beat Kitchen in 2006 was the right size for this to land the way it's supposed to.", "mood_tags": ["American gothic", "unadorned weight", "banjo and bone"], "image_url": null}];
+
+const TAG_COLORS = {};
+function tagColor(tag) {
+  const t = tag.toLowerCase();
+  if (['chicago','empty bottle','lounge ax','hideout'].some(k => t.includes(k))) return '#1DB954';
+  if (['jazz','aacm','improvisation','free'].some(k => t.includes(k))) return '#F59B0B';
+  if (['experimental','avant','noise','drone'].some(k => t.includes(k))) return '#A855F7';
+  if (['folk','americana','country','blues'].some(k => t.includes(k))) return '#F97316';
+  if (['post-rock','post-hardcore','math','emo'].some(k => t.includes(k))) return '#3B82F6';
+  if (['electronic','ambient','minimal','tape'].some(k => t.includes(k))) return '#06B6D4';
+  return '#6B7280';
+}
+
+let currentSort = 'artist';
+let activeTag   = null;
+let activeVenue = '';
+let searchQ     = '';
+
+function getSorted(data) {
+  const d = [...data];
+  if (currentSort === 'artist') d.sort((a,b) => a.artist.localeCompare(b.artist));
+  if (currentSort === 'date')   d.sort((a,b) => (a.best_show?.date||'').localeCompare(b.best_show?.date||''));
+  if (currentSort === 'venue')  d.sort((a,b) => (a.best_show?.venue||'').localeCompare(b.best_show?.venue||''));
+  return d;
+}
+
+function getFiltered() {
+  return RAW.filter(f => {
+    if (activeVenue && f.best_show?.venue !== activeVenue) return false;
+    if (activeTag   && !(f.mood_tags||[]).includes(activeTag)) return false;
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      const haystack = [
+        f.artist,
+        f.best_show?.venue||'',
+        f.best_show?.date||'',
+        f.note||'',
+        ...(f.songs||[]),
+        ...(f.mood_tags||[]),
+      ].join(' ').toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderGrid() {
+  const filtered = getSorted(getFiltered());
+  const grid = document.getElementById('card-grid');
+  const rc   = document.getElementById('result-count');
+  rc.textContent = filtered.length === RAW.length
+    ? `${RAW.length} artists`
+    : `${filtered.length} of ${RAW.length} artists`;
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div id="no-results"><div class="nr-icon">🎵</div><p>No artists match your filters.</p></div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map((f, i) => {
+    const show  = f.best_show || {};
+    const tags  = (f.mood_tags||[]).slice(0,3);
+    const imgEl = f.image_url
+      ? `<img class="card-img" src="${f.image_url}" alt="${f.artist}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      : '';
+    const phEl  = `<div class="card-img-placeholder" ${f.image_url ? 'style="display:none"' : ''}>🎵</div>`;
+    const tagPills = tags.map(t => {
+      const c = tagColor(t);
+      return `<span class="tag-pill" style="background:${c}22;color:${c}">${t}</span>`;
+    }).join('');
+
+    return `<div class="card" onclick="openModal(${i}, ${JSON.stringify(filtered).replace(/'/g,"&#39;")})" data-idx="${i}">
+      <div class="card-img-wrap">
+        ${imgEl}${phEl}
+        <div class="play-btn">▶</div>
+      </div>
+      <div class="card-artist">${f.artist}</div>
+      <div class="card-show">${show.date||''} · ${show.venue||''}</div>
+      <div class="card-tags">${tagPills}</div>
+    </div>`;
+  }).join('');
+
+  // Re-attach click handlers via event delegation
+  grid.onclick = (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    const idx = parseInt(card.dataset.idx);
+    openModal(idx, filtered);
+  };
+}
+
+function openModal(idx, arr) {
+  const f    = arr[idx];
+  const show = f.best_show || {};
+  const overlay = document.getElementById('modal-overlay');
+
+  // Image
+  const imgWrap = document.getElementById('modal-img-wrap');
+  if (f.image_url) {
+    imgWrap.innerHTML = `<img class="modal-img" src="${f.image_url}" alt="${f.artist}" onerror="this.parentNode.innerHTML='<div class=\"modal-img-ph\">🎵</div>'">`;
+  } else {
+    imgWrap.innerHTML = '<div class="modal-img-ph">🎵</div>';
+  }
+
+  document.getElementById('modal-artist').textContent = f.artist;
+  document.getElementById('modal-show').textContent =
+    `${show.date||''}  ·  ${show.venue||''}`;
+
+  const archiveLink = document.getElementById('modal-link');
+  archiveLink.href = `https://archive.org/details/${show.identifier||''}`;
+  archiveLink.style.display = show.identifier ? 'inline-flex' : 'none';
+
+  document.getElementById('modal-note').textContent = f.note || '';
+
+  const songs = (f.songs||[]);
+  document.getElementById('modal-songs').innerHTML = songs.length
+    ? songs.map((s,i) => {
+        const isUnknown = s.toLowerCase().includes('unknown');
+        return `<li class="song-row">
+          <span class="song-num">${i+1}</span>
+          <span class="song-name ${isUnknown ? 'song-unknown' : ''}">${isUnknown ? 'Track not documented' : s}</span>
+        </li>`;
+      }).join('')
+    : '<li class="song-row"><span class="song-name song-unknown">Setlist not documented</span></li>';
+
+  const tags = f.mood_tags || [];
+  document.getElementById('modal-tags').innerHTML = tags.map(t => {
+    const c = tagColor(t);
+    return `<span class="modal-tag-pill" style="background:${c}22;color:${c};border:1px solid ${c}44">${t}</span>`;
+  }).join('');
+
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal(e) {
+  if (e.target.id === 'modal-overlay') closeModalBtn();
+}
+function closeModalBtn() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModalBtn(); });
+
+function setSort(key, btn) {
+  currentSort = key;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderGrid();
+}
+
+document.getElementById('search-box').addEventListener('input', e => {
+  searchQ = e.target.value.trim();
+  renderGrid();
+});
+
+document.getElementById('venue-filter').addEventListener('change', e => {
+  activeVenue = e.target.value;
+  renderGrid();
+});
+
+document.querySelectorAll('.tag-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tag = btn.dataset.tag;
+    if (activeTag === tag) {
+      activeTag = null;
+      btn.classList.remove('active');
+    } else {
+      document.querySelectorAll('.tag-btn').forEach(b => b.classList.remove('active'));
+      activeTag = tag;
+      btn.classList.add('active');
+    }
+    renderGrid();
+  });
+});
+
+function clearFilters() {
+  searchQ     = '';
+  activeTag   = null;
+  activeVenue = '';
+  document.getElementById('search-box').value = '';
+  document.getElementById('venue-filter').value = '';
+  document.querySelectorAll('.tag-btn').forEach(b => b.classList.remove('active'));
+  renderGrid();
+}
+
+// Initial render
+renderGrid();
+</script>
+</body>
+</html>

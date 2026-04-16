@@ -187,6 +187,23 @@ def _fetch_live_data() -> dict:
     except Exception:
         pass
 
+    # Kraken fallback if CoinGecko rate-limited (429) or failed
+    if not data.get("btc_price"):
+        try:
+            r = httpx.get(
+                "https://api.kraken.com/0/public/Ticker",
+                params={"pair": "XBTUSD,ETHUSD,SOLUSD"},
+                timeout=6,
+            )
+            if r.status_code == 200:
+                kr = r.json().get("result", {})
+                def _mid(pair): return float(pair["c"][0]) if pair else 0
+                data["btc_price"] = _mid(kr.get("XXBTZUSD", {}))
+                data["eth_price"] = _mid(kr.get("XETHZUSD", {}))
+                data["sol_price"] = _mid(kr.get("SOLUSD", {}))
+        except Exception:
+            pass
+
     try:
         r = httpx.get("https://api.alternative.me/fng/?limit=1", timeout=5)
         if r.status_code == 200:
@@ -243,6 +260,7 @@ Ideas: funding rate direction, OI change, F&G at extreme, volume anomaly, specif
 
 Rules:
 - Lead with the number. Specific beats vague. "$82,400" beats "near ATH".
+- REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $TSLA, etc.) when citing any market data number. Never float a price or stat without naming what it belongs to.
 - 1-2 sentences max. No fluff.
 - End with what the data implies — one short phrase. Not a question.
 - No hashtags. No emoji. Plain text.
@@ -285,6 +303,7 @@ Ideas:
 
 Rules:
 - ALL numbers arithmetically correct. Verify before writing. If you can't verify, use a simpler example.
+- If the math is market-specific (e.g. a return, a level, a rate), name the asset ($BTC, $ETH, $SOL, $NVDA, etc.) — never leave a price or return floating without a ticker.
 - STRICT LENGTH: under 220 characters total. 3-4 short lines max.
 - No hashtags. No emoji.
 - End with a 4-word-max punchy closer: "Simple." / "Compounding is patient."
@@ -321,6 +340,7 @@ Most reshared format — people love seeing the narrative punctured.
 Rules:
 - Lead with what everyone believes right now — don't start with "Everyone thinks".
 - Flip it with data or logic in one sentence.
+- REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, etc.) — readers must know exactly what you're talking about.
 - Be direct. Don't soften the take.
 - Optional: end with what you actually think.
 - Under 240 characters. No hashtags. No emoji.
@@ -339,24 +359,27 @@ def _build_qrt_prompt(headline: str, source: str, live_data: dict) -> str:
     """Return the Claude prompt for generating a QRT caption."""
     btc   = f"${live_data.get('btc_price', 0):,.0f}" if live_data.get('btc_price') else "BTC"
     btc_c = f"{live_data.get('btc_change', 0):+.1f}%" if live_data.get('btc_change') else ""
+    eth   = f"${live_data.get('eth_price', 0):,.0f}" if live_data.get('eth_price') else "ETH"
+    sol   = f"${live_data.get('sol_price', 0):,.2f}" if live_data.get('sol_price') else "SOL"
     fg    = live_data.get('fear_greed', '')
 
     return f"""{OCTO_CORE}
 
 BREAKING HEADLINE: "{headline}"
 SOURCE: {source}
-LIVE DATA: BTC {btc} ({btc_c}), F&G {fg}
+LIVE DATA: BTC {btc} ({btc_c}), ETH {eth}, SOL {sol}, F&G {fg}
 
 Write a QRT (quote-tweet) caption for this headline. 30-minute window before this topic peaks.
 
 Rules:
 - Add something the headline doesn't say — a data point, a parallel, or what this means for a specific market.
 - Don't summarize the headline. Add signal.
+- REQUIRED: Only reference the specific asset(s) mentioned in the headline. Do NOT inject BTC/ETH/SOL data into a post about a stock, or vice versa — unless the cross-market connection is the actual insight.
 - 1-2 sentences max. Be the first smart take, not the fifth.
 - No hashtags. No emoji. Under 220 characters.
 - If you genuinely have nothing to add, respond with exactly: SKIP
 
-Example (Fed rate headline): "Last 3 times the Fed held while inflation ticked up, BTC rallied 15-20% in the following 6 weeks. The market hates uncertainty more than it hates rates."
+Example (Fed rate headline): "Last 3 times the Fed held while inflation ticked up, $BTC rallied 15-20% in the following 6 weeks. The market hates uncertainty more than it hates rates."
 """
 
 
@@ -394,6 +417,16 @@ def generate_format_post(fmt: str = None, context: str = "", live_data: dict = N
 
         if text.upper() == "SKIP" or len(text) < 20:
             print(f"[FormatEngine] Claude returned SKIP for {fmt}.")
+            return None
+
+        # Reject fourth-wall breaks — Claude complaining about missing data
+        _fourth_wall = [
+            "i don't have live data", "i need to be direct", "i appreciate the setup",
+            "no live data", "no prices", "you've given me", "this prompt", "i cannot post",
+            "i can't post", "i don't have access", "i'm unable to",
+        ]
+        if any(kw in text.lower() for kw in _fourth_wall):
+            print(f"[FormatEngine] Rejected fourth-wall response for {fmt} — no live data available, skipping.")
             return None
 
         # Hard cap at 280 chars

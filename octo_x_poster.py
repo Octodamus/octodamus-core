@@ -60,6 +60,45 @@ def _get_client():
     )
 
 
+def upload_image_from_url(image_url: str) -> str | None:
+    """
+    Download an image from a URL and upload it to X via v1.1 media upload.
+    Returns media_id string or None on failure.
+    """
+    import tempfile
+    import requests
+    import tweepy
+
+    try:
+        r = requests.get(image_url, timeout=15, headers={"User-Agent": "Octodamus/1.0"})
+        if r.status_code != 200:
+            return None
+
+        suffix = ".jpg"
+        if "png" in image_url.lower():
+            suffix = ".png"
+        elif "gif" in image_url.lower():
+            suffix = ".gif"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(r.content)
+            tmp_path = tmp.name
+
+        auth = tweepy.OAuth1UserHandler(
+            consumer_key=os.environ.get("TWITTER_API_KEY", ""),
+            consumer_secret=os.environ.get("TWITTER_API_SECRET", ""),
+            access_token=os.environ.get("TWITTER_ACCESS_TOKEN", ""),
+            access_token_secret=os.environ.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
+        )
+        api = tweepy.API(auth)
+        media = api.media_upload(filename=tmp_path)
+        Path(tmp_path).unlink(missing_ok=True)
+        return str(media.media_id)
+    except Exception as e:
+        print(f"[OctoPoster] Image upload failed: {e}")
+        return None
+
+
 def check_connection() -> dict:
     """Verify credentials and return account info."""
     import tweepy
@@ -552,9 +591,9 @@ def purge_stale_queue() -> int:
     return dropped
 
 
-def process_queue(max_posts: int = 1) -> int:
+def process_queue(max_posts: int = 1, force: bool = False) -> int:
     purge_stale_queue()
-    if not _should_post_now():
+    if not force and not _should_post_now():
         weight = _posting_weight()
         print(f"[OctoPoster] Skipped by schedule (weight={weight:.2f}).")
         return 0
@@ -589,7 +628,9 @@ def process_queue(max_posts: int = 1) -> int:
                 tweet_url = result.get("url", "")
                 print(f"[OctoPoster] [OK] Thread ({len(entry['thread_posts'])} posts): {entry['text'][:60]}...")
             else:
-                result    = _post_single(entry["text"])
+                media_id  = entry.get("metadata", {}).get("media_id") if entry.get("metadata") else None
+                media_ids = [media_id] if media_id else None
+                result    = _post_single(entry["text"], media_ids=media_ids)
                 tweet_url = result.get("url", "")
                 print(f"[OctoPoster] [OK] Posted [{entry['type']}]: {entry['text'][:60]}...")
 

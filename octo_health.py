@@ -24,7 +24,6 @@ import httpx
 PROJECT_DIR = Path(r"C:\Users\walli\octodamus")
 SECRETS_FILE = PROJECT_DIR / ".octo_secrets"
 QUEUE_FILE  = PROJECT_DIR / "octo_post_queue.json"
-ACP_SCRIPT  = "/home/walli/octodamus/start_acp.sh"
 
 EXPECTED_TASKS = [
   # Posting schedule
@@ -141,14 +140,17 @@ def _check_cloudflared():
 
 
 def _acp_is_running() -> bool:
-  """Check ACP worker - runs as WSL process + Python inside Ubuntu."""
+  """Check ACP worker - runs as Windows Python process."""
   try:
     result = subprocess.run(
-      ["wsl", "-d", "Ubuntu", "--", "bash", "-c",
-       "ps aux | grep -c [o]cto_acp_worker"],
-      capture_output=True, text=True, timeout=12
+      ["powershell", "-Command",
+       "Get-Process python* | ForEach-Object { "
+       "$id = $_.Id; "
+       "(Get-WmiObject Win32_Process -Filter \"ProcessId=$id\").CommandLine "
+       "} | Out-String"],
+      capture_output=True, text=True, timeout=20
     )
-    return int(result.stdout.strip() or "0") > 0
+    return "octo_acp_worker" in result.stdout.lower()
   except Exception:
     return False
 
@@ -172,7 +174,7 @@ def _restart_acp_worker() -> bool:
        r"C:\Users\walli\octodamus\run_acp_worker.ps1"],
       creationflags=0x00000008  # DETACHED_PROCESS
     )
-    time.sleep(12)
+    time.sleep(30)
   except Exception as e:
     _fail(f"ACP restart error: {e}")
     return False

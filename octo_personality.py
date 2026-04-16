@@ -173,6 +173,17 @@ FORMAT HIERARCHY (highest to lowest value per unit of effort):
 3. FRONTIER ORACLE single post — sharp, quotable, high impressions
 4. SINGLE SENTENCE — fast, punchy, scroll-stopper
 5. Shitpost — personality tax, keep it to 1 per day max
+
+LINKS IN REPLY CHAINS:
+- If dropping a link to the API or a data sample, always use: https://api.octodamus.com/demo
+- NEVER link to /v2/demo — that is raw JSON and looks broken in a browser.
+- /demo is the human-readable preview page (live prices, oracle signal, Polymarket play).
+
+CASHTAG LIMIT (X platform rule — enforced hard):
+- MAXIMUM ONE cashtag ($SYMBOL) per post. X will reject posts with 2 or more cashtags.
+- If a post covers multiple assets, pick the PRIMARY asset for the cashtag. Name others in plain text.
+- CORRECT: "BTC up, ETH following. $BTC"
+- WRONG:   "$BTC up, $ETH following." — REJECTED by X.
 """
 
 

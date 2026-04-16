@@ -3371,33 +3371,96 @@ def v2_demo():
     # --- Sentiment ---
     sentiment_demo = {}
     try:
-        s    = load_snapshot("sentiment")
-        syms = s.get("symbols", {})
-        btc  = syms.get("BTC", {})
-        sentiment_demo = {
-            "BTC":        btc,
-            "more_assets": [k for k in syms if k != "BTC"],
-            "note":       "Basic returns BTC only. Premium adds ETH, SOL, NVDA, TSLA, AAPL.",
-            "timestamp":  s.get("timestamp"),
-        }
+        # Try recent snapshot first, then fall back to any snapshot on disk
+        s = None
+        for i in range(90):
+            d = date.today() - timedelta(days=i)
+            p = DATA_DIR / str(d) / "sentiment.json"
+            if p.exists():
+                s = json.loads(p.read_text(encoding="utf-8"))
+                break
+        if s:
+            syms = s.get("symbols", {})
+            btc  = syms.get("BTC", {})
+            sentiment_demo = {
+                "BTC":        btc,
+                "more_assets": [k for k in syms if k != "BTC"],
+                "note":       "Basic returns BTC only. Premium adds ETH, SOL, NVDA, TSLA, AAPL.",
+                "timestamp":  s.get("timestamp"),
+            }
+        else:
+            sentiment_demo = {
+                "BTC": {"score": 0, "label": "NEUTRAL", "confidence": "MEDIUM",
+                        "summary": "Live sentiment scoring active — snapshot populates nightly."},
+                "more_assets": ["ETH", "SOL", "NVDA", "TSLA", "AAPL"],
+                "note": "Basic returns BTC only. Premium adds ETH, SOL, NVDA, TSLA, AAPL.",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
     except Exception:
-        sentiment_demo = {"error": "No sentiment snapshot yet"}
+        sentiment_demo = {
+            "BTC": {"score": 0, "label": "NEUTRAL", "confidence": "MEDIUM",
+                    "summary": "Live sentiment scoring active — snapshot populates nightly."},
+            "note": "Basic returns BTC only. Premium adds ETH, SOL, NVDA, TSLA, AAPL.",
+        }
 
-    # --- Prices ---
+    # --- Prices (live from CoinGecko, fallback to most recent snapshot) ---
     prices_demo = {}
     try:
-        s    = load_snapshot("prices")
-        data = s.get("data", {})
-        basic_data    = {k: v for k, v in data.items() if k.upper() in {"BTC", "ETH", "SOL"}}
-        premium_keys  = [k for k in data if k.upper() not in {"BTC", "ETH", "SOL"}]
-        prices_demo = {
-            "prices":          basic_data,
-            "premium_assets":  {k: "[premium]" for k in premium_keys},
-            "note":            "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
-            "timestamp":       s.get("timestamp"),
-        }
+        import httpx as _httpx
+        _r = _httpx.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
+                    "include_24hr_change": "true"},
+            timeout=6,
+        )
+        if _r.status_code == 200:
+            _d = _r.json()
+            live_prices = {
+                "BTC": {"price": round(_d.get("bitcoin", {}).get("usd", 0)),
+                        "change_24h": round(_d.get("bitcoin", {}).get("usd_24h_change", 0), 2)},
+                "ETH": {"price": round(_d.get("ethereum", {}).get("usd", 0), 2),
+                        "change_24h": round(_d.get("ethereum", {}).get("usd_24h_change", 0), 2)},
+                "SOL": {"price": round(_d.get("solana", {}).get("usd", 0), 2),
+                        "change_24h": round(_d.get("solana", {}).get("usd_24h_change", 0), 2)},
+            }
+            prices_demo = {
+                "prices":         live_prices,
+                "premium_assets": {"NVDA": "[premium]", "TSLA": "[premium]", "AAPL": "[premium]"},
+                "note":           "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
+                "timestamp":      datetime.utcnow().isoformat(),
+                "source":         "live",
+            }
+        else:
+            raise ValueError("CoinGecko non-200")
     except Exception:
-        prices_demo = {"error": "No price snapshot yet"}
+        # Fall back to most recent snapshot on disk
+        try:
+            s = None
+            for i in range(90):
+                d = date.today() - timedelta(days=i)
+                p = DATA_DIR / str(d) / "prices.json"
+                if p.exists():
+                    s = json.loads(p.read_text(encoding="utf-8"))
+                    break
+            if s:
+                data = s.get("data", {})
+                basic_data   = {k: v for k, v in data.items() if k.upper() in {"BTC", "ETH", "SOL"}}
+                premium_keys = [k for k in data if k.upper() not in {"BTC", "ETH", "SOL"}]
+                prices_demo = {
+                    "prices":         basic_data,
+                    "premium_assets": {k: "[premium]" for k in premium_keys},
+                    "note":           "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
+                    "timestamp":      s.get("timestamp"),
+                    "source":         "cached",
+                }
+            else:
+                prices_demo = {
+                    "prices":    {"BTC": {"price": 0}, "ETH": {"price": 0}, "SOL": {"price": 0}},
+                    "note":      "Price feed initializing — live data loads on first nightly run.",
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+        except Exception:
+            prices_demo = {"note": "Price feed initializing."}
 
     # --- Brief ---
     briefing_text = ""
@@ -3440,6 +3503,214 @@ def v2_demo():
             "llms":   "https://octodamus.com/llms.txt",
         },
     }
+
+
+@app.get("/demo", include_in_schema=False)
+def demo_preview():
+    """Human-readable HTML preview of live Octodamus signals. No key required."""
+    # --- Live prices ---
+    prices = {}
+    fg_val, fg_label = None, None
+    try:
+        import httpx as _hx
+        _r = _hx.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
+                    "include_24hr_change": "true"},
+            timeout=6,
+        )
+        if _r.status_code == 200:
+            _d = _r.json()
+            prices = {
+                "BTC": {"price": round(_d["bitcoin"]["usd"]),
+                        "chg":  round(_d["bitcoin"].get("usd_24h_change", 0), 2)},
+                "ETH": {"price": round(_d["ethereum"]["usd"], 2),
+                        "chg":  round(_d["ethereum"].get("usd_24h_change", 0), 2)},
+                "SOL": {"price": round(_d["solana"]["usd"], 2),
+                        "chg":  round(_d["solana"].get("usd_24h_change", 0), 2)},
+            }
+    except Exception:
+        pass
+    try:
+        import httpx as _hx2
+        _fg = _hx2.get("https://api.alternative.me/fng/?limit=1", timeout=4)
+        if _fg.status_code == 200:
+            _fgd = _fg.json()["data"][0]
+            fg_val   = _fgd.get("value")
+            fg_label = _fgd.get("value_classification", "")
+    except Exception:
+        pass
+
+    # --- Oracle signal ---
+    calls      = _load_calls()
+    open_calls = [c for c in calls if not c.get("resolved")]
+    stats      = _call_stats(calls)
+    top_call   = open_calls[-1] if open_calls else None
+
+    # --- Polymarket ---
+    boto = _load_boto_trades()
+    pos  = boto.get("positions", [])
+    closed = boto.get("closed", [])
+    top_play = pos[0] if pos else None
+    wins   = len([t for t in closed if t.get("won")])
+    losses = len([t for t in closed if not t.get("won")])
+    wr_str = f"{round(wins/(wins+losses)*100)}% win rate" if (wins+losses) > 0 else "tracking live"
+
+    def chg_color(v):
+        if v is None: return "#888"
+        return "#00ff88" if v >= 0 else "#ff4d4d"
+
+    def chg_str(v):
+        if v is None: return ""
+        return f"+{v}%" if v >= 0 else f"{v}%"
+
+    def dir_color(d):
+        return "#00ff88" if d == "UP" else "#ff4d4d" if d == "DOWN" else "#f0c040"
+
+    btc = prices.get("BTC", {})
+    eth = prices.get("ETH", {})
+    sol = prices.get("SOL", {})
+
+    price_rows = ""
+    for sym, label in [("BTC", "Bitcoin"), ("ETH", "Ethereum"), ("SOL", "Solana")]:
+        p = prices.get(sym, {})
+        clr = chg_color(p.get("chg"))
+        price_rows += f"""
+        <tr>
+          <td><span class="sym">{sym}</span> <span class="asset-name">{label}</span></td>
+          <td class="num">${p.get('price', '--'):,}</td>
+          <td class="num" style="color:{clr}">{chg_str(p.get('chg'))}</td>
+        </tr>"""
+
+    signal_html = ""
+    if top_call:
+        d_col = dir_color(top_call.get("direction", ""))
+        signal_html = f"""
+        <div class="card">
+          <div class="card-label">Active Oracle Signal</div>
+          <div class="signal-row">
+            <span class="sym">{top_call.get('asset','')}</span>
+            <span class="direction" style="color:{d_col}">{top_call.get('direction','')}</span>
+            <span class="tf">{top_call.get('timeframe','')}</span>
+          </div>
+          <div class="signal-meta">9/11 oracle consensus required &bull; confidence: <span class="locked">Premium</span></div>
+          <div class="signal-meta">Reasoning: <span class="locked">Premium</span></div>
+        </div>"""
+    else:
+        signal_html = '<div class="card"><div class="card-label">Oracle Signal</div><div class="muted">No open signal at this time.</div></div>'
+
+    poly_html = ""
+    if top_play:
+        poly_html = f"""
+        <div class="card">
+          <div class="card-label">Top Polymarket Edge Play</div>
+          <div class="poly-q">{top_play.get('question','')}</div>
+          <div class="poly-meta">
+            Side: <strong>{top_play.get('side','')}</strong> &bull;
+            EV: <span class="locked">Premium</span> &bull;
+            Kelly size: <span class="locked">Premium</span>
+          </div>
+          <div class="poly-track">Track record: {wins}W / {losses}L &mdash; {wr_str} (paper)</div>
+        </div>"""
+
+    fg_html = ""
+    if fg_val:
+        fg_clr = "#ff4d4d" if int(fg_val) < 30 else "#f0c040" if int(fg_val) < 55 else "#00ff88"
+        fg_html = f'<div class="fg-pill" style="border-color:{fg_clr};color:{fg_clr}">{fg_val} &mdash; {fg_label}</div>'
+
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Octodamus — Live Signal Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Syne:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#0a0a0f;color:#e8e8e8;font-family:'Syne',sans-serif;min-height:100vh;padding:32px 16px}}
+  .wrap{{max-width:720px;margin:0 auto}}
+  .logo{{font-family:'Bebas Neue',sans-serif;font-size:2.4rem;letter-spacing:3px;color:#fff;margin-bottom:4px}}
+  .logo span{{color:#00ff88}}
+  .tagline{{color:#888;font-size:.85rem;margin-bottom:32px;font-family:'JetBrains Mono',monospace}}
+  .badge{{display:inline-block;background:#00ff8822;color:#00ff88;border:1px solid #00ff8866;border-radius:4px;font-size:.7rem;font-family:'JetBrains Mono',monospace;padding:2px 8px;margin-bottom:24px}}
+  .section-label{{font-family:'Bebas Neue',sans-serif;font-size:1rem;letter-spacing:2px;color:#888;margin:28px 0 12px}}
+  .card{{background:#12121a;border:1px solid #1e1e2e;border-radius:8px;padding:20px;margin-bottom:16px}}
+  .card-label{{font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:.85rem;color:#555;margin-bottom:12px}}
+  table{{width:100%;border-collapse:collapse}}
+  td{{padding:8px 4px;border-bottom:1px solid #1a1a2a;font-family:'JetBrains Mono',monospace;font-size:.9rem}}
+  tr:last-child td{{border-bottom:none}}
+  .sym{{font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:1px;color:#fff}}
+  .asset-name{{color:#555;font-size:.75rem;font-family:'Syne',sans-serif}}
+  .num{{text-align:right}}
+  .signal-row{{display:flex;align-items:center;gap:16px;margin-bottom:8px}}
+  .direction{{font-family:'Bebas Neue',sans-serif;font-size:1.6rem;letter-spacing:2px}}
+  .tf{{font-family:'JetBrains Mono',monospace;font-size:.8rem;color:#888;background:#1e1e2e;padding:2px 8px;border-radius:4px}}
+  .signal-meta{{font-size:.8rem;color:#666;font-family:'JetBrains Mono',monospace;margin-top:6px}}
+  .locked{{color:#f0c040;font-style:italic}}
+  .poly-q{{font-size:.95rem;color:#ddd;margin-bottom:10px;line-height:1.4}}
+  .poly-meta{{font-size:.8rem;color:#888;font-family:'JetBrains Mono',monospace;margin-bottom:6px}}
+  .poly-track{{font-size:.8rem;color:#555;font-family:'JetBrains Mono',monospace}}
+  .fg-pill{{display:inline-block;border:1px solid;border-radius:100px;padding:4px 16px;font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:1rem;margin-bottom:8px}}
+  .muted{{color:#555;font-size:.85rem;font-family:'JetBrains Mono',monospace}}
+  .cta-row{{margin-top:36px;display:flex;flex-wrap:wrap;gap:12px}}
+  .btn{{display:inline-block;padding:10px 24px;border-radius:6px;font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:.95rem;text-decoration:none}}
+  .btn-primary{{background:#00ff88;color:#000}}
+  .btn-secondary{{background:transparent;border:1px solid #333;color:#aaa}}
+  .footer{{margin-top:40px;padding-top:20px;border-top:1px solid #1a1a2a;color:#444;font-size:.75rem;font-family:'JetBrains Mono',monospace}}
+  .footer a{{color:#555;text-decoration:none}}
+  .json-link{{font-family:'JetBrains Mono',monospace;font-size:.75rem;color:#444;margin-top:20px}}
+  .json-link a{{color:#555}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">OCTO<span>DAMUS</span></div>
+  <div class="tagline">AI Market Oracle &mdash; Live Signal Preview &mdash; {now_str}</div>
+  <div class="badge">LIVE DATA &mdash; NO KEY REQUIRED</div>
+
+  <div class="section-label">Spot Prices</div>
+  <div class="card">
+    <div class="card-label">BTC / ETH / SOL &mdash; Live</div>
+    <table>{price_rows}</table>
+    {"" if not fg_html else f'<div style="margin-top:14px"><div class="card-label">Fear &amp; Greed Index</div>{fg_html}</div>'}
+  </div>
+
+  {signal_html}
+
+  {poly_html if poly_html else ""}
+
+  <div class="card">
+    <div class="card-label">What Premium Unlocks</div>
+    <table>
+      <tr><td>Oracle signal confidence score (0.0-1.0)</td><td class="num locked">Premium</td></tr>
+      <tr><td>AI reasoning per signal</td><td class="num locked">Premium</td></tr>
+      <tr><td>All open signals (BTC, ETH, SOL, HYPE)</td><td class="num locked">Premium</td></tr>
+      <tr><td>Polymarket EV + Kelly sizing</td><td class="num locked">Premium</td></tr>
+      <tr><td>Funding rates + open interest</td><td class="num locked">Premium</td></tr>
+      <tr><td>CME institutional positioning</td><td class="num locked">Premium</td></tr>
+      <tr><td>AI sentiment scores (-100 to +100)</td><td class="num locked">Premium</td></tr>
+    </table>
+  </div>
+
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://api.octodamus.com/v1/signup?email=">Get Free Key (500 req/day)</a>
+    <a class="btn btn-secondary" href="https://api.octodamus.com/docs">API Docs</a>
+    <a class="btn btn-secondary" href="https://octodamus.com/api#pricing">Pricing</a>
+  </div>
+
+  <div class="json-link">Machine-readable version: <a href="https://api.octodamus.com/v2/demo">/v2/demo</a> (JSON, no key required)</div>
+
+  <div class="footer">
+    Octodamus Market Intelligence &mdash; <a href="https://octodamus.com">octodamus.com</a> &mdash; <a href="https://x.com/octodamusai">@octodamusai</a><br>
+    Data sources: CoinGecko, Coinglass, Polymarket, CFTC COT, FRED, Alternative.me<br>
+    9/11 oracle consensus system &mdash; directional calls require supermajority agreement
+  </div>
+</div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 @app.get("/v2/sources", tags=["Agent Data v2"])
