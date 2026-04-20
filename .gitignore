@@ -1,80 +1,49 @@
-# Secrets and session files
+# Secrets and credentials
 .env
 *.env
-bitwarden_session*
-bw_session*
-
-# Logs and queue files
-*.log
-octo_post_queue.json
-octo_posted_log.json
-octo_alert_log.json
-octo_alert_dedup.json
-octo_journal*.json
-BRAIN.md
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Backups created by patch scripts
-*.bak*
-*.bak_*
-
-# macOS
-.DS_Store
-
-# Windows
-Thumbs.db
-EOF# Step 3 — Create .gitignore so secrets and logs never get committed
-cat > .gitignore << 'EOF'
-# Secrets and session files
-.env
-*.env
-bitwarden_session*
-bw_session*
-
-# Logs and queue files
-*.log
-octo_post_queue.json
-octo_posted_log.json
-octo_alert_log.json
-octo_alert_dedup.json
-octo_journal*.json
-BRAIN.md
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Backups created by patch scripts
-*.bak*
-*.bak_*
-
-# macOS
-.DS_Store
-
-# Windows
-Thumbs.db
-data/api_keys.json
-data/
-data/api_keys.json
-data/
-
 .octo_secrets
+bitwarden_session*
+bw_session*
+gdrive_credentials.json
+gdrive_token.json
+youtube_token.json
+octo_extra_secrets.json
+octo_boto_wallet.json
 
-fix_*.py
-wire_*.py
+# Runtime state / data
+data/
+octodamus_memory.json
+octo_skill_log.json
+octo_post_queue.json
+octo_posted_log.json
+octo_alert_log.json
+octo_alert_dedup.json
+octo_journal*.json
 octo_predictions.json
 octo_twitter_user_id.txt
-octodamus_memory.json
+xstats.json
 
-octo_skill_log.json
-octodamus_mission_control.html
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backups
+*.bak*
+
+# macOS / Windows
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# One-off scripts
+fix_*.py
+wire_*.py
 debug_fstring.py
+BRAIN.md
+octodamus_mission_control.html
