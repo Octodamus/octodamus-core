@@ -28,7 +28,8 @@ tags:
   - x402
 
 startCommand:
-  type: stdio
+  type: url
+  url: https://api.octodamus.com/mcp
   configSchema:
     type: object
     properties:
@@ -41,11 +42,3 @@ startCommand:
           at https://api.octodamus.com/v1/agent-checkout
     required:
       - apiKey
-  commandFunction: |-
-    (config) => ({
-      command: "python",
-      args: ["octo_mcp_server.py"],
-      env: {
-        OCTO_API_KEY: config.apiKey
-      }
-    })
