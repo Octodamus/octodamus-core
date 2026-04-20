@@ -1106,37 +1106,50 @@ def well_known_x402():
 
 # â"€â"€ ACP Resource endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+_fg_cache: dict = {"data": None, "ts": 0.0}
+_dom_cache: dict = {"data": None, "ts": 0.0}
+_PUBLIC_TTL = 300.0  # 5 minutes for public market data
+
 @app.get("/api/fear-greed", tags=["ACP Resources"])
 def acp_fear_greed():
-    """Live Fear & Greed index â€" free ACP resource."""
+    """Live Fear & Greed index â€" free ACP resource. Cached 5min."""
+    global _fg_cache
+    now = _time.monotonic()
+    if _fg_cache["data"] and now - _fg_cache["ts"] < _PUBLIC_TTL:
+        return _fg_cache["data"]
     try:
         import sys
         sys.path.insert(0, str(Path(__file__).parent))
         from octo_pulse import run_pulse_scan
         result = run_pulse_scan()
         fng = result.get("fear_greed") or {}
-        return {
+        data = {
             "value": fng.get("value"),
             "label": fng.get("label"),
             "previous_close": fng.get("previous_close"),
             "timestamp": datetime.utcnow().isoformat(),
-            "source": "alternative.me",
             "source": {"name": "OctoData API", "by": "Octodamus (@octodamusai)", "docs": "https://api.octodamus.com/docs", "signup": "POST https://api.octodamus.com/v1/signup?email="},
         }
+        _fg_cache = {"data": data, "ts": now}
+        return data
     except Exception as e:
-        return {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+        return _fg_cache["data"] if _fg_cache["data"] else {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.get("/api/btc-dominance", tags=["ACP Resources"])
 def acp_btc_dominance():
-    """Live BTC dominance â€" free ACP resource."""
+    """Live BTC dominance â€" free ACP resource. Cached 5min."""
+    global _dom_cache
+    now = _time.monotonic()
+    if _dom_cache["data"] and now - _dom_cache["ts"] < _PUBLIC_TTL:
+        return _dom_cache["data"]
     try:
         import sys
         sys.path.insert(0, str(Path(__file__).parent))
         from octo_gecko import run_gecko_scan
         result = run_gecko_scan()
         g = result.get("global") or {}
-        return {
+        data = {
             "btc_dominance": g.get("btc_dominance"),
             "total_market_cap_usd": g.get("total_market_cap_usd"),
             "market_cap_change_24h": g.get("market_cap_change_24h"),
@@ -1144,11 +1157,12 @@ def acp_btc_dominance():
             "top_gainers": [{"symbol": c.get("symbol"), "chg_24h": c.get("chg_24h")} for c in result.get("gainers", [])],
             "top_losers":  [{"symbol": c.get("symbol"), "chg_24h": c.get("chg_24h")} for c in result.get("losers", [])],
             "timestamp": datetime.utcnow().isoformat(),
-            "source": "CoinGecko",
             "source": {"name": "OctoData API", "by": "Octodamus (@octodamusai)", "docs": "https://api.octodamus.com/docs", "signup": "POST https://api.octodamus.com/v1/signup?email="},
         }
+        _dom_cache = {"data": data, "ts": now}
+        return data
     except Exception as e:
-        return {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+        return _dom_cache["data"] if _dom_cache["data"] else {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
 
 
 # â"€â"€ Report endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -1198,9 +1212,126 @@ def update_metrics(
     return {"status": "ok", "metrics": m}
 
 
+@app.get("/api/wallet-balance", tags=["ACP Resources"])
+def wallet_balance(address: str = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"):
+    """Live ETH balance for a Base Chain wallet via Blockscout. No auth required."""
+    import requests as req
+    try:
+        r = req.get(
+            f"https://base.blockscout.com/api/v2/addresses/{address}",
+            timeout=8,
+            headers={"Accept": "application/json"},
+        )
+        d = r.json()
+        raw = d.get("coin_balance") or "0"
+        eth = int(raw) / 1e18
+        usd_rate = float(d.get("exchange_rate") or 0)
+        usd = round(eth * usd_rate, 2) if usd_rate else None
+        return {
+            "address": address,
+            "eth": round(eth, 6),
+            "usd": usd,
+            "usd_rate": usd_rate,
+            "source": "blockscout",
+        }
+    except Exception as e:
+        return {"address": address, "eth": None, "usd": None, "error": str(e)}
+
+
+@app.get("/api/treasury-total", tags=["ACP Resources"])
+def treasury_total():
+    """Multi-chain treasury total: ETH + USDC on Base (direct RPC), SOL on Solana. No auth required."""
+    import requests as req
+
+    ETH_ADDR    = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
+    SOL_ADDR    = "FpHxTSnnRtUqnmHqKL28YQdGAPyGCxEstR5c7A7nnbeX"
+    USDC_ADDR   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    BASE_RPC    = "https://mainnet.base.org"
+    SOL_RPC     = "https://api.mainnet-beta.solana.com"
+
+    result = {
+        "eth": None, "eth_usd": None, "eth_rate": None,
+        "usdc": None, "usdc_usd": None,
+        "sol": None, "sol_usd": None, "sol_rate": None,
+        "total_usd": None,
+        "eth_address": ETH_ADDR,
+        "sol_address": SOL_ADDR,
+    }
+
+    def base_rpc(method, params):
+        r = req.post(BASE_RPC, json={"jsonrpc":"2.0","id":1,"method":method,"params":params}, timeout=8)
+        return r.json().get("result")
+
+    # ETH balance via Base RPC
+    try:
+        hex_bal = base_rpc("eth_getBalance", [ETH_ADDR, "latest"])
+        eth = int(hex_bal, 16) / 1e18
+        result["eth"] = round(eth, 6)
+    except Exception:
+        pass
+
+    # USDC balance via direct balanceOf call — avoids Blockscout staleness
+    try:
+        padded = ETH_ADDR[2:].lower().zfill(64)
+        hex_usdc = base_rpc("eth_call", [{"to": USDC_ADDR, "data": "0x70a08231" + padded}, "latest"])
+        usdc = int(hex_usdc, 16) / 1e6
+        result["usdc"] = round(usdc, 4)
+    except Exception:
+        pass
+
+    # Prices: ETH + SOL from CoinGecko in one call
+    try:
+        pg = req.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,solana&vs_currencies=usd",
+            timeout=8,
+        )
+        prices = pg.json()
+        eth_rate = prices.get("ethereum", {}).get("usd", 0)
+        sol_rate = prices.get("solana", {}).get("usd", 0)
+    except Exception:
+        eth_rate, sol_rate = 0, 0
+
+    # Fallback ETH price from Blockscout if CoinGecko fails
+    if not eth_rate:
+        try:
+            rb = req.get(f"https://base.blockscout.com/api/v2/addresses/{ETH_ADDR}", timeout=6)
+            eth_rate = float(rb.json().get("exchange_rate") or 0)
+        except Exception:
+            pass
+
+    result["eth_rate"] = eth_rate
+    result["eth_usd"] = round(result["eth"] * eth_rate, 2) if result["eth"] is not None and eth_rate else None
+    result["usdc_usd"] = round(result["usdc"], 2) if result["usdc"] is not None else None  # USDC ~= $1
+
+    # SOL balance via Solana RPC
+    try:
+        rpc = req.post(SOL_RPC, json={"jsonrpc":"2.0","id":1,"method":"getBalance","params":[SOL_ADDR]}, timeout=8)
+        lamports = rpc.json().get("result", {}).get("value", 0)
+        sol = lamports / 1e9
+        result["sol"] = round(sol, 6)
+        result["sol_rate"] = sol_rate
+        result["sol_usd"] = round(sol * sol_rate, 2) if sol_rate else None
+    except Exception:
+        pass
+
+    # Total USD
+    parts = [result["eth_usd"], result["usdc_usd"], result["sol_usd"]]
+    defined = [p for p in parts if p is not None]
+    result["total_usd"] = round(sum(defined), 2) if defined else None
+
+    return result
+
+
+_prices_cache: dict = {"data": None, "ts": 0.0}
+_PRICES_TTL = 60.0  # seconds
+
 @app.get("/api/prices", tags=["ACP Resources"])
 def acp_prices():
-    """Live BTC/ETH/SOL prices with 24h change. No auth required."""
+    """Live BTC/ETH/SOL prices with 24h change. No auth required. Cached 60s."""
+    global _prices_cache
+    now = _time.monotonic()
+    if _prices_cache["data"] and now - _prices_cache["ts"] < _PRICES_TTL:
+        return _prices_cache["data"]
     try:
         import requests as req
         r = req.get(
@@ -1209,15 +1340,17 @@ def acp_prices():
             timeout=10
         )
         d = r.json()
-        return {
+        result = {
             "btc": {"usd": d["bitcoin"]["usd"], "usd_24h_change": round(d["bitcoin"].get("usd_24h_change",0),2)},
             "eth": {"usd": d["ethereum"]["usd"], "usd_24h_change": round(d["ethereum"].get("usd_24h_change",0),2)},
             "sol": {"usd": d["solana"]["usd"],   "usd_24h_change": round(d["solana"].get("usd_24h_change",0),2)},
-            "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
             "source": {"name": "OctoData API", "by": "Octodamus (@octodamusai)", "docs": "https://api.octodamus.com/docs", "signup": "POST https://api.octodamus.com/v1/signup?email="}
         }
+        _prices_cache = {"data": result, "ts": now}
+        return result
     except Exception as e:
-        return {"error": str(e)}
+        return _prices_cache["data"] if _prices_cache["data"] else {"error": str(e)}
 
 
 @app.get("/api/report", response_class=HTMLResponse, tags=["ACP Resources"])
@@ -3330,7 +3463,12 @@ def v2_demo():
     calls      = _load_calls()
     open_calls = [c for c in calls if not c.get("resolved")]
     stats      = _call_stats(calls)
-    track      = _track_record(stats)
+    _w = stats.get("wins", 0) or 0
+    _l = stats.get("losses", 0) or 0
+    track      = {
+        "wins": _w, "losses": _l, "total": stats.get("total", 0),
+        "win_rate": round(_w / (_w + _l) * 100, 1) if (_w + _l) else None,
+    }
 
     # --- Signal ---
     def _signal_demo(c):
@@ -3364,7 +3502,7 @@ def v2_demo():
         "total_plays":  len(pos),
         "track_record": {"wins": len([t for t in closed if t.get("won")]),
                          "losses": len([t for t in closed if not t.get("won")]),
-                         "closed": len(closed), "mode": "paper"},
+                         "closed": len(closed)},
         "note": "Basic returns top play only. Premium returns all plays with EV, true_p, Kelly size.",
     }
 
@@ -4019,4 +4157,4 @@ def llms_txt():
 # -- Entry point --------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False)
+    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False, workers=3)
