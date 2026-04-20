@@ -163,15 +163,6 @@ def score_sentiment(client: anthropic.Anthropic, symbol: str, headlines: list) -
         f"- {h['title']}" for h in headlines[:5] if h.get("title")
     )
 
-    def score_sentiment(client: anthropic.Anthropic, symbol: str, headlines: list) -> dict:
-    """Use Haiku to score sentiment from headlines. Cheap, fast."""
-    if not headlines:
-        return {"score": 0, "label": "NEUTRAL", "confidence": "LOW", "summary": "No recent news found."}
-
-    headline_text = "\n".join(
-        f"- {h['title']}" for h in headlines[:5] if h.get("title")
-    )
-
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",

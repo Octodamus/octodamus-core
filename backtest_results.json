@@ -1,0 +1,99 @@
+{
+  "run_date": "2026-04-03T23:08:49.859713+00:00",
+  "timeframe_hours": 48,
+  "lookback_days": 180,
+  "results": {
+    "BTC": {
+      "2": {
+        "calls": 88,
+        "wins": 45,
+        "losses": 43
+      },
+      "3": {
+        "calls": 49,
+        "wins": 25,
+        "losses": 24
+      },
+      "4": {
+        "calls": 13,
+        "wins": 9,
+        "losses": 4
+      },
+      "5": {
+        "calls": 3,
+        "wins": 2,
+        "losses": 1
+      }
+    },
+    "ETH": {
+      "2": {
+        "calls": 76,
+        "wins": 43,
+        "losses": 33
+      },
+      "3": {
+        "calls": 45,
+        "wins": 24,
+        "losses": 21
+      },
+      "4": {
+        "calls": 8,
+        "wins": 5,
+        "losses": 3
+      },
+      "5": {
+        "calls": 1,
+        "wins": 1,
+        "losses": 0
+      }
+    },
+    "SOL": {
+      "2": {
+        "calls": 81,
+        "wins": 46,
+        "losses": 35
+      },
+      "3": {
+        "calls": 49,
+        "wins": 30,
+        "losses": 19
+      },
+      "4": {
+        "calls": 9,
+        "wins": 6,
+        "losses": 3
+      },
+      "5": {
+        "calls": 3,
+        "wins": 1,
+        "losses": 2
+      }
+    }
+  },
+  "summary": {
+    "2": {
+      "calls": 245,
+      "wins": 134
+    },
+    "3": {
+      "calls": 143,
+      "wins": 79
+    },
+    "4": {
+      "calls": 30,
+      "wins": 20
+    },
+    "5": {
+      "calls": 7,
+      "wins": 4
+    },
+    "6": {
+      "calls": 0,
+      "wins": 0
+    },
+    "7": {
+      "calls": 0,
+      "wins": 0
+    }
+  }
+}

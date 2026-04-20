@@ -32,6 +32,8 @@ Bitwarden item names:
     AGENT - Octodamus - Social - Discord       (password=webhook URL)
     AGENT - Octodamus - Finance - Bankr - Wallet         (optional, wins over above if both exist)
     AGENT - Octodamus - POLYBACKTEST - API Key
+    AGENT - Octodamus - Firecrawl API
+    AGENT - Octodamus - Finnhub API
 """
 
 import json
@@ -78,6 +80,8 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - OctoData - Stripe Price ID":  "OCTODATA_STRIPE_PRICE_ID",
     "AGENT - Octodamus - OctoData - Stripe Webhook":   "OCTODATA_STRIPE_WEBHOOK_SECRET",
     "AGENT - Octodamus - Guide - Download URL":         "GUIDE_DOWNLOAD_URL",
+    "AGENT - Octodamus - Firecrawl API":               "FIRECRAWL_API_KEY",
+    "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {

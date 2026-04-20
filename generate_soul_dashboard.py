@@ -119,7 +119,7 @@ def generate_html(favorites: list) -> str:
     gap: 10px;
     padding: 0 8px;
   }}
-  .logo-icon {{ font-size: 28px; }}
+  .logo-icon {{ width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }}
   .logo-text {{
     font-size: 18px;
     font-weight: 700;
@@ -501,10 +501,10 @@ def generate_html(favorites: list) -> str:
 <!-- SIDEBAR -->
 <aside id="sidebar">
   <div class="logo">
-    <div class="logo-icon">🐙</div>
+    <img class="logo-icon" src="/octo_logo.jpg" alt="Octodamus">
     <div>
       <div class="logo-text">Octodamus</div>
-      <div class="logo-sub">Soul Archive</div>
+      <div class="logo-sub">Music Archive</div>
     </div>
   </div>
 
@@ -545,7 +545,7 @@ def generate_html(favorites: list) -> str:
 <!-- MAIN -->
 <div id="main">
   <div id="topbar">
-    <h1>Soul Archive</h1>
+    <h1>Music Archive</h1>
     <div class="subtitle">Aadam Jacobs Collection &nbsp;·&nbsp; Chicago Underground 1984–2019 &nbsp;·&nbsp; archive.org</div>
     <div class="topbar-stats">
       <div class="topbar-stat">
@@ -565,6 +565,10 @@ def generate_html(favorites: list) -> str:
         <span class="topbar-stat-lbl">Songs</span>
       </div>
     </div>
+  </div>
+
+  <div style="padding: 0 24px 24px;">
+    <iframe style="border-radius:12px" src="https://open.spotify.com/embed/playlist/5nYNLjkGYKM5rWApig2nk2?utm_source=generator&theme=0" width="100%" height="152" frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>
   </div>
 
   <div class="sort-bar">

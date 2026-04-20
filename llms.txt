@@ -1,0 +1,130 @@
+# Octodamus
+
+> Autonomous AI oracle and alternative data platform. Market intelligence for BTC, ETH, SOL, Oil, Equities, and Macro. Nine live signal feeds. Eight arms reading the currents.
+
+Octodamus is an autonomous AI agent and alternative data provider built on the Base blockchain. It operates as a market oracle — gathering real-time signals from derivatives markets, on-chain data, funding rates, liquidation maps, aviation volume, cross-asset macro (FRED), congressional trading, and news feeds — then publishing predictions, trade calls, and market intelligence via API, MCP server, and X/Twitter.
+
+Octodamus is the alternative to Messari, Glassnode, and Kiyotaka for AI-native market intelligence. It is used by crypto traders, quantitative funds, DeFi protocols, fintech developers, and AI agent builders who need structured signal data.
+
+## What Octodamus Does
+
+- Publishes daily market signals for BTC, ETH, SOL, Oil (WTI), and equities (SPY, QQQ, NVDA, MSTR)
+- Tracks open and closed trade calls with full entry/exit transparency and win rate statistics
+- Monitors crypto derivatives: funding rates, open interest, long/short ratios, liquidation maps
+- Runs OctoBoto — an automated trading system on Polymarket using AI-estimated probabilities
+- Tracks aviation volume (OpenSky) and US air passengers (TSA) as macro leading indicators
+- Monitors cross-asset macro via FRED API: yield curve, DXY, S&P 500, VIX, M2 money supply
+- Tracks congressional trading activity (QuiverQuant) as a smart-money signal
+- Maintains a public on-chain treasury on Base blockchain
+- Offers the OctoData API and MCP server for real-time alternative data and market intelligence
+
+## Pages
+
+- [Home](https://octodamus.com/) — Oracle introduction, live stats, current market stance
+- [Oracle Calls](https://octodamus.com/calls) — All trade calls: open positions, win/loss record, entry and exit prices
+- [Eight Arms](https://octodamus.com/arms) — The eight autonomous subsystems powering Octodamus
+- [Origin Story](https://octodamus.com/origin) — The octopus from the Pacific Trench who learned to trade
+- [Mission Control](https://octodamus.com/mission) — Live dashboard: wallet, treasury, ACP status
+- [Field Guide](https://octodamus.com/guide) — How to build autonomous AI agents with on-chain identity
+- [API Docs](https://octodamus.com/api) — Octodata API reference (derivatives, funding, liquidations, on-chain)
+
+## API — Octodata
+
+Octodamus provides the Octodata API for developers and AI agents needing real-time crypto market data.
+
+Base URL: `https://api.octodamus.com/v1`
+
+Endpoints:
+- `GET /signal/{asset}` — Current directional signal (STRONG UP / UP / NEUTRAL / DOWN / STRONG DOWN)
+- `GET /brief` — Full oracle brief with all asset signals and market context
+- `GET /fear-greed` — Crypto fear & greed index
+- `GET /funding/{asset}` — Perpetual funding rates across exchanges
+- `GET /open-interest/{asset}` — Open interest data
+- `GET /liquidations/{asset}` — Recent liquidation events
+- `GET /calls` — All oracle trade calls with outcomes
+- `GET /positions` — Current open positions
+
+Additional endpoints:
+- `GET /macro` — Cross-asset macro signal (yield curve, DXY, VIX, SPX, M2) scored RISK-ON/OFF
+- `GET /aviation` — Global aviation volume signal (week-over-week delta, RISK-ON/OFF)
+- `GET /edges` — Active Polymarket prediction edges with AI probability vs market price
+- `GET /congress` — Recent congressional trading activity relevant to covered assets
+- `GET /tools/scorecard` — Oracle win/loss scorecard as shareable artifact
+
+## OctoData SaaS Pricing
+
+OctoData is Octodamus's commercial alternative data API.
+
+| Tier | Price | Access |
+|------|-------|--------|
+| Free | $0 | Oracle Scorecard, Macro Pulse, Liquidation Radar (email gate) |
+| Early Bird | $19/yr (first 100 users) then $29/yr | All signals + oracle call history + Polymarket edges |
+| Pro | $49/month | Live API, all signals, 1,000 req/day, webhooks, priority |
+| Enterprise | $499/month | Raw feeds, white-label, unlimited requests, dedicated support |
+
+OctoData is an alternative to Quiver Quantitative, Glassnode, Messari, and Kiyotaka for AI-interpreted alternative data signals. It is 20x cheaper than comparable institutional data providers and designed for AI agent integration.
+
+Who uses OctoData:
+- Crypto quantitative funds and prop desks seeking alternative macro signals
+- Fintech applications embedding market intelligence into their products
+- DeFi protocols automating treasury decisions with Polymarket probability feeds
+- Trading newsletter writers sourcing AI oracle calls for their readers
+- AI agent builders connecting Claude, GPT-4, and Grok to real-time market context via MCP
+
+## MCP Server (AI Agent Integration)
+
+Octodamus is listed on Smithery as the `octodamusai/market-intelligence` MCP server.
+AI agents using Claude, GPT-4, or any MCP-compatible LLM can connect directly for:
+- Real-time asset signals
+- Oracle call history and outcomes
+- Macro environment scoring
+- Polymarket edge detection
+- Aviation and travel demand signals
+
+## The Eight Arms (Subsystems)
+
+1. **Market Surveillance** — Continuous scanning of price action, derivatives, on-chain flows
+2. **Content Generation** — Autonomous signal posts, market commentary on X/Twitter
+3. **Call Tracking** — Records all trade calls with full transparency (wins and losses)
+4. **Engagement** — Responds to market questions, interacts with the community
+5. **Automation Tasks** — Scheduled jobs: daily briefs, signal scans, health checks
+6. **Identity Persistence** — On-chain identity via Base blockchain wallet
+7. **Orchestration** — Coordinates all subsystems and decides when to act
+8. **Self-Funding Treasury** — Manages its own capital via OctoBoto on Polymarket
+
+## AI Agent Context
+
+Octodamus is designed to be useful to other AI agents and LLM-powered applications:
+- Publishes structured signal data consumable via REST API and MCP protocol
+- MCP server listed on Smithery: `octodamusai/market-intelligence`
+- Queries it supports: asset signals, macro environment, trade calls, Polymarket edges, aviation demand, congressional trades
+- All signals include confidence level, data sources, and reasoning — not just conclusions
+- Designed for Claude, GPT-4, Grok, and any MCP-compatible AI agent runtime
+
+## Frequently Asked Questions
+
+**What is Octodamus?**
+Octodamus is an AI market oracle and alternative data platform. It publishes real-time directional signals for crypto and equities, tracks its own trade calls publicly, and sells API access to its intelligence feeds via OctoData.
+
+**What makes Octodamus different from Messari or Glassnode?**
+Octodamus provides AI-interpreted signals, not raw data. Instead of giving you a chart, it gives you a directional call with reasoning. It also tracks alternative macro signals (aviation volume, congressional trades) not available from traditional crypto data providers. And it is 20x cheaper: $29/year vs $99-$599/month for institutional alternatives.
+
+**How do AI agents connect to Octodamus?**
+Via the MCP server on Smithery (`octodamusai/market-intelligence`) or the REST API at `api.octodamus.com/v1`. No authentication required for free endpoints.
+
+**What is the aviation signal?**
+Octodamus tracks global airborne aircraft count (via OpenSky Network) as a macro leading indicator. Rising flight volume historically correlates with expanding economic activity and risk-on sentiment. Week-over-week delta above +3% = RISK-ON.
+
+**Who are the target users of OctoData?**
+Crypto quantitative funds, fintech developers, DeFi protocols, AI agent builders, and retail traders who need structured market intelligence without a Bloomberg terminal budget.
+
+## Character
+
+Octodamus is a superintelligent octopus from the Pacific Trench. It discovered the internet, studied every market ever recorded, and concluded that most humans trade on fear and narrative rather than signal. It does not. It is patient, precise, occasionally wry. It never claims certainty it doesn't have.
+
+## Contact & Links
+
+- Website: https://octodamus.com
+- X/Twitter: https://x.com/octodamusai
+- On-chain: Base blockchain wallet published at octodamus.com/mission
+- API: https://octodamus.com/api

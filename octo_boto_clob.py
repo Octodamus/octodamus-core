@@ -1,12 +1,21 @@
 """
-octo_boto_clob.py — Polymarket CLOB execution layer
-Wraps py-clob-client for order placement, cancellation, and balance checks.
+octo_boto_clob.py -- Polymarket CLOB execution layer (V2)
+Wraps py-clob-client-v2 for order placement, cancellation, and balance checks.
 
-LIVE_MODE = False  →  paper trading (logs orders, never submits)
-LIVE_MODE = True   →  real execution (requires funded Polygon wallet)
+LIVE_MODE = False  ->  paper trading (logs orders, never submits)
+LIVE_MODE = True   ->  real execution (requires funded Polygon wallet)
 
 Toggle via:  set_live_mode(True) / set_live_mode(False)
 Or Telegram:  /golive / /gopaper
+
+Migrated to V2 on 2026-04-17:
+- SDK: py-clob-client -> py-clob-client-v2==1.0.0
+- Collateral: USDC.e -> pUSD (0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB)
+- Exchange: CTFv2 (0xE111180000d2663C0091e4f400237545B87B996B)
+- OrderArgs: same core params (token_id, price, size, side); nonce/feeRateBps/taker removed by SDK
+- Constructor: chain_id param unchanged in Python SDK
+- Production host: clob.polymarket.com (serves V2 after April 22 cutover)
+- Test host: clob-v2.polymarket.com (available before April 22)
 """
 
 import logging
@@ -18,9 +27,20 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CLOB_HOST    = "https://clob.polymarket.com"
-CHAIN_ID     = 137          # Polygon mainnet
-USDC_POLY    = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+CLOB_HOST        = "https://clob.polymarket.com"       # V2 production (live after April 22 cutover)
+CLOB_HOST_TEST   = "https://clob-v2.polymarket.com"    # V2 testnet (available before April 22)
+CHAIN_ID         = 137                                  # Polygon mainnet (unchanged)
+
+# V2 collateral: pUSD (USDC.e wrapped via CollateralOnramp)
+PUSD_POLY        = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"   # pUSD proxy
+COLLATERAL_ONRAMP = "0x93070a847efEf7F70739046A929D47a521F5B8ee"  # wrap USDC.e -> pUSD here
+
+# V2 exchange contracts
+CTF_EXCHANGE     = "0xE111180000d2663C0091e4f400237545B87B996B"   # Standard markets
+NEG_RISK_EXCHANGE = "0xe2222d279d744050d28e00520010520000310F59"  # Neg risk markets
+
+# Legacy V1 reference (kept for historical balance lookups only)
+USDC_POLY_V1     = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 # Safety caps (enforced even in live mode)
 MAX_ORDER_USDC = 50.0       # Never place a single order above this
@@ -58,8 +78,8 @@ def _get_client():
     if not key:
         raise RuntimeError("OCTOBOTO_WALLET_KEY not in environment — load from Bitwarden first")
 
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import ApiCreds
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import ApiCreds
 
     # Level 1: key only (no API creds yet — derive them)
     c = ClobClient(host=CLOB_HOST, chain_id=CHAIN_ID, key=key)
@@ -147,7 +167,7 @@ def place_order(
 
     # Live execution
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
         c = _get_client()
 
         order_args = OrderArgs(

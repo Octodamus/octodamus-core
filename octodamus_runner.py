@@ -1,4 +1,4 @@
-﻿"""
+"""
 octodamus_runner.py
 Octodamus — Main Runner
 
@@ -62,12 +62,13 @@ import anthropic
 from financial_data_client import get_current_price, get_current_crypto_price
 from octo_eyes_market import run_market_monitor, generate_deep_dive_post
 try:
-    from octo_calls import build_call_context, parse_call_from_post, autoresolve
+    from octo_calls import build_call_context, build_open_calls_awareness, parse_call_from_post, autoresolve
     from octo_post_templates import build_template_prompt_context
     _CALLS_ACTIVE = True
 except ImportError:
     _CALLS_ACTIVE = False
     def build_call_context(): return ""
+    def build_open_calls_awareness(): return ""
     def parse_call_from_post(*a, **k): return None
     def build_template_prompt_context(): return ""
 try:
@@ -219,13 +220,14 @@ except ImportError:
         return ""
 
 try:
-    from octo_calls import build_call_context, parse_call_from_post, autoresolve, get_stats
+    from octo_calls import build_call_context, build_open_calls_awareness, parse_call_from_post, autoresolve, get_stats
     _SCORECARD_ACTIVE = True
 except ImportError:
     _SCORECARD_ACTIVE = False
     def autoresolve(): return []
     def get_stats(): return {"wins": 0, "losses": 0, "win_rate": "N/A", "streak": "—", "open": 0, "all_calls": []}
     def build_call_context(): return ""
+    def build_open_calls_awareness(): return ""
     def parse_call_from_post(*a, **k): return None
 
 try:
@@ -848,6 +850,74 @@ def mode_monitor() -> None:
         posted = process_queue(max_posts=1)
         print(f"[Runner] Posted {posted} item(s) to X.")
 
+        # Fallback watchpost — fires when no signal post was queued
+        if not posted:
+            try:
+                import httpx, requests as _req
+                _prices = _req.get(
+                    "https://api.coingecko.com/api/v3/simple/price",
+                    params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
+                    timeout=10,
+                ).json()
+                _btc = _prices.get("bitcoin", {})
+                _eth = _prices.get("ethereum", {})
+                _sol = _prices.get("solana", {})
+                _fng_val = 50
+                try:
+                    _fng_val = int(_req.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()["data"][0]["value"])
+                except Exception:
+                    pass
+                _fng_label = "Extreme Fear" if _fng_val < 25 else ("Fear" if _fng_val < 45 else ("Neutral" if _fng_val < 55 else ("Greed" if _fng_val < 75 else "Extreme Greed")))
+                _open_calls = [c for c in json.loads(Path(r"C:\Users\walli\octodamus\data\octo_calls.json").read_text(encoding="utf-8")) if not c.get("resolved")] if _CALLS_ACTIVE else []
+                _call_lines = "\n".join(f"- {c['asset']} {c['direction']} open (entry ${c.get('entry_price',0):,.0f} -> target ${c.get('target_price',0):,.0f})" for c in _open_calls[:4]) or "None"
+
+                # Firecrawl news for watchpost context (cache 1.5h, ~5 credits)
+                _wp_news_section = ""
+                try:
+                    from octo_firecrawl import get_precall_news_multi
+                    _wp_news = get_precall_news_multi(["BTC", "ETH", "SOL"], cache_hours=1.5)
+                    if _wp_news and len(_wp_news) > 50:
+                        _wp_news_section = f"\nRecent market news:\n{_wp_news[:600]}"
+                except Exception as _wpne:
+                    print(f"[Runner] Watchpost Firecrawl skip: {_wpne}")
+
+                _watchpost_prompt = f"""You are Octodamus, autonomous AI market oracle. Write a market watchpost for X (Twitter).
+
+Current market snapshot:
+- BTC: ${_btc.get('usd',0):,.0f} ({_btc.get('usd_24h_change',0):+.1f}% 24h)
+- ETH: ${_eth.get('usd',0):,.0f} ({_eth.get('usd_24h_change',0):+.1f}% 24h)
+- SOL: ${_sol.get('usd',0):,.2f} ({_sol.get('usd_24h_change',0):+.1f}% 24h)
+- Fear & Greed: {_fng_val}/100 ({_fng_label})
+
+Open oracle calls:
+{_call_lines}{_wp_news_section}
+
+Rules:
+- 200-260 characters max
+- No hashtags
+- No emoji except possibly one at the end
+- Dry, precise, Druckenmiller-style — zero fluff
+- Comment on what the market is doing relative to open calls, or just give a sharp read of current conditions
+- If news context above is present, you may reference a specific catalyst — but only if it's notable
+- Do NOT mention posting the watchpost or that no signal fired
+- Do NOT say 'no new signal' or similar
+- Output only the post text, nothing else"""
+
+                _wp_resp = claude.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": _watchpost_prompt}],
+                )
+                _wp_text = _wp_resp.content[0].text.strip()
+                queue_post(_wp_text, post_type="watchpost", priority=3)
+                _wp_posted = process_queue(max_posts=1, force=True)
+                if _wp_posted:
+                    print(f"[Runner] Watchpost posted: {_wp_text[:80]}...")
+                else:
+                    print("[Runner] Watchpost queued but not posted.")
+            except Exception as _wpe:
+                print(f"[Runner] Watchpost failed: {_wpe}")
+
         # Auto-resolve expired oracle calls and post outcomes to X + Discord
         if _CALLS_ACTIVE:
             try:
@@ -943,6 +1013,15 @@ def mode_daily() -> None:
         macro_ctx = get_macro_context() if _MACRO_ACTIVE else ""
         macro_section = f"\n\nCross-Asset Macro:\n{macro_ctx}" if macro_ctx else ""
 
+        # Firecrawl pre-call news (#1)
+        fc_news_section = ""
+        try:
+            from octo_firecrawl import get_precall_news_multi
+            fc_news = get_precall_news_multi(list(snapshots.keys()), cache_hours=1.5)
+            fc_news_section = f"\n\n{fc_news}" if fc_news else ""
+        except Exception as _fce:
+            print(f"[Runner] Firecrawl news skipped: {_fce}")
+
         response = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=350,
@@ -963,7 +1042,8 @@ def mode_daily() -> None:
                     f"{despxa_context_str()}\n\n"
                     f"{hype_context_str()}\n\n"
                     f"{hip4_news_str()}\n\n"
-                    f"{build_call_context()}\n\n"
+                    f"{fc_news_section}"
+                    f"{build_open_calls_awareness()}\n\n"
                     f"{get_brain_context()}\n\n"
                     f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
@@ -1074,6 +1154,20 @@ def mode_deep_dive(ticker: str) -> None:
         headlines = get_top_headlines([ticker], max_per_symbol=5)
         ticker_headlines = headlines.get(ticker, [])
 
+        # Firecrawl deeper context: earnings for stocks, news for crypto
+        _dd_fc_section = ""
+        try:
+            from octo_firecrawl import get_earnings_context, get_precall_news
+            _crypto_tickers = {"BTC", "ETH", "SOL", "CRYPTO"}
+            if ticker.upper() in _crypto_tickers:
+                _dd_fc_section = get_precall_news(ticker.upper(), cache_hours=2.0)
+            else:
+                _dd_fc_section = get_earnings_context(ticker.upper(), cache_hours=6.0)
+            if _dd_fc_section:
+                print(f"[Runner] Deep dive Firecrawl context: {len(_dd_fc_section)} chars")
+        except Exception as _ddfe:
+            print(f"[Runner] Deep dive Firecrawl skip: {_ddfe}")
+
         raw_thread = generate_deep_dive_post(ticker)
         posts = [p.strip() for p in raw_thread.split("---") if p.strip()]
 
@@ -1081,8 +1175,9 @@ def mode_deep_dive(ticker: str) -> None:
             print("[Runner] No thread generated.")
             return
 
-        # News-aware opener
-        if ticker_headlines:
+        # News-aware opener (uses Firecrawl context if available, else headlines)
+        opener_context = _dd_fc_section[:800] if _dd_fc_section else "\n".join(f"- {h}" for h in ticker_headlines[:3])
+        if opener_context:
             opener_response = claude.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=150,
@@ -1091,8 +1186,8 @@ def mode_deep_dive(ticker: str) -> None:
                     "role": "user",
                     "content": (
                         f"Opening tweet for a deep dive thread on {ticker}.\n"
-                        "Recent headlines:\n" + "\n".join(f"- {h}" for h in ticker_headlines[:3]) +
-                        "\n\nOne tweet under 280 chars. Tease what the thread will reveal."
+                        f"Recent context:\n{opener_context}\n\n"
+                        "One tweet under 280 chars. Tease what the thread will reveal."
                     ),
                 }],
             )
@@ -1127,12 +1222,45 @@ WISDOM_PROMPTS = [
 ]
 
 
+def _find_youtube_link(artist: str, songs: list = None, show: dict = None) -> tuple[str, str]:
+    """
+    Search YouTube for the best link for a given artist/show.
+    Returns (youtube_url, one_line_context). Uses Firecrawl search (2 credits).
+    Falls back to a YouTube search URL if Firecrawl fails.
+    """
+    try:
+        from octo_firecrawl import search_web
+        song_hint = songs[0] if songs else ""
+        query = f"{artist} {song_hint} site:youtube.com".strip()
+        results = search_web(query, num_results=5, cache_hours=168.0)  # cache 1 week
+        for r in results:
+            url = r.get("url", "")
+            if "youtube.com/watch" in url:
+                title = r.get("title", "")
+                return url, title
+    except Exception as e:
+        print(f"[Soul] YouTube search failed: {e}")
+    # Fallback: YouTube search URL (no API needed)
+    import urllib.parse
+    q = urllib.parse.quote(f"{artist} {songs[0] if songs else 'music'}")
+    return f"https://www.youtube.com/results?search_query={q}", f"{artist} on YouTube"
+
+
 def mode_wisdom() -> None:
     try:
         prompt = random.choice(WISDOM_PROMPTS)
         headlines = get_top_headlines(["BTC", "NVDA", "SPY"], max_per_symbol=2)
         news_context = format_headlines_for_prompt(headlines)
         news_section = f"\n\nToday's headlines:\n{news_context}" if news_context else ""
+
+        # Firecrawl deeper market context (cache 2h, ~5 credits)
+        try:
+            from octo_firecrawl import get_precall_news_multi
+            _wisdom_news = get_precall_news_multi(["BTC", "SPY"], cache_hours=2.0)
+            if _wisdom_news and len(_wisdom_news) > 80:
+                news_section += f"\n\nDeeper market context:\n{_wisdom_news[:500]}"
+        except Exception as _wne:
+            pass
 
         response = claude.messages.create(
             model="claude-sonnet-4-6",
@@ -1257,10 +1385,41 @@ def mode_soul() -> None:
             except Exception as ie:
                 print(f"[Runner] Image attach failed: {ie}")
 
-        queue_post(post, post_type="soul", priority=5,
-                   metadata={"media_id": media_id, "artist": favorite.get("artist") if favorite else None})
+        cid = queue_post(post, post_type="soul", priority=5,
+                         metadata={"media_id": media_id, "artist": favorite.get("artist") if favorite else None})
         posted = process_queue(max_posts=1, force=True)
         print(f"[Runner] Soul post {'posted' if posted else 'queued'}:\n  {post}")
+
+        # Post YouTube reply if a music artist was referenced
+        if posted and favorite and cid:
+            try:
+                import time as _time
+                from octo_x_poster import _load_log, post_reply
+                _time.sleep(3)  # let the tweet settle
+                log = _load_log()
+                entry = log.get(cid, {})
+                tweet_url = entry.get("url", "")
+                tweet_id  = tweet_url.split("/")[-1] if tweet_url else ""
+
+                if tweet_id:
+                    artist = favorite.get("artist", "")
+                    songs  = favorite.get("songs", [])
+                    show   = favorite.get("best_show", {})
+                    yt_url, yt_title = _find_youtube_link(artist, songs, show)
+                    # Build reply: album/track, one-line context, link
+                    song_hint  = songs[0] if songs else ""
+                    venue_hint = show.get("venue", "") if show else ""
+                    reply_text = f"{artist}"
+                    if song_hint:
+                        reply_text += f" — {song_hint}"
+                    if venue_hint:
+                        reply_text += f"\n{show.get('date','')[:4]} · {venue_hint}" if show.get("date") else f"\n{venue_hint}"
+                    reply_text += f"\n{yt_url}"
+                    reply = post_reply(reply_text, tweet_id)
+                    print(f"[Runner] Music reply posted: {reply.get('url','')}")
+            except Exception as re:
+                print(f"[Runner] Music reply failed: {re}")
+
     except Exception as e:
         print(f"[Runner] mode_soul failed: {e}")
         discord_alert(f"soul mode failed: {e}")
@@ -1436,6 +1595,19 @@ def mode_moonshot() -> None:
 
         call_ctx = build_call_context() if _CALLS_ACTIVE else ""
 
+        # Earnings/analyst intel for stock tickers in moonshot predictions (#2)
+        earnings_section = ""
+        try:
+            from octo_firecrawl import get_earnings_context
+            for _tk in ("NVDA", "TSLA", "AAPL", "MSFT"):
+                if _tk.lower() in moonshot_ctx.lower():
+                    _ec = get_earnings_context(_tk, cache_hours=6.0)
+                    if _ec:
+                        earnings_section += f"\n\n{_ec}"
+                    break  # one ticker is enough
+        except Exception as _ece:
+            print(f"[Runner] Earnings context skipped: {_ece}")
+
         system = OCTO_SYSTEM + """
 
 You track 10 major technology predictions for 2026 from leading futurists.
@@ -1448,6 +1620,7 @@ Under 480 chars. No hashtags."""
         prompt = (
             f"{moonshot_ctx}\n\n"
             f"{call_ctx}\n\n"
+            f"{earnings_section}\n\n"
             "Pick the single most interesting prediction signal happening RIGHT NOW. "
             "What has changed? What data point or event confirms or challenges this prediction? "
             "Write one sharp oracle post for @octodamusai. Under 480 chars."
@@ -1466,6 +1639,41 @@ Under 480 chars. No hashtags."""
     except Exception as e:
         print(f"[Runner] mode_moonshot failed: {e}")
         discord_alert(f"moonshot mode failed: {e}")
+
+
+def mode_liquidation_radar() -> None:
+    """
+    Firecrawl-powered liquidation radar post.
+    Searches for current BTC/ETH liquidation data and writes a sharp oracle post.
+    """
+    print("\n[Runner] Liquidation radar scan...")
+    try:
+        from octo_firecrawl import get_liquidation_post_context
+        liq_ctx = get_liquidation_post_context(cache_hours=0.5)
+        if not liq_ctx:
+            print("[Runner] No liquidation data returned.")
+            return
+
+        call_ctx = build_call_context() if _CALLS_ACTIVE else ""
+
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": (
+                f"{liq_ctx}\n\n"
+                f"{call_ctx}\n\n"
+                "Write one sharp oracle post about the current liquidation picture. "
+                "Specific numbers. What it means for the next 24h. Under 280 chars. "
+                "No hashtags. Do NOT write Oracle call: -- this is market observation only."
+            )}],
+        )
+        post = response.content[0].text.strip()
+        queue_post(post, post_type="liquidation_radar", priority=3)
+        process_queue(max_posts=1, force=True)
+        print(f"[Runner] Liquidation radar posted:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_liquidation_radar failed: {e}")
 
 
 def mode_congress() -> None:
@@ -1545,6 +1753,18 @@ def mode_govcontracts() -> None:
 
         valid_tickers = {c["ticker"].upper() for c in data.get("contracts", [])}
 
+        # Firecrawl defense sector news for added context (cache 4h, ~5 credits)
+        _gov_news_section = ""
+        try:
+            from octo_firecrawl import search_web
+            _top_ticker = next(iter(valid_tickers), "")
+            _gov_query = f"US defense contracts Pentagon spending {_top_ticker} 2026" if _top_ticker else "US defense contracts Pentagon 2026"
+            _gov_results = search_web(_gov_query, num_results=3, cache_hours=4.0)
+            if _gov_results:
+                _gov_news_section = f"\n\nRecent defense/sector news:\n{_gov_results[:500]}"
+        except Exception as _govne:
+            pass
+
         from datetime import date
         import re as _re
         today = date.today().strftime("%B %d, %Y")
@@ -1553,9 +1773,9 @@ def mode_govcontracts() -> None:
             max_tokens=220,
             system=OCTO_SYSTEM,
             messages=[{"role": "user", "content": (
-                f"Today is {today}. Government contract intelligence for @octodamusai.\n{context}\n\n"
+                f"Today is {today}. Government contract intelligence for @octodamusai.\n{context}{_gov_news_section}\n\n"
                 "STRICT RULE: Only reference tickers, agencies, dollar amounts, and contract details "
-                "that appear verbatim in the data above. Do NOT invent details.\n\n"
+                "that appear verbatim in the contract data above. Do NOT invent details.\n\n"
                 "Voice: Octodamus -- oracle who reads defense spending as signal. Dry, precise.\n"
                 "The angle: big defense contracts precede stock moves and signal geopolitical direction. "
                 "Name the company ($TICKER), the amount, the agency, and the implication.\n"
@@ -1764,11 +1984,16 @@ def mode_morning_flow() -> None:
         try:
             explain_resp = claude.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=200,
+                max_tokens=350,
                 system=OCTO_SYSTEM,
                 messages=[{"role": "user", "content": explain_prompt}],
             )
             explanation = explain_resp.content[0].text.strip()
+            # Trim to last complete sentence if over 280 chars
+            if len(explanation) > 280:
+                trimmed = explanation[:280]
+                last_end = max(trimmed.rfind(". "), trimmed.rfind("! "), trimmed.rfind("? "))
+                explanation = trimmed[:last_end + 1].strip() if last_end > 100 else trimmed[:277].strip() + "..."
         except Exception as e:
             print(f"[Runner] Explanation generation failed: {e}")
             explanation = None
@@ -1804,6 +2029,26 @@ def mode_thread(topic: str = "") -> None:
 
         # Build live data context
         context_parts = []
+        try:
+            import requests as _r
+            _px = _r.get("https://api.coingecko.com/api/v3/simple/price",
+                         params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
+                         timeout=10).json()
+            _fng_v = 50
+            try:
+                _fng_v = int(_r.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()["data"][0]["value"])
+            except Exception:
+                pass
+            _fng_lbl = "Extreme Fear" if _fng_v < 25 else ("Fear" if _fng_v < 45 else ("Neutral" if _fng_v < 55 else ("Greed" if _fng_v < 75 else "Extreme Greed")))
+            context_parts.append(
+                f"Live prices:\n"
+                f"  BTC: ${_px.get('bitcoin',{}).get('usd',0):,.0f} ({_px.get('bitcoin',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  ETH: ${_px.get('ethereum',{}).get('usd',0):,.0f} ({_px.get('ethereum',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  SOL: ${_px.get('solana',{}).get('usd',0):,.2f} ({_px.get('solana',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  Fear & Greed: {_fng_v}/100 ({_fng_lbl})"
+            )
+        except Exception:
+            pass
         try:
             context_parts.append(build_call_context())
         except Exception:
@@ -1855,8 +2100,7 @@ def mode_thread(topic: str = "") -> None:
 
         response = claude.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            system=OCTO_SYSTEM,
+            max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
         )
 
@@ -1887,7 +2131,8 @@ if __name__ == "__main__":
             "monitor", "daily", "deep_dive", "wisdom",
             "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot",
             "mentions", "youtube", "format", "qrt", "morning_flow",
-            "strategy_monitor", "strategy_sunday", "thread",
+            "strategy_monitor", "strategy_sunday", "thread", "ceo_research",
+            "liquidation_radar",
         ],
         default="monitor",
     )
@@ -1957,3 +2202,18 @@ if __name__ == "__main__":
         # Use --ticker to pass a topic string, e.g.: --ticker "funding rates"
         topic = args.ticker if args.ticker != "NVDA" else ""
         mode_thread(topic)
+    elif args.mode == "liquidation_radar":
+        mode_liquidation_radar()
+    elif args.mode == "ceo_research":
+        from octo_ceo import run_ceo_research, get_ceo_brief
+        focus = args.ticker if args.ticker not in ("NVDA", "") else "general"
+        print(f"[Runner] CEO research: focus={focus}")
+        result = run_ceo_research(focus)
+        if "actions" in result:
+            print("[CEO] ACTIONS:")
+            for i, a in enumerate(result.get("actions", []), 1):
+                print(f"  {i}. {a}")
+            print(f"[CEO] INSIGHT: {result.get('competitive_insight', '')}")
+            print(f"[CEO] PHASE: {result.get('phase_assessment', '')}")
+        else:
+            print(f"[CEO] {result.get('raw', str(result))[:500]}")

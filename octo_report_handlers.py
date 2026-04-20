@@ -564,8 +564,9 @@ def handle_fear_greed(req: dict) -> dict:
     import octo_pulse
 
     raw = str(req.get("ticker", "") or "").strip().upper()
+    # fear_greed is a market-wide signal -- ticker is optional, default BTC
     if not raw or raw not in VALID_CRYPTO:
-        return {"reject": True, "error": f"Invalid or empty ticker: '{raw}'. Valid: {sorted(VALID_CRYPTO)}"}
+        raw = "BTC"
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         f_pulse = ex.submit(octo_pulse.run_pulse_scan)
@@ -772,11 +773,13 @@ def handle_congressional(req: dict) -> dict:
                 "period": "N/A",
             }
 
+        import octo_finnhub
         from concurrent.futures import ThreadPoolExecutor
         quiver = quiverquant.quiver(token)
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            f_df    = ex.submit(quiver.congress_trading, ticker)
-            f_pulse = ex.submit(octo_pulse.run_pulse_scan)
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_df      = ex.submit(quiver.congress_trading, ticker)
+            f_pulse   = ex.submit(octo_pulse.run_pulse_scan)
+            f_finnhub = ex.submit(octo_finnhub.get_finnhub_context, ticker)
             try:
                 df = f_df.result(timeout=30)
             except Exception:
@@ -785,6 +788,10 @@ def handle_congressional(req: dict) -> dict:
                 pulse = f_pulse.result(timeout=30) or {}
             except Exception:
                 pulse = {}
+            try:
+                finnhub_context = f_finnhub.result(timeout=15) or ""
+            except Exception:
+                finnhub_context = ""
 
         fng_val   = int((pulse.get("fear_greed") or {}).get("value", 50) or 50)
         fng_label = (pulse.get("fear_greed") or {}).get("label", "N/A") or "N/A"
@@ -838,19 +845,20 @@ def handle_congressional(req: dict) -> dict:
             call = "DIRECTION: RANGE"
 
         return {
-            "type":           "congressional",
-            "ticker":         ticker,
-            "title":          "CONGRESSIONAL TRADE REPORT",
-            "subtitle":       "OCTODAMUS CONGRESSIONAL TRADE ALERT",
-            "generated":      datetime.utcnow().strftime("%a, %b %d, %Y"),
-            "period":         period_label,
-            "trades":         trades,
-            "buys":           buys,
-            "sells":          sells,
-            "interpretation": interpretation,
-            "call":           call,
-            "fng_val":        fng_val,
-            "fng_label":      fng_label,
+            "type":             "congressional",
+            "ticker":           ticker,
+            "title":            "CONGRESSIONAL TRADE REPORT",
+            "subtitle":         "OCTODAMUS CONGRESSIONAL TRADE ALERT",
+            "generated":        datetime.utcnow().strftime("%a, %b %d, %Y"),
+            "period":           period_label,
+            "trades":           trades,
+            "buys":             buys,
+            "sells":            sells,
+            "interpretation":   interpretation,
+            "call":             call,
+            "fng_val":          fng_val,
+            "fng_label":        fng_label,
+            "finnhub_context":  finnhub_context,
         }
 
     except Exception as e:
@@ -1544,6 +1552,11 @@ def render_text(data: dict) -> str:
         else:
             L.append("  No recent trades found.")
         L.append(f"  Summary: {data.get('buys',0)} buys, {data.get('sells',0)} sells")
+
+        # ── FINNHUB INTELLIGENCE ─────────────────────────────────────
+        finnhub_ctx = data.get("finnhub_context", "")
+        if finnhub_ctx:
+            L += ["", finnhub_ctx]
 
         # ── ORACLE TAKE ──────────────────────────────────────────────
         commentary = _build_congressional_commentary(data)

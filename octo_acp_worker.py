@@ -53,6 +53,25 @@ log = logging.getLogger(__name__)
 
 # ── Job cache — type+ticker stored at new_job, recalled at funded ─────────────
 JOB_CACHE: dict = {}
+JOB_CACHE_FILE = Path(__file__).parent / "data" / "acp_job_cache.json"
+
+
+def _save_job_cache():
+    try:
+        JOB_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOB_CACHE_FILE.write_text(json.dumps(JOB_CACHE, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Job cache save failed: {e}")
+
+
+def _load_job_cache():
+    try:
+        if JOB_CACHE_FILE.exists():
+            data = json.loads(JOB_CACHE_FILE.read_text(encoding="utf-8"))
+            JOB_CACHE.update(data)
+            log.info(f"Loaded {len(data)} cached jobs from disk")
+    except Exception as e:
+        log.warning(f"Job cache load failed: {e}")
 
 
 # ── CLI wrapper ───────────────────────────────────────────────────────────────
@@ -161,6 +180,7 @@ def handle_new_job(event: dict):
         "requirements": reqs,
         "chain_id":     chain_id,
     }
+    _save_job_cache()
     log.info(f"Job #{job_id} -- type={report_type} ticker={ticker}")
 
     rc, out, err = _acp([
@@ -210,6 +230,7 @@ def handle_funded_job(event: dict):
         log.error(f"Job #{job_id} submit failed (rc={rc})")
 
     JOB_CACHE.pop(job_id, None)
+    _save_job_cache()
 
 
 # ── Event router ──────────────────────────────────────────────────────────────
@@ -266,6 +287,7 @@ def process_event(line: str):
                         "--amount",   str(ACP_PRICE_USDC),
                         "--chain-id", str(chain_id),
                     ])
+                    _save_job_cache()
                     if rc == 0:
                         log.info(f"Job #{job_id} budget set (from requirement msg) type={report_type} ticker={ticker}")
                     else:
@@ -306,8 +328,27 @@ def _stderr_reader(proc: subprocess.Popen, connected_event: threading.Event):
         pass
 
 
+def _kill_orphan_listeners():
+    """Kill any pre-existing `acp events listen` processes to prevent accumulation."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*acp*events*listen*' } | Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
+        )
+        pids = [p.strip() for p in result.stdout.strip().splitlines() if p.strip().isdigit()]
+        for pid in pids:
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+            log.info(f"Killed orphan listener PID {pid}")
+        if pids:
+            log.warning(f"Cleaned up {len(pids)} orphan listener process(es)")
+    except Exception as e:
+        log.warning(f"Orphan cleanup failed (non-fatal): {e}")
+
+
 def start_listener() -> subprocess.Popen:
     """Start `acp events listen --output <file>`, wait for 'connected' on stderr."""
+    _kill_orphan_listeners()
     EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Pre-create the file — the CLI only appends on events, never creates it
     if not EVENTS_FILE.exists():
@@ -348,6 +389,15 @@ def tail_events(proc: subprocess.Popen):
             if proc.poll() is not None:
                 log.error(f"Listener exited (rc={proc.returncode}) -- restarting in 5s")
                 time.sleep(5)
+                # Kill before respawning to prevent process accumulation
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                 proc = start_listener()
 
             line = f.readline()
@@ -355,6 +405,100 @@ def tail_events(proc: subprocess.Popen):
                 process_event(line)
             else:
                 time.sleep(0.5)
+
+
+# ── Startup replay — submit any funded-but-not-completed jobs ─────────────────
+
+def replay_funded_jobs():
+    """On startup, scan events file for funded jobs with no completion. Submit them."""
+    if not EVENTS_FILE.exists():
+        return
+
+    job_status: dict[str, str] = {}
+    job_reqs:   dict[str, dict] = {}
+    job_chain:  dict[str, int]  = {}
+
+    try:
+        lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        log.warning(f"Replay: could not read events file: {e}")
+        return
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+
+        job_id   = str(event.get("jobId") or "")
+        status   = event.get("status") or ""
+        entry    = event.get("entry") or {}
+        chain_id = int(event.get("chainId") or CHAIN_ID)
+
+        if job_id:
+            if status:
+                job_status[job_id] = status
+            job_chain.setdefault(job_id, chain_id)
+
+        # Collect requirements from message events
+        if entry.get("kind") == "message" and entry.get("contentType") == "requirement":
+            try:
+                reqs = json.loads(entry.get("content") or "{}")
+                if job_id and reqs:
+                    job_reqs[job_id] = reqs
+            except Exception:
+                pass
+
+        # Track completion
+        ev = entry.get("event") or {}
+        if ev.get("type") in ("job.completed", "job.rejected", "job.cancelled"):
+            if job_id:
+                job_status[job_id] = "completed"
+
+    # Find funded jobs with no completion
+    stuck = [jid for jid, st in job_status.items() if st == "funded"]
+    if not stuck:
+        log.info("Replay: no stuck funded jobs found")
+        return
+
+    log.info(f"Replay: found {len(stuck)} stuck funded jobs: {stuck}")
+    for job_id in stuck:
+        reqs        = job_reqs.get(job_id) or JOB_CACHE.get(job_id, {}).get("requirements") or {}
+        ticker      = str(reqs.get("ticker", "BTC")).upper() if reqs else "BTC"
+        report_type = _get_report_type({"requirements": reqs})
+        chain_id    = job_chain.get(job_id, CHAIN_ID)
+
+        # Update JOB_CACHE so handle_funded_job has context
+        JOB_CACHE[job_id] = {
+            "report_type":  report_type,
+            "ticker":       ticker,
+            "requirements": reqs,
+            "chain_id":     chain_id,
+        }
+
+        log.info(f"Replay: submitting job #{job_id} ticker={ticker} type={report_type}")
+        deliverable = _build_deliverable(report_type, ticker, reqs)
+        if not deliverable:
+            log.error(f"Replay: job #{job_id} no deliverable -- skipping")
+            JOB_CACHE.pop(job_id, None)
+            continue
+
+        rc, out, err = _acp([
+            "provider", "submit",
+            "--job-id",      job_id,
+            "--deliverable", deliverable,
+            "--chain-id",    str(chain_id),
+        ], timeout=90)
+        if rc == 0:
+            log.info(f"Replay: job #{job_id} submitted OK")
+        else:
+            log.error(f"Replay: job #{job_id} submit failed (rc={rc}) -- may have expired")
+        JOB_CACHE.pop(job_id, None)
+
+    _save_job_cache()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -378,7 +522,11 @@ def main():
         sys.exit(1)
     log.info(f"ACP CLI dir: {ACP_CLI_DIR}")
 
+    _load_job_cache()
+
     proc = start_listener()
+
+    replay_funded_jobs()
 
     try:
         tail_events(proc)
@@ -389,5 +537,46 @@ def main():
         log.info("Worker stopped.")
 
 
+_PID_FILE = Path(__file__).parent / "data" / "acp_worker.pid"
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True if a process with this PID is currently running."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command", f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue) -ne $null"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+def _acquire_pid_lock() -> bool:
+    """Write PID file. Returns False if another instance is already running."""
+    import os as _os
+    my_pid = _os.getpid()
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if _PID_FILE.exists():
+        try:
+            existing_pid = int(_PID_FILE.read_text().strip())
+            if existing_pid != my_pid and _pid_is_alive(existing_pid):
+                print(f"[ACP] Worker already running (PID {existing_pid}) -- exiting duplicate")
+                return False
+        except Exception:
+            pass
+    _PID_FILE.write_text(str(my_pid))
+    return True
+
+def _release_pid_lock():
+    try:
+        if _PID_FILE.exists():
+            _PID_FILE.unlink()
+    except Exception:
+        pass
+
 if __name__ == "__main__":
-    main()
+    if not _acquire_pid_lock():
+        sys.exit(0)
+    try:
+        main()
+    finally:
+        _release_pid_lock()

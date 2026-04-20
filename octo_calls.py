@@ -11,6 +11,7 @@ CLI:
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
@@ -18,6 +19,212 @@ from pathlib import Path
 from typing import Optional
 
 CALLS_FILE = Path(__file__).parent / "data" / "octo_calls.json"
+
+
+# ── Market snapshot (captured at call time AND resolution time) ───────────────
+
+def _fetch_market_snapshot(asset: str, price: float) -> dict:
+    """
+    Market context snapshot. Called at record time and again at resolution time.
+    Captures F&G, 24h change, macro signal, funding rate, and open interest.
+    All external calls wrapped in try/except — never blocks call recording.
+    """
+    import requests
+    snap = {"asset": asset.upper(), "price": price}
+
+    # Fear & Greed (free, no key)
+    try:
+        fng = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
+        snap["fear_greed"] = int(fng["data"][0]["value"])
+        snap["fear_greed_label"] = fng["data"][0]["value_classification"]
+    except Exception:
+        pass
+
+    # 24h price change (CoinGecko, free)
+    try:
+        cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
+        cg_id = cg_map.get(asset.upper())
+        if cg_id:
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": cg_id, "vs_currencies": "usd", "include_24hr_change": "true"},
+                timeout=6,
+            ).json()
+            snap["change_24h_pct"] = round(r.get(cg_id, {}).get("usd_24h_change", 0), 2)
+    except Exception:
+        pass
+
+    # Macro signal (uses 4h cache — no extra API cost)
+    try:
+        from octo_macro import get_macro_signal
+        macro = get_macro_signal()
+        snap["macro_signal"] = macro.get("signal", "NEUTRAL")
+        snap["macro_score"] = macro.get("score", 0)
+    except Exception:
+        pass
+
+    # Funding rate + open interest (CoinGlass — requires key, graceful skip)
+    if asset.upper() in ("BTC", "ETH", "SOL"):
+        try:
+            import octo_coinglass as glass
+            fr = glass.funding_rate_exchange(asset.upper())
+            rates = [ex.get("funding_rate", 0) or 0 for ex in fr.get("data", []) if ex.get("funding_rate") is not None]
+            if rates:
+                snap["funding_rate_pct"] = round(sum(rates) / len(rates) * 100, 4)
+        except Exception:
+            pass
+        try:
+            import octo_coinglass as glass
+            oi = glass.open_interest(asset.upper(), interval="4h")
+            rows = oi.get("data", {}).get("list", [])
+            if rows:
+                snap["open_interest_usd"] = rows[-1].get("openInterest", None)
+        except Exception:
+            pass
+
+    snap["captured_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return snap
+
+
+def _fng_bucket(fng: int) -> str:
+    """Bucket F&G index into a label for pattern matching."""
+    if fng < 25:   return "extreme_fear"
+    if fng < 45:   return "fear"
+    if fng < 55:   return "neutral"
+    if fng < 75:   return "greed"
+    return "extreme_greed"
+
+
+def _get_pattern_context(asset: str, direction: str, snap: dict) -> str:
+    """
+    Scan resolved oracle call history for setups similar to the current snapshot.
+    Returns a plain-English pattern summary to inject into the post-mortem prompt.
+    Similarity: same asset + direction + F&G bucket + macro signal.
+    """
+    calls = _load()
+    resolved = [
+        c for c in calls
+        if c.get("resolved") and c.get("call_type", "oracle") == "oracle"
+        and c.get("asset") == asset.upper()
+        and c.get("direction") == direction.upper()
+    ]
+    if not resolved:
+        return ""
+
+    current_fng = snap.get("fear_greed")
+    current_macro = snap.get("macro_signal", "")
+    current_bucket = _fng_bucket(current_fng) if current_fng is not None else None
+
+    lines = []
+
+    # Pattern 1: same asset/direction overall
+    wins = sum(1 for c in resolved if c.get("outcome") == "WIN")
+    lines.append(f"{asset.upper()} {direction.upper()} calls overall: {wins}W/{len(resolved)-wins}L from {len(resolved)} resolved")
+
+    # Pattern 2: same F&G bucket
+    if current_bucket:
+        bucket_calls = [c for c in resolved if _fng_bucket(c.get("market_snapshot", {}).get("fear_greed", 50)) == current_bucket]
+        if bucket_calls:
+            bw = sum(1 for c in bucket_calls if c.get("outcome") == "WIN")
+            lines.append(f"  When F&G was '{current_bucket.replace('_',' ')}': {bw}W/{len(bucket_calls)-bw}L")
+
+    # Pattern 3: same macro signal
+    if current_macro:
+        macro_calls = [c for c in resolved if c.get("market_snapshot", {}).get("macro_signal") == current_macro]
+        if macro_calls:
+            mw = sum(1 for c in macro_calls if c.get("outcome") == "WIN")
+            lines.append(f"  When macro was '{current_macro}': {mw}W/{len(macro_calls)-mw}L")
+
+    # Pattern 4: F&G bucket + macro combined (tightest signal)
+    if current_bucket and current_macro:
+        combo = [
+            c for c in resolved
+            if _fng_bucket(c.get("market_snapshot", {}).get("fear_greed", 50)) == current_bucket
+            and c.get("market_snapshot", {}).get("macro_signal") == current_macro
+        ]
+        if combo:
+            cw = sum(1 for c in combo if c.get("outcome") == "WIN")
+            lines.append(f"  Combined (F&G '{current_bucket.replace('_',' ')}' + macro '{current_macro}'): {cw}W/{len(combo)-cw}L")
+
+    return "\n".join(lines) if lines else ""
+
+
+# ── Post-mortem (generated on resolution) ────────────────────────────────────
+
+def _generate_post_mortem(call: dict) -> str:
+    """
+    Haiku analysis on a resolved call using call-time snapshot, resolution-time
+    snapshot, and historical pattern context. Returns 2-3 sentence post-mortem.
+    """
+    try:
+        import anthropic
+        secrets_path = Path(__file__).parent / ".octo_secrets"
+        raw = json.loads(secrets_path.read_text(encoding="utf-8"))
+        api_key = raw.get("secrets", raw).get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+        if not api_key:
+            return ""
+
+        def _snap_line(snap: dict, label: str) -> str:
+            parts = [f"{label}:"]
+            if "fear_greed" in snap:
+                parts.append(f"F&G={snap['fear_greed']} ({snap.get('fear_greed_label','')})")
+            if "macro_signal" in snap:
+                parts.append(f"macro={snap['macro_signal']} (score={snap.get('macro_score',0)})")
+            if "funding_rate_pct" in snap:
+                parts.append(f"funding={snap['funding_rate_pct']}%")
+            if "open_interest_usd" in snap:
+                oi = snap["open_interest_usd"]
+                parts.append(f"OI=${oi/1e9:.2f}B" if oi and oi > 1e9 else f"OI=${oi:,.0f}")
+            if "change_24h_pct" in snap:
+                parts.append(f"24h_chg={snap['change_24h_pct']}%")
+            return " | ".join(parts)
+
+        call_snap  = call.get("market_snapshot", {})
+        res_snap   = call.get("resolution_snapshot", {})
+        pattern    = _get_pattern_context(call["asset"], call["direction"], call_snap)
+
+        is_pm = call.get("call_type") == "polymarket"
+        if is_pm:
+            sections = [
+                f"Prediction: {call.get('note', call['asset'])}",
+                f"Side: {call.get('pm_side','?')} at {call['entry_price']}% implied probability",
+                f"Outcome: {call['outcome']} (market resolved {call.get('resolution_snapshot',{}).get('resolution','?') or ('YES' if call.get('exit_price',0) == 100 else 'NO')})",
+            ]
+            if call.get("note"):
+                sections.append(f"Question: {call['note'][:200]}")
+        else:
+            sections = [
+                f"Oracle call: {call['asset']} {call['direction']} "
+                f"from ${call['entry_price']:,.2f} target ${call.get('target_price','?')} "
+                f"({call.get('timeframe','?')})",
+                f"Outcome: {call['outcome']} | Exit: ${call.get('exit_price','?'):,.2f}",
+                _snap_line(call_snap, "At call"),
+            ]
+            if res_snap:
+                sections.append(_snap_line(res_snap, "At resolution"))
+            if pattern:
+                sections.append(f"Historical pattern:\n{pattern}")
+            if call.get("note"):
+                sections.append(f"Call note: {call['note'][:150]}")
+
+        sections.append(
+            "\nIn 2-3 sentences: what was the key factor in this outcome? "
+            + ("What did the market price in correctly or incorrectly? What would improve the next similar call? " if is_pm else
+               "Reference specific signals (funding, macro, F&G, OI) and whether conditions changed between call and resolution. "
+               "If pattern history is provided, note whether this outcome was consistent with it. ")
+            + "No hedging. No generic observations. Start with the specific prediction topic."
+        )
+
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": "\n".join(sections)}],
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        print(f"[OctoCalls] Post-mortem failed: {e}")
+        return ""
 
 
 # ── Load / Save ───────────────────────────────────────────────────────────────
@@ -47,6 +254,7 @@ def record_call(
     signals: Optional[dict] = None,   # #10 — signal breakdown for calibration
     edge_score: float = 0.0,          # #3 — (bulls - bears) / total_signals
     time_quality: str = "",           # #2 — "peak" | "offhours" | "weekend"
+    market_snapshot: Optional[dict] = None,  # auto-fetched if not provided
 ) -> dict:
     calls = _load()
 
@@ -55,6 +263,13 @@ def record_call(
         if not c["resolved"] and c["asset"] == asset.upper():
             print(f"[OctoCalls] Skipped — already have open call on {asset.upper()} (#{c['id']})")
             return c
+
+    # Auto-fetch market snapshot if not supplied
+    if market_snapshot is None:
+        try:
+            market_snapshot = _fetch_market_snapshot(asset, entry_price)
+        except Exception:
+            market_snapshot = {"price": entry_price}
 
     call = {
         "id":                     len(calls) + 1,
@@ -73,9 +288,11 @@ def record_call(
         "resolved_at":            None,
         "resolution_price_source": "CoinGecko spot" if asset.upper() in ("BTC","ETH","SOL") else "yfinance",
         # Intelligence enrichment fields
-        "signals":     signals or {},
-        "edge_score":  round(edge_score, 3),
-        "time_quality": time_quality,
+        "signals":          signals or {},
+        "edge_score":       round(edge_score, 3),
+        "time_quality":     time_quality,
+        "market_snapshot":  market_snapshot,
+        "post_mortem":      None,  # filled in by autoresolve()
     }
     calls.append(call)
     _save(calls)
@@ -94,8 +311,7 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
             c["resolved_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             d = c["direction"]
             entry = c["entry_price"]
-            # WIN requires ≥1% move in called direction — not just any tick.
-            # This is the institutional standard for track record credibility.
+            # WIN requires >=1% move in called direction.
             min_move = entry * 0.01
             if d == "UP":
                 c["outcome"] = "WIN" if exit_price >= entry + min_move else "LOSS"
@@ -104,6 +320,11 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
             else:
                 c["outcome"] = "PUSH"
             c["won"] = (c["outcome"] == "WIN")
+            # Capture market conditions at resolution time for cross-referencing
+            try:
+                c["resolution_snapshot"] = _fetch_market_snapshot(c["asset"], exit_price)
+            except Exception:
+                pass
             _save(calls)
             print(f"[OctoCalls] #{call_id} resolved: {c['outcome']} (${c['entry_price']:,.2f} -> ${exit_price:,.2f})")
             return c
@@ -118,8 +339,11 @@ def _fetch_price(asset: str) -> Optional[float]:
     try:
         import requests
         asset = asset.upper()
-        # Crypto via CoinGecko
-        cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
+        CRYPTO = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
+        cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+                  "BNB": "binancecoin", "XRP": "ripple", "DOGE": "dogecoin",
+                  "AVAX": "avalanche-2", "LINK": "chainlink", "UNI": "uniswap"}
+        # Crypto: CoinGecko first
         if asset in cg_map:
             r = requests.get(
                 "https://api.coingecko.com/api/v3/simple/price",
@@ -127,16 +351,23 @@ def _fetch_price(asset: str) -> Optional[float]:
                 timeout=8
             )
             if r.status_code == 200:
-                return r.json().get(cg_map[asset], {}).get("usd")
-        # Stocks via yfinance
-        try:
+                price = r.json().get(cg_map[asset], {}).get("usd")
+                if price and float(price) > 1:   # sanity: ETH/BTC should never be <$1
+                    return float(price)
+        # Crypto fallback: yfinance with -USD suffix
+        if asset in CRYPTO:
+            import yfinance as yf
+            t = yf.Ticker(f"{asset}-USD")
+            price = t.fast_info.get("lastPrice") or t.info.get("regularMarketPrice")
+            if price:
+                return float(price)
+        # Stocks via yfinance (bare ticker)
+        if asset not in CRYPTO:
             import yfinance as yf
             t = yf.Ticker(asset)
             price = t.fast_info.get("lastPrice") or t.info.get("regularMarketPrice")
             if price:
                 return float(price)
-        except Exception:
-            pass
     except Exception as e:
         print(f"[OctoCalls] Price fetch failed for {asset}: {e}")
     return None
@@ -200,6 +431,18 @@ def autoresolve() -> list:
             continue
         result = resolve_call(c["id"], price)
         if result:
+            # Generate post-mortem and save it back into the call record
+            print(f"[OctoCalls] Generating post-mortem for #{result['id']} ({result['outcome']})...")
+            pm = _generate_post_mortem(result)
+            if pm:
+                all_calls = _load()
+                for call in all_calls:
+                    if call["id"] == result["id"]:
+                        call["post_mortem"] = pm
+                        result["post_mortem"] = pm
+                        break
+                _save(all_calls)
+                print(f"[OctoCalls] Post-mortem: {pm[:100]}")
             resolved.append(result)
     return resolved
 
@@ -415,6 +658,49 @@ def build_call_context() -> str:
         lines.append(cal_str)
         lines.append("Prefer directions where the highest-accuracy signals agree.")
 
+    # Post-mortem learning: inject recent loss and win patterns
+    calls = _load()
+    oracle_resolved = [
+        c for c in calls
+        if c.get("call_type", "oracle") == "oracle"
+        and c.get("resolved")
+        and c.get("post_mortem")
+    ]
+    recent_losses = [c for c in reversed(oracle_resolved) if c.get("outcome") == "LOSS"][:3]
+    recent_wins   = [c for c in reversed(oracle_resolved) if c.get("outcome") == "WIN"][:1]
+
+    if recent_losses:
+        lines.append("")
+        lines.append("RECENT LOSS PATTERNS (learn from these — do not repeat):")
+        for c in recent_losses:
+            snap = c.get("market_snapshot", {})
+            fng = snap.get("fear_greed", "?")
+            chg = snap.get("change_24h_pct", "?")
+            lines.append(
+                f"  #{c['id']} {c['asset']} {c['direction']} "
+                f"(F&G={fng}, 24h={chg}%): {c['post_mortem']}"
+            )
+
+    if recent_wins:
+        c = recent_wins[0]
+        if c.get("post_mortem"):
+            lines.append("")
+            lines.append(f"RECENT WIN PATTERN: #{c['id']} {c['asset']} {c['direction']}: {c['post_mortem']}")
+
+    return "\n".join(lines)
+
+
+def build_open_calls_awareness() -> str:
+    """Lightweight context for mode_daily: shows open calls so the model knows
+    what's already on record, WITHOUT the call rules or 'MUST make a call' pressure."""
+    s = get_stats()
+    if not s["open_calls"]:
+        return ""
+    lines = ["-- OPEN ORACLE CALLS (awareness only) --"]
+    lines.append("These calls are already on record. Do NOT make new directional calls on these assets:")
+    for c in s["open_calls"]:
+        t = f" -> ${c['target_price']:,.0f}" if c.get("target_price") else ""
+        lines.append(f"  #{c['id']} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f}{t} [{c['timeframe']}]")
     return "\n".join(lines)
 
 

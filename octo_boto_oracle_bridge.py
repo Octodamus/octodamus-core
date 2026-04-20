@@ -155,6 +155,21 @@ def on_position_closed(closed: dict, balance: float) -> Optional[dict]:
         result = resolve_call(call_id, exit_price)
         if result:
             log.info(f"[Bridge] Oracle call #{call_id} resolved: {result['outcome']}")
+            # Generate post-mortem so Octodamus learns from every Polymarket call
+            try:
+                from octo_calls import _generate_post_mortem, _load, _save
+                pm = _generate_post_mortem(result)
+                if pm:
+                    all_calls = _load()
+                    for c in all_calls:
+                        if c["id"] == call_id:
+                            c["post_mortem"] = pm
+                            result["post_mortem"] = pm
+                            break
+                    _save(all_calls)
+                    log.info(f"[Bridge] Post-mortem saved for #{call_id}: {pm[:100]}")
+            except Exception as e:
+                log.warning(f"[Bridge] Post-mortem failed: {e}")
             # Clean up map
             id_map.pop(market_id, None)
             _save_map(id_map)

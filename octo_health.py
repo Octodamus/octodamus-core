@@ -11,10 +11,12 @@ Usage:
 """
 
 import json
+import smtplib
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import httpx
@@ -73,6 +75,35 @@ def _warn(msg):
 def _fail(msg):
   _failed.append(msg)
   print(f" [FAIL] {msg}")
+
+
+# ── Email ─────────────────────────────────────────────────────────────────────
+
+def _get_gmail_creds() -> tuple[str, str]:
+  try:
+    raw = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
+    data = raw.get("secrets", raw)
+    return data.get("GMAIL_USER", ""), data.get("GMAIL_APP_PASSWORD", "")
+  except Exception:
+    return "", ""
+
+def send_email_alert(subject: str, body: str):
+  user, pw = _get_gmail_creds()
+  if not user or not pw:
+    print(" [WARN] Email not sent — GMAIL_USER/GMAIL_APP_PASSWORD missing")
+    return
+  try:
+    msg = MIMEText(body, "plain")
+    msg["Subject"] = subject
+    msg["From"]    = user
+    msg["To"]      = user
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as s:
+      s.starttls()
+      s.login(user, pw)
+      s.send_message(msg)
+    print(f" [OK ] Alert email sent to {user}")
+  except Exception as e:
+    print(f" [WARN] Email send failed: {e}")
 
 
 # ── Discord ───────────────────────────────────────────────────────────────────
@@ -299,6 +330,60 @@ def _check_post_queue():
     _warn(f"Post queue read error: {e}")
 
 
+def _check_acp_stuck_jobs():
+  """Warn if any ACP jobs have been funded >30min without completion."""
+  events_file = PROJECT_DIR / "data" / "acp_events.jsonl"
+  if not events_file.exists():
+    return
+  try:
+    lines = events_file.read_text(encoding="utf-8").splitlines()
+    job_status: dict[str, str] = {}
+    job_funded_ts: dict[str, float] = {}
+    job_ticker: dict[str, str] = {}
+    for line in lines:
+      if not line.strip():
+        continue
+      try:
+        e = json.loads(line)
+      except Exception:
+        continue
+      job_id = str(e.get("jobId") or "")
+      status = e.get("status") or ""
+      entry  = e.get("entry") or {}
+      ev     = entry.get("event") or {}
+      if job_id and status:
+        job_status[job_id] = status
+      if ev.get("type") == "job.funded":
+        ts = entry.get("timestamp", 0)
+        if ts:
+          job_funded_ts[job_id] = ts / 1000
+      if ev.get("type") in ("job.completed", "job.rejected", "job.cancelled"):
+        if job_id:
+          job_status[job_id] = "completed"
+      if entry.get("kind") == "message" and entry.get("contentType") == "requirement":
+        try:
+          reqs = json.loads(entry.get("content") or "{}")
+          if job_id and reqs.get("ticker"):
+            job_ticker[job_id] = reqs["ticker"]
+        except Exception:
+          pass
+
+    now = datetime.now(timezone.utc).timestamp()
+    stuck = []
+    for jid, st in job_status.items():
+      if st == "funded" and jid in job_funded_ts:
+        age_min = (now - job_funded_ts[jid]) / 60
+        if 30 < age_min < 240:  # >30min = stuck, >240min = expired by network, ignore
+          ticker = job_ticker.get(jid, "?")
+          stuck.append(f"Job #{jid} ({ticker}) funded {age_min:.0f}min ago")
+    if stuck:
+      _warn(f"ACP stuck funded jobs ({len(stuck)}): {'; '.join(stuck)}")
+    else:
+      _ok("ACP no stuck jobs")
+  except Exception as e:
+    _warn(f"ACP stuck job check error: {e}")
+
+
 def _check_scheduled_tasks():
   try:
     result = subprocess.run(
@@ -343,6 +428,7 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
     if auto_restart:
       _restart_octoboto()
 
+  _check_acp_stuck_jobs()
   _check_api_endpoints()
   _check_secrets_cache()
   _check_post_queue()
@@ -355,23 +441,36 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   webhook = _get_webhook()
 
   if _failed:
-    msg = (
+    failures = "\n".join(f"  - {f}" for f in _failed)
+    warnings = ("\nWarnings:\n" + "\n".join(f"  - {w}" for w in _warned)) if _warned else ""
+    discord_msg = (
       f"⚠️ **Octodamus Health — {context.upper()} {ts}**\n"
       f"❌ {len(_failed)} failure(s):\n"
       + "\n".join(f" • {f}" for f in _failed)
     )
     if _warned:
-      msg += "\n⚠️ Warnings:\n" + "\n".join(f" • {w}" for w in _warned)
-    _discord(webhook, msg)
+      discord_msg += "\n⚠️ Warnings:\n" + "\n".join(f" • {w}" for w in _warned)
+    _discord(webhook, discord_msg)
+    send_email_alert(
+      subject=f"[Octodamus ALERT] {len(_failed)} failure(s) — {context.upper()} {ts}",
+      body=f"Octodamus Health Check — {context.upper()}\n{ts}\n\nFAILURES:\n{failures}{warnings}\n\nCheck logs: C:\\Users\\walli\\octodamus\\logs\\"
+    )
     return 1
 
   if _warned:
-    msg = (
+    discord_msg = (
       f"✅ **Octodamus Health — {context.upper()} {ts}**\n"
       f"All critical systems OK — {len(_warned)} warning(s):\n"
       + "\n".join(f" • {w}" for w in _warned)
     )
-    _discord(webhook, msg)
+    _discord(webhook, discord_msg)
+    # Only email warnings if they mention ACP (high priority)
+    acp_warns = [w for w in _warned if "acp" in w.lower() or "stuck" in w.lower()]
+    if acp_warns:
+      send_email_alert(
+        subject=f"[Octodamus WARNING] ACP issue — {ts}",
+        body=f"Octodamus Health Check — {context.upper()}\n{ts}\n\nACP WARNINGS:\n" + "\n".join(f"  - {w}" for w in acp_warns)
+      )
     return 0
 
   _discord(webhook, f"✅ **Octodamus Health — {context.upper()} {ts}**\nAll {len(_passed)} systems healthy. ")

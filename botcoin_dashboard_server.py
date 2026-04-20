@@ -268,6 +268,44 @@ def get_recent_transfers(wallet: str) -> list[dict]:
     return sorted(deduped, key=lambda x: x["ts"], reverse=True)[:10]
 
 
+def get_total_mined_botcoin(wallet: str) -> float:
+    """Sum all BOTCOIN ever received by wallet (epoch rewards). Paginates through all pages."""
+    total = 0.0
+    wallet_lower = wallet.lower()
+    next_page_params = None
+    try:
+        while True:
+            params = {"type": "ERC-20", "filter": "to"}
+            if next_page_params:
+                params.update(next_page_params)
+            r = requests.get(
+                f"{BLOCKSCOUT}/addresses/{wallet}/token-transfers",
+                params=params,
+                timeout=10,
+            )
+            if not r.ok:
+                break
+            data = r.json()
+            for t in data.get("items", []):
+                tok = t.get("token", {})
+                tok_addr = tok.get("address", "").lower()
+                tok_sym  = tok.get("symbol", "")
+                if tok_addr and tok_addr != BOTCOIN_ADDR.lower():
+                    continue
+                if not tok_addr and tok_sym != "BOTCOIN":
+                    continue
+                to_addr = t.get("to", {}).get("hash", "").lower()
+                if to_addr == wallet_lower:
+                    amount = int(t.get("total", {}).get("value", "0")) / (10 ** DECIMALS)
+                    total += amount
+            next_page_params = data.get("next_page_params")
+            if not next_page_params:
+                break
+    except Exception:
+        pass
+    return total
+
+
 # ── Aggregate dashboard data ──────────────────────────────────────────────────
 
 def fetch_dashboard_data() -> dict:
@@ -281,10 +319,11 @@ def fetch_dashboard_data() -> dict:
     transfers = get_recent_transfers(WALLET)
     price_data = get_botcoin_price()
 
-    bc_wallet = get_erc20_balance(BOTCOIN_ADDR, WALLET)
-    staked    = get_staked(WALLET)
-    eth_bal   = get_eth_balance(WALLET)
-    wa_ts     = get_withdrawable_ts(WALLET)
+    bc_wallet    = get_erc20_balance(BOTCOIN_ADDR, WALLET)
+    staked       = get_staked(WALLET)
+    eth_bal      = get_eth_balance(WALLET)
+    wa_ts        = get_withdrawable_ts(WALLET)
+    total_mined  = get_total_mined_botcoin(WALLET)
 
     # Pull credits from history for current epoch if rate-limited
     new_epoch = True  # assume new until we find history for it
@@ -360,10 +399,10 @@ def fetch_dashboard_data() -> dict:
     total_cost_tokens    = sum(r["cost_tokens"]  for r in history)
     total_cost_estimated = any(r["cost_estimated"] for r in history)
 
-    # USD value of holdings
+    # USD value — based on total ever mined
     price_usd = price_data.get("price_usd", 0.0)
     total_botcoin = bc_wallet + staked
-    total_value_usd = total_botcoin * price_usd
+    total_value_usd = total_mined * price_usd
 
     data = {
         "fetched_at":   datetime.now(timezone.utc).isoformat(),
@@ -372,6 +411,7 @@ def fetch_dashboard_data() -> dict:
             "botcoin_wallet": bc_wallet,
             "botcoin_staked": staked,
             "botcoin_total":  bc_wallet + staked,
+            "botcoin_mined":  total_mined,
             "eth":            eth_bal,
         },
         "unstake": {
@@ -770,34 +810,47 @@ function render(d) {
   const shareW = Math.min(100, cr.share_pct * 20); // scaled for visibility
 
   // History rows
+  const BOTCOIN_PER_CREDIT = 2.39; // real rate: 66,979 BOTCOIN claimed from epoch 52 / 28,080 credits
   const histRows = (d.history || []).map(row => {
-    const est = row.cost_estimated;
-    const tokStr  = row.cost_tokens > 0 ? (est ? '~' : '') + fmtFull(row.cost_tokens) : '—';
-    const costStr = row.cost_usd    > 0 ? (est ? '~$' : '$') + row.cost_usd.toFixed(3) : '—';
+    const est      = row.cost_estimated;
+    const tokStr   = row.cost_tokens > 0 ? (est ? '~' : '') + fmtFull(row.cost_tokens) : '—';
+    const costStr  = row.cost_usd    > 0 ? (est ? '~$' : '$') + row.cost_usd.toFixed(2) : '—';
+    const passRate = row.solves > 0 ? Math.round(row.passes / row.solves * 100) + '%' : '—';
+    const botcoinEarned = row.credits * BOTCOIN_PER_CREDIT;
+    const price    = d.price && d.price.price_usd > 0 ? d.price.price_usd : 0;
+    const earnedUsd = price > 0 ? botcoinEarned * price : 0;
+    const roi      = row.cost_usd > 0 && earnedUsd > 0 ? (earnedUsd / row.cost_usd).toFixed(1) + 'x' : '—';
+    const roiColor = roi !== '—' ? (parseFloat(roi) >= 5 ? 'var(--green)' : 'var(--yellow)') : 'var(--muted)';
     return `<tr>
       <td>#${row.epoch}</td>
       <td><span class="badge ${row.version === 'V3' ? 'badge-purple' : 'badge-yellow'}">${row.version}</span></td>
       <td class="num-right">${fmtFull(row.solves)}</td>
       <td class="num-right">${row.passes ? fmtFull(row.passes) : '—'}</td>
+      <td class="num-right muted">${passRate}</td>
       <td class="num-right green">${fmtFull(row.credits)}</td>
-      <td class="num-right muted">${row.solves ? Math.round(row.credits/row.solves) : '—'}</td>
       <td class="num-right muted">${tokStr}</td>
       <td class="num-right" style="color:var(--yellow)">${costStr}</td>
+      <td class="num-right" style="color:${roiColor}">${roi}</td>
     </tr>`;
   }).join('');
 
   const totals = d.history_totals || {};
   const totEstPfx = totals.cost_estimated ? '~' : '';
   const totalTokens = totals.cost_tokens || 0;
+  const totalBotcoin = (totals.credits || 0) * BOTCOIN_PER_CREDIT;
+  const totalPrice = d.price && d.price.price_usd > 0 ? d.price.price_usd : 0;
+  const totalEarnedUsd = totalPrice > 0 ? totalBotcoin * totalPrice : 0;
+  const totalRoi = totals.cost_usd > 0 && totalEarnedUsd > 0 ? (totalEarnedUsd / totals.cost_usd).toFixed(1) + 'x' : '—';
   const histTotalRow = `
     <tr class="total-row">
       <td colspan="2" style="font-size:11px;letter-spacing:1px">ALL EPOCHS</td>
       <td class="num-right">${fmtFull(totals.solves || 0)}</td>
       <td class="num-right">—</td>
-      <td class="num-right" style="color:var(--green);font-size:14px">${fmtFull(totals.credits || 0)}</td>
       <td class="num-right">—</td>
+      <td class="num-right" style="color:var(--green);font-size:14px">${fmtFull(totals.credits || 0)}</td>
       <td class="num-right">${totalTokens > 0 ? totEstPfx + fmtFull(totalTokens) : '—'}</td>
-      <td class="num-right" style="color:var(--red);font-size:14px">${totals.cost_usd > 0 ? totEstPfx + '$'+totals.cost_usd.toFixed(3) : '—'}</td>
+      <td class="num-right" style="color:var(--red);font-size:14px">${totals.cost_usd > 0 ? totEstPfx + '$'+totals.cost_usd.toFixed(2) : '—'}</td>
+      <td class="num-right" style="color:var(--green);font-size:14px">${totalRoi}</td>
     </tr>
   `;
 
@@ -838,13 +891,13 @@ function render(d) {
         <div class="card-sub">Available / Rewards</div>
       </div>
       <div class="card card-cyan">
-        <div class="card-title">BOTCOIN Total</div>
+        <div class="card-title">BOTCOIN Owned</div>
         <div class="card-value">${fmt(b.botcoin_total)}</div>
-        <div class="card-sub">Staked + Wallet</div>
+        <div class="card-sub">Staked: ${fmt(b.botcoin_staked)} &nbsp;|&nbsp; Wallet: ${fmt(b.botcoin_wallet)}</div>
       </div>
       <div class="card card-yellow">
-        <div class="card-title">USD Value</div>
-        <div class="card-value" style="font-size:18px">${d.price && d.price.total_value_usd > 0 ? '$'+d.price.total_value_usd.toFixed(2) : '—'}</div>
+        <div class="card-title">USD Value (Owned)</div>
+        <div class="card-value" style="font-size:18px">${d.price && d.price.price_usd > 0 ? '$'+(b.botcoin_total * d.price.price_usd).toFixed(2) : '—'}</div>
         <div class="card-sub">${d.price && d.price.price_usd > 0 ? '$'+d.price.price_usd.toFixed(8)+' / BOTCOIN' : 'Price unavailable'}</div>
       </div>
       <div class="card">
@@ -914,10 +967,11 @@ function render(d) {
             <th>Version</th>
             <th class="num-right">Solves</th>
             <th class="num-right">Passes</th>
+            <th class="num-right">Pass %</th>
             <th class="num-right">Credits</th>
-            <th class="num-right">Credits/Solve</th>
-            <th class="num-right">Tokens</th>
+            <th class="num-right">API Tokens</th>
             <th class="num-right">Cost ($)</th>
+            <th class="num-right">ROI</th>
           </tr>
         </thead>
         <tbody>

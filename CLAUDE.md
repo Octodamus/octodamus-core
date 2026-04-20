@@ -45,4 +45,6 @@ Omit any calculation you're unsure about rather than guess.
 - `.claude/rules/signals.md`      — aviation volume + calibration signal details
 - `.claude/rules/distro.md`       — Octo Distro Media: 10 free tools, subscriber capture, MCP sales engine
 - `.claude/rules/future.md`       — $OCTO token, roadmap notes
+- `.claude/rules/polymarket_v2.md` — V2 migration checklist (due April 22), V2_READY flag
+- `.claude/rules/saas_growth.md`  — OctoData SaaS tiers, 6 acquisition playbooks, launch sequence
 - `octodamus-site/CLAUDE.md`      — site-specific deploy rules

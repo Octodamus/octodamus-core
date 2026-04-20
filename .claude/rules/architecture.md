@@ -1,17 +1,34 @@
 # Architecture — Octodamus
 
 ## Voice & Identity
-- `octo_personality.py` — single source of truth for Octodamus voice
+- `octo_personality.py` — single source of truth for Octodamus voice AND oracle knowledge
 - Change voice/identity here only; propagates to runner, format engine, Telegram, MCP
 - Character anchors: McGuane, Druckenmiller, Livermore, Taleb, Tool
 
-## Scheduled Tasks (22 total in Windows Task Scheduler)
+## Auto-Update Rule (CRITICAL)
+When adding new oracle knowledge, capabilities, or market frameworks:
+1. Add a named constant to `octo_personality.py` (e.g., `BTC_CYCLE_KNOWLEDGE`, `OCTOBOTO_CONTEXT`)
+2. Reference it in `build_telegram_system_prompt()` — it auto-propagates to the Telegram bot
+3. Reference it in `build_x_system_prompt()` if relevant for X posts
+4. NEVER hardcode knowledge in `telegram_bot.py` or `octodamus_runner.py` directly
+This ensures: new knowledge added once -> flows to Telegram, X, MCP, runner automatically.
+
+## Octodamus vs OctoBoto Distinction
+- **Octodamus** = the AI oracle. Signal generation, market analysis, X posts, API. The mind.
+- **OctoBoto** = the autonomous trading bot. Executes trades on Polymarket using Octodamus signal.
+  - Current: track-record building on Polymarket
+  - Vision: AI-managed copytrading platform. Users deposit capital. OctoBotoAI manages sizing.
+    Takes % of transaction profits. The go-to copytrading bot on the internet.
+- Never conflate them in prompts, posts, or code comments.
+
+## Scheduled Tasks (23 total in Windows Task Scheduler)
 - Octodamus-DailyRead / DailyRead-7pm     — morning + evening briefing
 - Octodamus-Monitor-7am / Monitor-4pm     — market monitor posts
 - Octodamus-Thread-Mon / Thread-Wed       — weekly threads (9 AM)
 - Octodamus-Format-12pm                   — format rotation post
 - Octodamus-Wisdom / Soul                 — personality posts
 - Octodamus-StrategySunday / StrategyMonitor
+- Octodamus-Telegram                        — Telegram bot (auto-restart on crash)
 - Octodamus-QRT-Scan / Congress / Mentions
 - Octodamus-AutoResolve / BotoResolve     — Polymarket resolution
 - Octodamus-GDrive-Backup                 — full zip backup every 4 hours

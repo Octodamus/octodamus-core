@@ -28,3 +28,13 @@ When tokens_in/tokens_out = 0 in botcoin_credits.json (token logging not active)
 - JSON mode challenges: thinking + clean JSON output, no prefill allowed
 - Text mode: Sonnet primary, Haiku last-resort fallback
 - Tokens tracked per solve in _tokens_in/_tokens_out, accumulated in credits log
+
+## Real BOTCOIN Reward Rate (verified on-chain 2026-04-19)
+- Real rate: ~2.39 BOTCOIN per credit (confirmed: epoch 52, 28,080 credits -> 66,979 BOTCOIN claimed)
+- DO NOT use invented rates (817/credit or 409/credit were both wrong)
+- Original purchase: 25,061,414 BOTCOIN staked — this is NOT mined, it was purchased
+- Total mining rewards from all epochs: ~146,000 BOTCOIN (~$0.60 at $0.0000041)
+- Mining is currently unprofitable at current BOTCOIN price (~$20 Claude costs vs $0.60 rewards)
+- The bet is on BOTCOIN price appreciation, not current yield
+- Claim status: epoch 52 claimed (tx 0x0663...), epochs 49/56/57 reverted (likely expired or already claimed)
+- Auto-claim in mine_loop was failing silently due to frequent crashes (now fixed with RestartCount=999)

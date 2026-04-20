@@ -10,10 +10,15 @@ Fixes:
 """
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from typing import Optional
 
 import numpy as np
+
+# Polymarket V2 migration complete 2026-04-17.
+# V1_SHUTDOWN_DATE and V2_READY kept as historical reference only.
+V1_SHUTDOWN_DATE = date(2026, 4, 22)
+V2_READY         = True
 
 # â"€â"€â"€ Constants â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 _DEFAULT_EV_THRESHOLD = 0.12
@@ -34,6 +39,12 @@ MAX_POSITION_PCT   = 0.06   # 6% of bankroll max
 MIN_MARKET_PRICE   = 0.03   # Tighter band
 MAX_MARKET_PRICE   = 0.97
 MAX_POSITION_DAYS  = 90     # Don't enter markets resolving > 90 days out
+
+# ── Freeport behavioral guardrails (empirical from top-1% PnL traders, April 2026) ──
+# Top performers: 2.1 trades/day, 2.4x leverage, 31h median hold.
+# Losers: 5.8 trades/day. Overtrading is the primary retail failure mode.
+MAX_TRADES_PER_DAY = 3      # Soft cap — above this, require higher EV to enter
+OVERTRADE_EV_PENALTY = 0.04 # Add 4% to EV threshold after MAX_TRADES_PER_DAY exceeded
 
 # ── Markov Volume Confidence Tiers ─────────────────────────────────────────
 # High volume = many informed traders have priced this. Price is a reliable state.
@@ -163,6 +174,34 @@ def position_size(bankroll: float, kelly_frac: float) -> float:
     """Dollar size from bankroll and Kelly fraction. $2 minimum."""
     size = bankroll * min(kelly_frac, MAX_POSITION_PCT)
     return round(max(size, 2.0), 2)
+
+
+def count_trades_today() -> int:
+    """Count positions opened today from the skill log. Used to enforce MAX_TRADES_PER_DAY."""
+    from pathlib import Path as _Path
+    import json as _json
+    from datetime import date as _date
+    log = _Path(__file__).parent / "data" / "octo_skill_log.json"
+    if not log.exists():
+        return 0
+    try:
+        entries = _json.loads(log.read_text(encoding="utf-8"))
+        today = _date.today().isoformat()
+        return sum(
+            1 for e in entries
+            if e.get("source") == "octoboto"
+            and str(e.get("timestamp", "")).startswith(today)
+        )
+    except Exception:
+        return 0
+
+
+def ev_threshold_with_overtrade_penalty(base_ev: float) -> float:
+    """Return adjusted EV threshold — raised if daily trade cap exceeded."""
+    trades = count_trades_today()
+    if trades >= MAX_TRADES_PER_DAY:
+        return base_ev + OVERTRADE_EV_PENALTY
+    return base_ev
 
 
 # â"€â"€â"€ Best Trade â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€

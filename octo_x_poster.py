@@ -173,6 +173,7 @@ def post_reply(reply_text: str, tweet_id: str) -> dict:
     resp = client.create_tweet(
         text=reply_text,
         in_reply_to_tweet_id=tweet_id,
+        user_auth=True,
     )
     reply_id = str(resp.data["id"])
     url = f"https://x.com/octodamusai/status/{reply_id}"

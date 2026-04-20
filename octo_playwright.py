@@ -517,20 +517,39 @@ async def see_page(
 
 if __name__ == "__main__":
     import sys
-    sys.path.insert(0, r"C:\Users\walli\octodamus")
-    from bitwarden import load_secrets
-    secrets  = load_secrets()
-    api_key  = secrets.get("ANTHROPIC_API_KEY", "")
-    ticker   = sys.argv[1] if len(sys.argv) > 1 else "BTC"
-    timeframe = sys.argv[2] if len(sys.argv) > 2 else "4h"
+
+    # Load API key from .octo_secrets or environment
+    _secrets_path = Path(__file__).parent / ".octo_secrets"
+    if _secrets_path.exists():
+        import json as _json
+        _raw = _json.loads(_secrets_path.read_text(encoding="utf-8"))
+        _secrets = _raw.get("secrets", _raw)   # handle both flat and nested formats
+    else:
+        _secrets = {}
+    api_key = _secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    mode      = sys.argv[1] if len(sys.argv) > 1 else "chart"
+    arg2      = sys.argv[2] if len(sys.argv) > 2 else "BTC"
+    arg3      = sys.argv[3] if len(sys.argv) > 3 else "4h"
 
     async def _test():
-        print(f"Screenshotting {ticker} {timeframe}...")
-        img_bytes, analysis = await chart_and_analyze(ticker, timeframe, api_key)
-        out = Path(f"octo_playwright_test_{ticker}_{timeframe}.png")
+        if mode == "see":
+            url = arg2
+            q   = " ".join(sys.argv[3:]) or None
+            print(f"Screenshotting page: {url}")
+            img_bytes, analysis = await see_page(url, question=q, api_key=api_key)
+            out = Path("octo_playwright_see.png")
+        else:
+            ticker, tf = arg2, arg3
+            print(f"Screenshotting {ticker} {tf.upper()} chart...")
+            img_bytes, analysis = await chart_and_analyze(ticker, tf, api_key)
+            out = Path(f"octo_playwright_{ticker}_{tf}.png")
+
         out.write_bytes(img_bytes)
         print(f"Saved {out} ({len(img_bytes)//1024}KB)")
         if analysis:
-            print(f"\nClaude Vision:\n{analysis}")
+            print(f"\nOctoVision:\n{analysis}")
+        else:
+            print("(no analysis -- check ANTHROPIC_API_KEY)")
 
     asyncio.run(_test())
