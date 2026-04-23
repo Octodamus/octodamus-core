@@ -307,6 +307,15 @@ def _claw_generate(system: str, user: str, max_tokens: int = 200,
     )
     return r.content[0].text.strip()
 
+def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
+    r = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return r.content[0].text.strip()
+
 try:
     from octo_tv_brief import get_tv_brief
     _TV_ACTIVE = True
@@ -1120,7 +1129,7 @@ Rules:
 - Do NOT say 'no new signal' or similar
 - Output only the post text, nothing else"""
 
-                _wp_text = _claw_generate(
+                _wp_text = _haiku_generate(
                     OCTO_SYSTEM, _watchpost_prompt, max_tokens=300
                 )
                 queue_post(_wp_text, post_type="watchpost", priority=3)
@@ -1392,7 +1401,7 @@ def mode_deep_dive(ticker: str) -> None:
         # News-aware opener (uses Firecrawl context if available, else headlines)
         opener_context = _dd_fc_section[:800] if _dd_fc_section else "\n".join(f"- {h}" for h in ticker_headlines[:3])
         if opener_context:
-            opener_response = _claw_generate(
+            opener_response = _haiku_generate(
                 OCTO_SYSTEM,
                 (
                     f"Opening tweet for a deep dive thread on {ticker}.\n"
@@ -1487,7 +1496,7 @@ def mode_wisdom() -> None:
             "Anchor the insight to a real fact or current market behavior.\n"
             "Do NOT just restate the prompt. Answer it with a sharp take."
         )
-        post = _claw_generate(OCTO_SYSTEM, user_msg, max_tokens=150)
+        post = _haiku_generate(OCTO_SYSTEM, user_msg, max_tokens=150)
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
             parse_call_from_post(post)
@@ -1566,7 +1575,7 @@ def mode_soul() -> None:
             "if the content earns it).\n"
             "No hashtags. No engagement bait."
         )
-        post = _claw_generate(OCTO_SYSTEM, soul_user_msg, max_tokens=400)
+        post = _haiku_generate(OCTO_SYSTEM, soul_user_msg, max_tokens=400)
 
         # Attach artist image if available
         media_id = None
@@ -2278,7 +2287,7 @@ def mode_thread(topic: str = "") -> None:
 
         prompt = build_thread_prompt(topic, live_data_block)
 
-        raw = _claw_generate(
+        raw = _haiku_generate(
             "", prompt, max_tokens=900
         )
         tweets = parse_thread_output(raw)
