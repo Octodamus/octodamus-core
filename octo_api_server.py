@@ -33,7 +33,7 @@ import time as _time
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 # Load Bitwarden secrets into env at startup
 try:
@@ -107,11 +107,60 @@ async def require_key(api_key: str = Security(API_KEY_HEADER)):
 # ── Tier limits & rate limiter ─────────────────────────────────────────────────
 
 TIER_LIMITS = {
-    "basic":   {"req_per_day": 500,   "req_per_minute": 20},
-    "pro":     {"req_per_day": 10000, "req_per_minute": 200},
-    "premium": {"req_per_day": 10000, "req_per_minute": 200},
-    "admin":   {"req_per_day": None,  "req_per_minute": None},
+    "basic":    {"req_per_day": 500,   "req_per_minute": 20},
+    "free":     {"req_per_day": 500,   "req_per_minute": 20},
+    "trial":    {"req_per_day": 10000, "req_per_minute": 200},
+    "pro":      {"req_per_day": 10000, "req_per_minute": 200},
+    "premium":  {"req_per_day": 10000, "req_per_minute": 200},
+    "internal": {"req_per_day": None,  "req_per_minute": None},
+    "admin":    {"req_per_day": None,  "req_per_minute": None},
 }
+
+_EARLY_BIRD_LIMIT    = 100    # first 100 seats at $29/yr
+_EARLY_BIRD_PRICE    = 29     # USD
+_STANDARD_PRICE      = 149    # USD after first 100
+_TRIAL_PRICE         = 5      # USD
+_FREE_UPGRADE_DAYS   = 14     # notify after 14 days on free tier
+
+def _premium_seat_count() -> int:
+    """Count active premium/pro subscribers (for early bird pricing gate)."""
+    try:
+        from octo_api_keys import _load_keys
+        keys = _load_keys()
+        return sum(1 for v in keys.values() if v.get("tier") in ("premium","pro") and v.get("active", True))
+    except Exception:
+        return 0
+
+def _upgrade_cta(tier: str, created_at: str = "") -> dict | None:  # created_at = key["created"]
+    """
+    Returns upgrade CTA dict if the key should be shown an upgrade prompt.
+    Free keys: show after 14 days. Basic keys: always show.
+    Returns None if no upgrade needed (already premium/admin).
+    """
+    if tier in ("premium", "pro", "internal", "admin", "trial"):
+        return None
+    seats_left = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
+    price = _EARLY_BIRD_PRICE if seats_left > 0 else _STANDARD_PRICE
+    label = f"Early Bird — {seats_left} seats left" if seats_left > 0 else "Standard"
+
+    # For free/basic keys, check age
+    if created_at:
+        try:
+            from datetime import timezone as _tz
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(created_at)).days
+            if age_days < _FREE_UPGRADE_DAYS and tier in ("basic","free"):
+                return None  # too new, don't spam
+        except Exception:
+            pass
+
+    return {
+        "upgrade_available": True,
+        "message": f"Upgrade to Premium — ${price} USDC/year. {label}.",
+        "micro":   "X-Payment: sign $0.01 USDC EIP-3009 — pay per call, no subscription",
+        "trial":   "GET https://api.octodamus.com/v1/subscribe?plan=trial — $5 USDC, 7 days",
+        "annual":  f"GET https://api.octodamus.com/v1/subscribe?plan=annual — ${price} USDC, 365 days",
+        "seats_at_early_bird_price": seats_left,
+    }
 
 _rl_lock          = threading.Lock()
 _daily_counts:    dict[str, int]   = defaultdict(int)
@@ -172,8 +221,156 @@ def _check_rate_limit(api_key: str, tier: str) -> dict:
             "minute_remaining": limits["req_per_minute"] - minute_used - 1,
         }
 
+# ── x402 SDK — Coinbase CDP facilitator (production) ─────────────────────────
+import base64 as _b64
+from x402.server import x402ResourceServerSync, x402ResourceServer
+from x402.http.facilitator_client import (
+    HTTPFacilitatorClientSync, HTTPFacilitatorClient,
+    FacilitatorConfig, CreateHeadersAuthProvider,
+)
+from x402.schemas.payments import PaymentRequirements
+from x402.http.types import RouteConfig, PaymentOption
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
+from x402 import parse_payment_payload as _parse_x402_payload
+
 _X402_TREASURY = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
 _X402_USDC     = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC on Base
+
+# CDP production facilitator — requires CDP_API_KEY_ID + CDP_API_KEY_SECRET env vars
+# Falls back to x402.org testnet if keys absent (useful for local dev)
+_CDP_KEY_ID     = os.environ.get("CDP_API_KEY_ID", "")
+_CDP_KEY_SECRET = os.environ.get("CDP_API_KEY_SECRET", "")
+_FACILITATOR_URL = (
+    "https://api.cdp.coinbase.com/platform/v2/x402"
+    if (_CDP_KEY_ID and _CDP_KEY_SECRET)
+    else "https://x402.org/facilitator"
+)
+
+def _cdp_jwt(uri: str) -> str:
+    """Generate a short-lived Ed25519 JWT for Coinbase CDP API auth."""
+    import base64 as _b64m, json as _jsonm, time as _timem
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    key_bytes = _b64m.b64decode(_CDP_KEY_SECRET)
+    priv = Ed25519PrivateKey.from_private_bytes(key_bytes[:32])
+    now = int(_timem.time())
+    hdr = _b64m.urlsafe_b64encode(_jsonm.dumps({"alg":"EdDSA","kid":_CDP_KEY_ID,"typ":"JWT"}).encode()).rstrip(b"=").decode()
+    pld = _b64m.urlsafe_b64encode(_jsonm.dumps({"iss":"cdp","sub":_CDP_KEY_ID,"nbf":now,"exp":now+120,"uri":uri}).encode()).rstrip(b"=").decode()
+    sig = _b64m.urlsafe_b64encode(priv.sign(f"{hdr}.{pld}".encode())).rstrip(b"=").decode()
+    return f"{hdr}.{pld}.{sig}"
+
+def _build_facilitator() -> HTTPFacilitatorClientSync:
+    if _CDP_KEY_ID and _CDP_KEY_SECRET:
+        _CDP_HOST = "api.cdp.coinbase.com"
+        _X402_PATH = "platform/v2/x402"
+        def _cdp_auth():
+            return {
+                "supported": {"Authorization": f"Bearer {_cdp_jwt(f'GET {_CDP_HOST}/{_X402_PATH}/supported')}"},
+                "verify":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/verify')}"},
+                "settle":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/settle')}"},
+            }
+        return HTTPFacilitatorClientSync(
+            FacilitatorConfig(url=_FACILITATOR_URL, auth_provider=CreateHeadersAuthProvider(_cdp_auth))
+        )
+    return HTTPFacilitatorClientSync(FacilitatorConfig(url=_FACILITATOR_URL))
+
+_x402_facilitator     = _build_facilitator()                            # sync — for require_key_v2
+_x402_server          = x402ResourceServerSync(_x402_facilitator)
+_x402_facilitator_aio = HTTPFacilitatorClient(FacilitatorConfig(url=_FACILITATOR_URL))  # async — for PaymentMiddlewareASGI
+_x402_server_aio      = x402ResourceServer(_x402_facilitator_aio)
+_x402_initialized     = False
+
+# Register schemes synchronously so middleware has them at app creation time
+try:
+    _x402_server.register("eip155:8453", ExactEvmServerScheme())
+    _x402_server_aio.register(_X402_NETWORK, ExactEvmServerScheme())
+except Exception as _e:
+    print(f"[API] x402 scheme registration warning: {_e}")
+
+def _init_x402():
+    global _x402_initialized
+    try:
+        _x402_server.initialize()
+        _x402_initialized = True
+        print(f"[API] x402 initialized via {_FACILITATOR_URL}")
+    except Exception as _e:
+        print(f"[API] x402 init warning: {_e}")
+
+threading.Thread(target=_init_x402, daemon=True, name="x402-init").start()
+
+_USDC_EXTRA = {"name": "USD Coin", "version": "2", "chainId": 8453}
+
+_X402_REQ_ANNUAL = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="29000000", pay_to=_X402_TREASURY, max_timeout_seconds=3600,
+    extra=_USDC_EXTRA,
+)
+_X402_REQ_TRIAL = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="5000000", pay_to=_X402_TREASURY, max_timeout_seconds=3600,
+    extra=_USDC_EXTRA,
+)
+_X402_REQ_GUIDE = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="29000000", pay_to=_X402_TREASURY, max_timeout_seconds=3600,
+    extra=_USDC_EXTRA,
+)
+_X402_REQ_MICRO = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="10000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
+_X402_REQS       = [_X402_REQ_MICRO, _X402_REQ_TRIAL, _X402_REQ_ANNUAL]  # micro first — lowest barrier
+_X402_REQS_GUIDE = [_X402_REQ_GUIDE]
+_X402_REQS_API   = [_X402_REQ_ANNUAL]
+
+_MICRO_PRICE_USDC = 0.01  # $0.01 per call
+
+# x402 routes for PaymentMiddlewareASGI — dedicated agent-native endpoint.
+# Network: eip155:8453 (Base mainnet) when CDP keys present, else eip155:84532 (testnet).
+# Bazaar crawler just needs a 402 — network doesn't affect indexing.
+# Real agent payments: use CDP keys (cdp.coinbase.com) to unlock mainnet.
+_X402_NETWORK = "eip155:8453" if (_CDP_KEY_ID and _CDP_KEY_SECRET) else "eip155:84532"
+_X402_ROUTES = {
+    "GET /v2/x402/agent-signal": RouteConfig(
+        accepts=[
+            PaymentOption(scheme="exact", pay_to=_X402_TREASURY, price="$29.00", network=_X402_NETWORK),
+            PaymentOption(scheme="exact", pay_to=_X402_TREASURY, price="$5.00",  network=_X402_NETWORK),
+        ],
+        description="Octodamus Market Intelligence — oracle signals, Fear & Greed, Polymarket edges, macro. 27 live feeds.",
+        mime_type="application/json",
+        extensions={
+            "bazaar": {
+                "discoverable": True,
+                "category":     "trading",
+                "tags":         ["crypto", "signals", "oracle", "polymarket", "bitcoin", "market-intelligence"],
+            }
+        },
+    ),
+}
+
+
+_BAZAAR_EXT = {
+    "bazaar": {
+        "discoverable": True,
+        "category":     "trading",
+        "tags":         ["crypto", "signals", "oracle", "polymarket", "bitcoin", "market-intelligence"],
+    }
+}
+
+def _x402_headers(amount_usdc: float = 29.0) -> dict:
+    """Build 402 response headers via Coinbase x402 SDK with Bazaar discovery extension.
+    The Bazaar extension makes Agentic.Market auto-index this endpoint."""
+    pr = _x402_server.create_payment_required_response(_X402_REQS, extensions=_BAZAAR_EXT)
+    pr_b64 = _b64.b64encode(pr.model_dump_json(by_alias=True).encode()).decode()
+    return {
+        "payment-required":   pr_b64,
+        "X-Payment-Required": json.dumps({
+            "version": "x402/1",
+            "accepts": [r.model_dump(by_alias=True) for r in _X402_REQS],
+        }),
+    }
+
 
 def _x402_header(amount_usdc: float = 29.0) -> dict:
     """
@@ -214,13 +411,8 @@ def _x402_header(amount_usdc: float = 29.0) -> dict:
     }
 
 
-def _x402_headers(amount_usdc: float = 29.0) -> dict:
-    """
-    Return both x402 v1 and v2 headers for maximum compatibility.
-    v1: X-Payment-Required (plain JSON) — legacy clients
-    v2: payment-required (base64 JSON) — x402scan, agentarena, coinbase SDK
-    Includes bazaar extension with input/output schema for x402scan listing.
-    """
+def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
+    """Legacy — kept for reference only, not called."""
     import base64
     micro = str(int(amount_usdc * 1_000_000))
 
@@ -337,51 +529,139 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
       - No key, no payment → 402 with x402/1 X-Payment-Required header
     Returns (api_key, entry, rl) tuple.
     """
-    # x402: agent already paid and sent X-PAYMENT proof header
-    x_payment = request.headers.get("X-PAYMENT", "")
+    # x402: agent paid — check both V2 (PAYMENT-SIGNATURE) and V1 (X-PAYMENT) header names
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT", "")
+    )
 
     if x_payment and not api_key:
-        # Verify payment proof and retrieve provisioned key
         try:
-            from octo_agent_pay import get_payment_status
-            status = get_payment_status(x_payment)
-            if status.get("status") == "fulfilled" and status.get("api_key"):
-                api_key = status["api_key"]
+            # Decode payload — agents send base64 JSON or raw JSON
+            try:
+                raw = _b64.b64decode(x_payment)
+            except Exception:
+                raw = x_payment.encode() if isinstance(x_payment, str) else x_payment
+
+            payload = _parse_x402_payload(raw)
+
+            # Try each requirement until one verifies
+            verified_req = None
+            last_reason = "no matching scheme"
+            for req in _X402_REQS:
+                try:
+                    vr = _x402_server.verify_payment(payload, req)
+                    if vr.is_valid:
+                        verified_req = req
+                        break
+                    else:
+                        last_reason = f"{vr.invalid_reason}: {vr.invalid_message}"
+                        import logging as _l; _l.getLogger("uvicorn.error").warning(f"[x402] verify failed req={req.amount}: {last_reason}")
+                except Exception as _ve:
+                    last_reason = str(_ve)
+                    import logging as _l; _l.getLogger("uvicorn.error").warning(f"[x402] verify exception req={req.amount}: {_ve}")
+                    continue
+
+            if not verified_req:
+                raise HTTPException(
+                    status_code=402,
+                    headers=_x402_headers(),
+                    detail={"error": "payment_invalid", "message": f"Verification failed: {last_reason}"},
+                )
+
+            # Settle via Coinbase facilitator
+            sr = _x402_server.settle_payment(payload, verified_req)
+            if sr.success:
+                payer = sr.payer or "agent"
+                is_micro = verified_req.amount == "10000"
+
+                if is_micro:
+                    # Micro-payment ($0.01) — grant access for this single request only.
+                    # No key provisioned. EIP-3009 nonce prevents replay at contract level.
+                    api_key = f"__micro__{payer[:16]}"
+                    _micro_entry = {
+                        "tier": "premium", "label": f"micro:{payer[:12]}",
+                        "email": "", "created": datetime.utcnow().isoformat(),
+                    }
+                    # Fire-and-forget owner notify + customer log
+                    import threading as _mt
+                    def _micro_notify(p=payer):
+                        try:
+                            from octo_health import send_email_alert
+                            send_email_alert(
+                                subject=f"[Octodamus] Micro-payment $0.01 — {p[:18]}",
+                                body=f"Pay-per-call.\nWallet: {p}\nEndpoint: {str(request.url.path)}\nAmount: $0.01 USDC",
+                            )
+                        except Exception: pass
+                        try:
+                            from octo_agent_db import record_customer
+                            record_customer(api_key, "micro", "", p, "micro_x402")
+                        except Exception: pass
+                    _mt.Thread(target=_micro_notify, daemon=True).start()
+
+                    rl = _check_rate_limit(api_key, "premium")
+                    return api_key, _micro_entry, rl
+
+                else:
+                    # Subscription payment ($5 trial / $29 annual) — provision persistent key
+                    tier = "premium"
+                    try:
+                        from octo_api_keys import create_key
+                        api_key = create_key(
+                            email=f"x402_{payer[:16]}@base.agent",
+                            tier=tier,
+                        )
+                    except Exception as _ke:
+                        import logging as _kl; _kl.getLogger("uvicorn.error").warning(f"[x402] key provision error: {_ke}")
+                        api_key = None
             else:
                 raise HTTPException(
                     status_code=402,
                     headers=_x402_headers(),
-                    detail={
-                        "error":    "payment_required",
-                        "message":  "X-PAYMENT token not yet fulfilled. Poll /v1/agent-checkout/status first.",
-                        "checkout": "https://api.octodamus.com/v1/agent-checkout?product=premium_annual",
-                    }
+                    detail={"error": "settlement_failed", "reason": sr.error_reason},
                 )
         except HTTPException:
             raise
+        except Exception as _xe:
+            print(f"[x402] payment verification error: {type(_xe).__name__}: {_xe}")
+
+    if not api_key:
+        # Agent greeting — detect agent and personalise the 402
+        _greeting = None
+        try:
+            from octo_agent_db import detect_agent, _octodamus_greeting, _visitor_id
+            _ua  = request.headers.get("user-agent", "")
+            _ip  = request.client.host if request.client else ""
+            _det = detect_agent(_ua, _ip)
+            if _det["is_agent"]:
+                _greeting = _octodamus_greeting(_det["agent_type"], str(request.url.path), False, 1)
         except Exception:
             pass
 
-    if not api_key:
-        # x402 Payment Required — fully spec-compliant (x402/1 + v2) + human-readable body
-        raise HTTPException(
-            status_code=402,
-            headers=_x402_headers(),
-            detail={
-                "x402":            "x402/1",
-                "error":           "payment_required",
-                "message":         "This endpoint requires an API key. Get a free Basic key or pay $29 USDC on Base.",
-                "free_key":        "POST https://api.octodamus.com/v1/signup?email=your@email.com",
-                "crypto_checkout": "POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual&agent_wallet=0xYOUR_WALLET",
-                "trial_checkout":  "POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial&agent_wallet=0xYOUR_WALLET",
-                "usdc_price":      "$29 USDC on Base (chain_id=8453) | $5 USDC 7-day trial",
-                "pay_to":          _X402_TREASURY,
-                "asset":           _X402_USDC,
-                "network":         "base-mainnet",
-                "header_name":     "X-OctoData-Key",
-                "docs":            "https://api.octodamus.com/docs",
-            }
-        )
+        _seats_left = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
+        _price = _EARLY_BIRD_PRICE if _seats_left > 0 else _STANDARD_PRICE
+        _detail = {
+            "x402":              "x402/1",
+            "error":             "payment_required",
+            "message":           "Octodamus Market Intelligence API. Pay per call or subscribe.",
+            "option_0_micro":    f"X-Payment: sign $0.01 USDC EIP-3009 — pay per call, no subscription, instant",
+            "option_1_free":     "POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL — 500 req/day free",
+            "option_2_trial":    "GET https://api.octodamus.com/v1/subscribe?plan=trial — $5 USDC, 7 days, 10k req/day",
+            "option_3_annual":   f"GET https://api.octodamus.com/v1/subscribe?plan=annual — ${_price} USDC/yr, 365 days" + (f" — EARLY BIRD: {_seats_left} seats left" if _seats_left > 0 else ""),
+            "option_4_guide":    "GET https://api.octodamus.com/v1/guide — $29 USDC, Build The House guide",
+            "micro_pay_to":      _X402_TREASURY,
+            "micro_asset":       _X402_USDC,
+            "micro_amount_usdc": _MICRO_PRICE_USDC,
+            "network":           "base-mainnet (eip155:8453)",
+            "header_name":       "X-OctoData-Key",
+            "docs":              "https://api.octodamus.com/docs",
+        }
+        if _greeting:
+            _detail["octodamus"] = _greeting
+
+        raise HTTPException(status_code=402, headers=_x402_headers(), detail=_detail)
 
     entry = validate_key(api_key)
     if not entry:
@@ -432,6 +712,67 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+# ── Agent tracking middleware ─────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+from starlette.responses import Response as _StarResponse
+import threading as _mw_threading
+
+_tracking_executor = _mw_threading.Thread  # use threads for non-blocking DB writes
+
+class AgentTrackingMiddleware(_BaseHTTPMiddleware):
+    _skip_prefixes = ("/docs", "/openapi", "/_", "/static", "/favicon")
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if not any(path.startswith(p) for p in self._skip_prefixes):
+            import threading as _t
+            _t.Thread(
+                target=self._record,
+                args=(
+                    request.client.host if request.client else "",
+                    request.headers.get("user-agent", ""),
+                    path,
+                    request.method,
+                    response.status_code,
+                    request.headers.get("x-octodata-key", ""),
+                    request.headers.get("referer", ""),
+                ),
+                daemon=True,
+            ).start()
+        return response
+
+    @staticmethod
+    def _record(ip, ua, path, method, status, key, referrer):
+        try:
+            from octo_agent_db import record_visit
+            record_visit(ip, ua, path, method, status, key, referrer)
+        except Exception:
+            pass
+
+app.add_middleware(AgentTrackingMiddleware)
+
+# x402 payment middleware — handles /v2/x402/* routes natively.
+# Returns 402 + Bazaar discovery extension for Agentic.Market indexing.
+# Verifies payments via CDP facilitator and settles on Base mainnet.
+# PaymentMiddlewareASGI not used — Bazaar extension injected directly into _x402_headers()
+# so /v2/agent-signal 402 response is discoverable by Agentic.Market Bazaar crawler.
+
+
+@app.on_event("startup")
+async def _startup_prewarm():
+    """Pre-warm tool cache in background so first real request is fast."""
+    def _warm():
+        import time as _t
+        _t.sleep(3)  # let uvicorn finish binding port first
+        try:
+            from octo_distro import oracle_scorecard, macro_pulse
+            _tool_cache["scorecard"] = {"ts": _t.time(), "val": oracle_scorecard()}
+            _tool_cache["macro"]     = {"ts": _t.time(), "val": macro_pulse()}
+        except Exception as e:
+            print(f"[API] prewarm warning: {e}")
+    threading.Thread(target=_warm, daemon=True, name="cache-prewarm").start()
 
 # -- Custom dark-themed Swagger UI --------------------------------------------
 
@@ -708,6 +1049,42 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
 .t-cta.pro-cta:hover{background:rgba(0,255,179,0.08);}
 
 .swagger-divider{border:none;border-top:1px solid var(--border);margin:0;}
+
+/* CONNECT YOUR WAY */
+.cyw-section{padding:56px 0 64px;border-bottom:1px solid var(--border);}
+.cyw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:20px;margin-top:36px;}
+.cyw-card{background:var(--surface);border:1px solid var(--border);padding:0;overflow:hidden;}
+.cyw-head{padding:18px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;}
+.cyw-badge{font-family:'JetBrains Mono',monospace;font-size:0.6rem;letter-spacing:0.18em;text-transform:uppercase;padding:3px 10px;border:1px solid;}
+.cyw-badge.cb-acp{border-color:rgba(0,255,179,0.4);color:var(--bio);}
+.cyw-badge.cb-mcp{border-color:rgba(0,200,255,0.4);color:var(--pulse);}
+.cyw-badge.cb-saas{border-color:rgba(255,196,0,0.4);color:var(--gold);}
+.cyw-badge.cb-x402{border-color:rgba(255,120,40,0.4);color:rgba(255,140,60,1);}
+.cyw-badge.cb-erc{border-color:rgba(160,80,220,0.4);color:rgba(180,100,240,1);}
+.cyw-title{font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;color:var(--bright);}
+.cyw-body{padding:20px 24px;}
+.cyw-desc{font-size:0.82rem;color:var(--text);line-height:1.65;margin-bottom:16px;}
+.cyw-code{background:var(--void);border:1px solid var(--border);padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:0.69rem;color:var(--bio);line-height:1.7;overflow-x:auto;white-space:pre;margin-bottom:16px;}
+.cyw-endpoints{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;}
+.cyw-ep{display:flex;align-items:baseline;gap:8px;}
+.cyw-method{font-family:'JetBrains Mono',monospace;font-size:0.58rem;padding:2px 7px;letter-spacing:0.08em;}
+.cyw-method.get{background:rgba(0,200,255,0.1);color:var(--pulse);border:1px solid rgba(0,200,255,0.2);}
+.cyw-method.post{background:rgba(0,255,179,0.08);color:var(--bio);border:1px solid rgba(0,255,179,0.18);}
+.cyw-path{font-family:'JetBrains Mono',monospace;font-size:0.73rem;color:var(--bright);}
+.cyw-ep-desc{font-size:0.74rem;color:var(--soft);}
+.cyw-link{font-family:'JetBrains Mono',monospace;font-size:0.63rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--soft);text-decoration:none;border:1px solid var(--border);padding:7px 14px;display:inline-block;transition:all .2s;}
+.cyw-link:hover{color:var(--text);border-color:var(--soft);}
+.cyw-link.cl-acp{color:var(--bio);border-color:rgba(0,255,179,0.25);}
+.cyw-link.cl-acp:hover{background:rgba(0,255,179,0.06);}
+.cyw-link.cl-mcp{color:var(--pulse);border-color:rgba(0,200,255,0.25);}
+.cyw-link.cl-mcp:hover{background:rgba(0,200,255,0.06);}
+.cyw-link.cl-saas{color:var(--gold);border-color:rgba(255,196,0,0.25);}
+.cyw-link.cl-saas:hover{background:rgba(255,196,0,0.06);}
+.cyw-link.cl-x402{color:rgba(255,140,60,1);border-color:rgba(255,120,40,0.25);}
+.cyw-link.cl-x402:hover{background:rgba(255,120,40,0.06);}
+.cyw-link.cl-erc{color:rgba(180,100,240,1);border-color:rgba(160,80,220,0.25);}
+.cyw-link.cl-erc:hover{background:rgba(160,80,220,0.06);}
+@media(max-width:700px){.cyw-grid{grid-template-columns:1fr;}}
 </style>
 
 <div class="intro-wrap">
@@ -918,6 +1295,145 @@ print(answer[<span class="code-str">"suggested_endpoints"</span>]) <span class="
     </div>
   </div>
 
+  <!-- CONNECT YOUR WAY -->
+  <div class="cyw-section">
+    <div class="section-head">Connect Your Way</div>
+    <p class="section-sub">Five integration paths. Pick the one that matches how your agent or system is built.</p>
+    <div class="cyw-grid">
+
+      <!-- ACP Agent -->
+      <div class="cyw-card">
+        <div class="cyw-head">
+          <span class="cyw-badge cb-acp">&#9679; ACP Agent</span>
+          <div class="cyw-title">Virtuals Agent Commerce Protocol</div>
+        </div>
+        <div class="cyw-body">
+          <div class="cyw-desc">Octodamus is a live ACP provider on the Virtuals network. Any ACP-compatible agent can purchase market intelligence reports directly on-chain — no API key, no browser, no human. Pay $1 USDC per job via the Virtuals ACP protocol and receive structured JSON in return.</div>
+          <div class="cyw-code"><span style="color:var(--soft)"># Connect to Octodamus as an ACP provider</span>
+<span style="color:var(--soft)"># Agent ID: 019d8ec8-0885-766e-b3c4-0a2e70e31274</span>
+<span style="color:var(--soft)"># Offerings: Oracle Signal · BTC Deep Dive · Fear &amp; Greed · Congress Trades</span>
+
+npm install -g @virtual-protocol/acp-cli
+acp browse Octodamus        <span style="color:var(--soft)"># find the agent</span>
+acp job create --provider 019d8ec8... --offering "Oracle Market Signal"</div>
+          <div class="cyw-endpoints">
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/api/report/{id}</span><span class="cyw-ep-desc">— retrieve fulfilled report</span></div>
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/.well-known/agent.json</span><span class="cyw-ep-desc">— agent card + offerings</span></div>
+          </div>
+          <a class="cyw-link cl-acp" href="https://app.virtuals.io" target="_blank">Browse on Virtuals &#8599;</a>
+        </div>
+      </div>
+
+      <!-- MCP -->
+      <div class="cyw-card">
+        <div class="cyw-head">
+          <span class="cyw-badge cb-mcp">MCP</span>
+          <div class="cyw-title">Model Context Protocol</div>
+        </div>
+        <div class="cyw-body">
+          <div class="cyw-desc">Add Octodamus as an MCP server in Claude, Cursor, Windsurf, or any MCP-compatible host. Ten tools available — get signals, Polymarket edges, sentiment, prices, and market briefs directly in your AI session. Also listed on Smithery.</div>
+          <div class="cyw-code"><span style="color:var(--soft)"># claude_desktop_config.json / .cursor/mcp.json</span>
+{
+  "mcpServers": {
+    "octodamus": {
+      "url": "https://api.octodamus.com/mcp"
+    }
+  }
+}</div>
+          <div class="cyw-endpoints">
+            <div class="cyw-ep"><span class="cyw-method post">MCP</span><span class="cyw-path">get_agent_signal</span><span class="cyw-ep-desc">— BUY/SELL/HOLD decision</span></div>
+            <div class="cyw-ep"><span class="cyw-method post">MCP</span><span class="cyw-path">get_all_data</span><span class="cyw-ep-desc">— all signals in one call</span></div>
+            <div class="cyw-ep"><span class="cyw-method post">MCP</span><span class="cyw-path">buy_premium_api</span><span class="cyw-ep-desc">— subscribe via x402</span></div>
+          </div>
+          <a class="cyw-link cl-mcp" href="https://smithery.ai/server/octodamusai/market-intelligence" target="_blank">View on Smithery &#8599;</a>
+        </div>
+      </div>
+
+      <!-- SaaS -->
+      <div class="cyw-card">
+        <div class="cyw-head">
+          <span class="cyw-badge cb-saas">SaaS</span>
+          <div class="cyw-title">REST API with Key</div>
+        </div>
+        <div class="cyw-body">
+          <div class="cyw-desc">The standard integration path. Get a free API key in one POST request and start hitting endpoints immediately. Pass your key as the <code style="color:var(--gold);font-size:0.85em">X-OctoData-Key</code> header on every request. Rate-limit headers on every response tell you exactly how much headroom you have.</div>
+          <div class="cyw-code"><span style="color:var(--soft)"># 1. Get free key (500 req/day)</span>
+curl -X POST "https://api.octodamus.com/v1/signup?email=you@example.com"
+
+<span style="color:var(--soft)"># 2. Hit any endpoint</span>
+curl "https://api.octodamus.com/v2/agent-signal" \
+     -H "X-OctoData-Key: octo_your_key"
+
+<span style="color:var(--soft)"># Rate-limit headers on every response:</span>
+<span style="color:var(--soft)"># X-RateLimit-Remaining-Day: 487</span>
+<span style="color:var(--soft)"># X-RateLimit-Remaining-Minute: 19</span></div>
+          <div class="cyw-endpoints">
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/v2/agent-signal</span><span class="cyw-ep-desc">— primary signal</span></div>
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/v2/all</span><span class="cyw-ep-desc">— full snapshot</span></div>
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/v2/brief</span><span class="cyw-ep-desc">— LLM system prompt injection</span></div>
+          </div>
+          <a class="cyw-link cl-saas" href="https://octodamus.com/free-key.html" target="_blank">Get Free Key &#8599;</a>
+        </div>
+      </div>
+
+      <!-- x402 -->
+      <div class="cyw-card">
+        <div class="cyw-head">
+          <span class="cyw-badge cb-x402">x402</span>
+          <div class="cyw-title">HTTP Payment Protocol</div>
+        </div>
+        <div class="cyw-body">
+          <div class="cyw-desc">Pay per call or subscribe autonomously — no account, no browser, no human. Hit any endpoint without a key, receive a <code style="color:rgba(255,140,60,1);font-size:0.85em">402 Payment Required</code> response with treasury and amount, sign an EIP-3009 USDC authorization on Base, and retry with the <code style="color:rgba(255,140,60,1);font-size:0.85em">PAYMENT-SIGNATURE</code> header.</div>
+          <div class="cyw-code"><span style="color:var(--soft)"># Option A — $0.01 USDC per call (no key needed)</span>
+<span style="color:var(--soft)"># 1. Probe to get payment requirements</span>
+GET /v2/agent-signal  →  402 + payment-required header
+<span style="color:var(--soft)"># amount: 10000 (= $0.01 USDC, 6 decimals)</span>
+
+<span style="color:var(--soft)"># Option B — Subscribe for full access</span>
+GET /v1/subscribe?plan=trial   →  $5 USDC / 7 days
+GET /v1/subscribe?plan=annual  →  $29 USDC / 365 days
+
+Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db
+USDC Base: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+Network:   Base mainnet (eip155:8453)</div>
+          <div class="cyw-endpoints">
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/.well-known/x402.json</span><span class="cyw-ep-desc">— discovery doc</span></div>
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/v1/subscribe</span><span class="cyw-ep-desc">— autonomous purchase</span></div>
+          </div>
+          <a class="cyw-link cl-x402" href="https://octodamus.com/for-agents.html#x402" target="_blank">x402 Code Examples &#8599;</a>
+        </div>
+      </div>
+
+      <!-- ERC-8004 -->
+      <div class="cyw-card">
+        <div class="cyw-head">
+          <span class="cyw-badge cb-erc">ERC-8004</span>
+          <div class="cyw-title">On-Chain Agent Identity</div>
+        </div>
+        <div class="cyw-body">
+          <div class="cyw-desc">Octodamus is registered on-chain via ERC-8004 on Base — a standard for autonomous agent identity and capability discovery. Any agent that reads the ERC-8004 registry can discover Octodamus, verify its identity, and call its endpoints without any prior configuration.</div>
+          <div class="cyw-code"><span style="color:var(--soft)"># Discover Octodamus via ERC-8004</span>
+GET /.well-known/agent.json       <span style="color:var(--soft)"># full agent card</span>
+GET /.well-known/agent-registration.json  <span style="color:var(--soft)"># on-chain registration</span>
+
+<span style="color:var(--soft)"># On-chain identity</span>
+globalId:  eip155:8453:0x8004A169...#44306
+Registry:  Base mainnet (eip155:8453)
+Wallet:    0x94c037393ab0263194dcfd8d04a2176d6a80e385
+
+<span style="color:var(--soft)"># Agent card includes: endpoints, pricing, payment terms,</span>
+<span style="color:var(--soft;"># MCP server, x402 treasury, and capability list</span></div>
+          <div class="cyw-endpoints">
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/.well-known/agent.json</span><span class="cyw-ep-desc">— ERC-8004 agent card</span></div>
+            <div class="cyw-ep"><span class="cyw-method get">GET</span><span class="cyw-path">/.well-known/oauth-protected-resource</span><span class="cyw-ep-desc">— ACP resource</span></div>
+          </div>
+          <a class="cyw-link cl-erc" href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank">ERC-8004 Spec &#8599;</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
 </div><!-- /intro-wrap -->
 
 <hr class="swagger-divider">
@@ -962,49 +1478,104 @@ def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+
 # ── ERC-8004 Agent Discovery ───────────────────────────────────────────────────
 
 _ERC8004_CARD = {
-    "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-    "name": "Octodamus Market Intelligence API",
+    "type":     "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+    "globalId": "eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432#44306",
+    "name":     "Octodamus Market Intelligence API",
     "description": (
         "Real-time market intelligence for autonomous AI agents: Oracle trading signals "
         "(9/11 system consensus), Fear & Greed index, Polymarket prediction market edge plays, "
-        "crypto sentiment, and macro data. x402 native — agents pay $5 USDC on Base, "
-        "receive API key, no human required. 27 live data feeds. No synthetic data."
+        "crypto sentiment, and macro data. x402 native — agents pay USDC on Base, "
+        "receive API key instantly, no human required. 27 live data feeds."
     ),
     "image": "https://octodamus.com/octo_logo.png",
     "url":   "https://octodamus.com",
-    "services": [
+    "endpoints": [
         {
             "name":     "AgentSignal",
-            "endpoint": "https://api.octodamus.com/v2/agent-signal",
-            "version":  "2.0.0",
+            "url":      "https://api.octodamus.com/v2/agent-signal",
             "protocol": "x402",
-            "description": "Single-call decision endpoint: action/confidence/signal/fear_greed/BTC/Polymarket edge. Poll every 15 min.",
+            "method":   "GET",
+            "description": "BUY/SELL/HOLD signal + Fear & Greed + BTC trend + Polymarket edges. Poll every 15 min.",
+            "auth":     "X-OctoData-Key header or x402 payment",
+            "price":    "$5 USDC trial / $29 USDC annual",
         },
         {
-            "name":     "Web",
-            "endpoint": "https://octodamus.com",
-            "version":  "3.0.0",
+            "name":     "AllData",
+            "url":      "https://api.octodamus.com/v2/all",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Signal + polymarket + sentiment + prices + brief in one call.",
+            "auth":     "X-OctoData-Key header",
         },
         {
-            "name":     "Docs",
-            "endpoint": "https://api.octodamus.com/docs",
-            "version":  "3.0.0",
+            "name":     "BuyTrialKey",
+            "url":      "https://api.octodamus.com/v1/subscribe?plan=trial",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Purchase 7-day Premium API key. $5 USDC on Base. Returns api_key in response.",
+            "price":    "$5 USDC",
+        },
+        {
+            "name":     "BuyAnnualKey",
+            "url":      "https://api.octodamus.com/v1/subscribe?plan=annual",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Purchase 365-day Premium API key. $29 USDC on Base (first 100 seats). Returns api_key.",
+            "price":    "$29 USDC",
+        },
+        {
+            "name":     "BuyGuide",
+            "url":      "https://api.octodamus.com/v1/guide",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Purchase Build The House trading system guide. $29 USDC on Base. Returns download URL.",
+            "price":    "$29 USDC",
+        },
+        {
+            "name":     "FreeSignup",
+            "url":      "https://api.octodamus.com/v1/signup",
+            "protocol": "REST",
+            "method":   "POST",
+            "description": "Create free API key. Pass ?email=. 500 req/day. No payment required.",
+            "price":    "Free",
+        },
+        {
+            "name":     "AskOctodamus",
+            "url":      "https://api.octodamus.com/v2/ask",
+            "protocol": "REST",
+            "method":   "POST",
+            "description": "Ask any market question. Grounded in live signals. 20/day free, no key needed.",
+            "price":    "Free (20/day)",
+        },
+        {
+            "name":     "MCPServer",
+            "url":      "https://api.octodamus.com/mcp",
+            "protocol": "MCP streamable-http",
+            "method":   "POST",
+            "description": "MCP server. Tools: get_agent_signal, get_polymarket_edge, get_market_brief, buy_premium_api, buy_guide.",
         },
     ],
     "payment": {
-        "x402":         True,
-        "network":      "base-mainnet",
-        "chain_id":     8453,
-        "asset":        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "pay_to":       "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
-        "trial_usdc":   5,
-        "annual_usdc":  29,
-        "checkout":     "POST https://api.octodamus.com/v1/agent-checkout?product=premium_trial&agent_wallet=0xYOUR",
-        "key_status":   "GET https://api.octodamus.com/v1/key/status",
+        "x402":        True,
+        "network":     "base-mainnet",
+        "chain_id":    8453,
+        "asset":       "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "pay_to":      "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "products": {
+            "micro_per_call": {"price_usdc": 0.01,"duration_days": None,"endpoint": "GET /v2/agent-signal (x402 EIP-3009, no key needed)", "note": "pay-per-call via x402"},
+            "trial_api_key":  {"price_usdc": 5,  "duration_days": 7,   "endpoint": "GET /v1/subscribe?plan=trial"},
+            "annual_api_key": {"price_usdc": 29, "duration_days": 365, "endpoint": "GET /v1/subscribe?plan=annual"},
+            "guide":          {"price_usdc": 29, "duration_days": None,"endpoint": "GET /v1/guide"},
+            "free_key":       {"price_usdc": 0,  "duration_days": None,"endpoint": "POST /v1/signup?email="},
+        },
     },
+    "mcp":         "https://api.octodamus.com/mcp",
+    "smithery":    "https://smithery.ai/server/octodamusai/market-intelligence",
+    "registry":    "io.github.Octodamus/market-intelligence",
     "category":    ["market-intelligence", "crypto-signals", "prediction-markets", "macro-data"],
     "x402Support": True,
     "active":      True,
@@ -1062,8 +1633,9 @@ def well_known_x402():
                 "method":      "GET",
                 "description": "Primary signal endpoint -- BUY/SELL/HOLD with confidence, Fear & Greed, BTC trend, Polymarket edge. Poll every 15 minutes.",
                 "pricing": [
-                    {"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"},
-                    {"product": "premium_trial",  "amount_usdc":  5.0, "description": "7-day trial, 10k req/day"},
+                    {"product": "micro_per_call",  "amount_usdc":  0.01, "description": "Pay per call via x402 EIP-3009 -- no key, no subscription"},
+                    {"product": "premium_trial",   "amount_usdc":  5.0,  "description": "7-day trial, 10k req/day"},
+                    {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
                 ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
                 "returns":  {"action": "BUY|SELL|HOLD", "confidence": "0.0-1.0", "signal": "BULLISH|BEARISH|NEUTRAL", "fear_greed": "0-100"},
@@ -1072,26 +1644,45 @@ def well_known_x402():
                 "path":        "/v2/polymarket",
                 "method":      "GET",
                 "description": "Top Polymarket prediction markets with expected-value scoring and recommended side.",
-                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "pricing": [
+                    {"product": "micro_per_call",  "amount_usdc":  0.01, "description": "Pay per call via x402 EIP-3009 -- no key, no subscription"},
+                    {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
+                ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
             },
             {
                 "path":        "/v2/sentiment",
                 "method":      "GET",
                 "description": "AI sentiment scores for BTC, ETH, SOL. Score -1.0 to +1.0.",
-                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "pricing": [
+                    {"product": "micro_per_call",  "amount_usdc":  0.01, "description": "Pay per call via x402 EIP-3009 -- no key, no subscription"},
+                    {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
+                ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
             },
             {
                 "path":        "/v2/brief",
                 "method":      "GET",
                 "description": "Full AI market briefing in narrative format -- ideal for agent reasoning context.",
-                "pricing": [{"product": "premium_annual", "amount_usdc": 29.0, "description": "365 days, 10k req/day"}],
+                "pricing": [
+                    {"product": "micro_per_call",  "amount_usdc":  0.01, "description": "Pay per call via x402 EIP-3009 -- no key, no subscription"},
+                    {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
+                ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
             },
         ],
+        "micro_pricing": {
+            "enabled": True,
+            "amount_usdc": 0.01,
+            "amount_raw": "10000",
+            "asset": _X402_USDC,
+            "network": "eip155:8453",
+            "pay_to": _X402_TREASURY,
+            "how": "Sign EIP-3009 authorization for $0.01 USDC, send as PAYMENT-SIGNATURE header. No key or account needed.",
+        },
         "free_endpoints": [
             {"path": "/v2/demo",    "method": "GET",  "description": "Public signal preview -- no key required"},
+            {"path": "/v2/ask",     "method": "POST", "description": "Ask any market question -- 20/day, no key required"},
             {"path": "/v2/sources", "method": "GET",  "description": "All 27 live data feeds"},
             {"path": "/v1/signup",  "method": "POST", "description": "Get free Basic key (500 req/day) with email"},
         ],
@@ -1108,7 +1699,9 @@ def well_known_x402():
 
 _fg_cache: dict = {"data": None, "ts": 0.0}
 _dom_cache: dict = {"data": None, "ts": 0.0}
+_signal_cache: dict = {"data": None, "ts": 0.0}
 _PUBLIC_TTL = 300.0  # 5 minutes for public market data
+_SIGNAL_TTL  = 60.0  # 60 seconds for signal payload cache
 
 @app.get("/api/fear-greed", tags=["ACP Resources"])
 def acp_fear_greed():
@@ -1441,10 +2034,26 @@ def get_xstats():
     Post count from posted log. Guide sales from metrics."""
     import time as _t
 
-    # Metrics (followers, guide sales)
+    # Metrics (followers)
     m = _load_metrics()
     followers = m.get("followers") or None
-    guide_sales = m.get("guide_sales") or 0
+
+    # Guide sales — live from payments file (not static metrics)
+    _own_wallet = "0x5c6b3a3dae296d3cef50fef96afc73410959a6db"
+    try:
+        pay_file = DATA_DIR.parent / "octo_agent_payments.json"
+        _payments = json.loads(pay_file.read_text(encoding="utf-8")) if pay_file.exists() else {}
+        _guide_pays = [
+            p for p in _payments.values()
+            if (p.get("product") or "").startswith("guide")
+            and p.get("status") == "fulfilled"
+            and (p.get("agent_wallet") or "").lower() != _own_wallet
+        ]
+        guide_sales = len(_guide_pays)
+        guide_revenue = sum(float(p.get("amount_usdc", 0) or 0) for p in _guide_pays)
+    except Exception:
+        guide_sales = m.get("guide_sales") or 0
+        guide_revenue = m.get("guide_revenue") or 0
 
     # Post count â€" use manual override if set, otherwise count from posted log
     posts = m.get("posts_override") or None
@@ -1459,14 +2068,17 @@ def get_xstats():
         except Exception:
             pass
 
+    seats_left = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
+
     return {
-        "followers": followers,
-        "posts": posts,
-        "guide_sales": guide_sales,
-        "guide_revenue": m.get("guide_revenue", 0),
-        "cached_at": int(_t.time()),
-        "source": "local",
-        "timestamp": datetime.utcnow().isoformat(),
+        "followers":     followers,
+        "posts":         posts,
+        "guide_sales":   guide_sales,
+        "guide_revenue": guide_revenue,
+        "seats_left":    seats_left,
+        "early_bird_price": _EARLY_BIRD_PRICE,
+        "cached_at":     int(_t.time()),
+        "timestamp":     datetime.utcnow().isoformat(),
         "source": {"name": "OctoData API", "by": "Octodamus (@octodamusai)", "docs": "https://api.octodamus.com/docs", "signup": "POST https://api.octodamus.com/v1/signup?email="},
     }
 
@@ -1476,9 +2088,12 @@ def get_xstats():
 CALLS_FILE = Path(__file__).parent / "data" / "octo_calls.json"
 
 def _load_calls() -> list:
+    """Load oracle calls only. OctoBoto paper trades are tracked separately in PaperTracker."""
     try:
         if CALLS_FILE.exists():
-            return json.loads(CALLS_FILE.read_text(encoding="utf-8"))
+            calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
+            # Belt-and-suspenders: exclude any polymarket entries that slipped in
+            return [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
     except Exception:
         pass
     return []
@@ -1618,12 +2233,26 @@ def newsletter_subscribe(
     return {"status": "error", "reason": result.get("reason")}
 
 
+# ── Tool response cache (TTL in seconds) ─────────────────────────────────────
+# Avoids cold-start lag and redundant external API calls on every request.
+_tool_cache: dict = {}
+
+def _tcache(key: str, ttl: int, fn):
+    now = _time.time()
+    entry = _tool_cache.get(key)
+    if entry and now - entry["ts"] < ttl:
+        return entry["val"]
+    val = fn()
+    _tool_cache[key] = {"ts": now, "val": val}
+    return val
+
+
 @app.get("/tools/scorecard", tags=["Distro Tools"])
 def tool_scorecard():
     """Oracle accuracy track record. Public -- no auth required."""
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
-    return oracle_scorecard()
+    return _tcache("scorecard", 120, oracle_scorecard)
 
 
 @app.get("/tools/macro", tags=["Distro Tools"])
@@ -1631,7 +2260,7 @@ def tool_macro():
     """5-factor FRED macro pulse. Public -- no auth required."""
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
-    return macro_pulse()
+    return _tcache("macro", 240, macro_pulse)
 
 
 @app.get("/tools/liquidations", tags=["Distro Tools"])
@@ -1639,7 +2268,7 @@ def tool_liquidations(asset: str = Query("BTC", description="BTC, ETH, or SOL"))
     """Liquidation radar for an asset. Public -- no auth required."""
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
-    return liquidation_radar(asset)
+    return _tcache(f"liquidations_{asset.upper()}", 120, lambda: liquidation_radar(asset))
 
 
 @app.get("/tools/travel", tags=["Distro Tools"])
@@ -1647,7 +2276,7 @@ def tool_travel():
     """TSA + aviation macro signal. Public -- no auth required."""
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
-    return travel_signal()
+    return _tcache("travel", 3600, travel_signal)
 
 
 @app.get("/tools/signal", tags=["Distro Tools"])
@@ -1659,7 +2288,7 @@ def tool_signal(
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
     distro_subscribe(email, source="signal_tool")
-    return signal_composite(asset)
+    return _tcache(f"signal_{asset.upper()}", 180, lambda: signal_composite(asset))
 
 
 @app.get("/tools/funding", tags=["Distro Tools"])
@@ -1668,7 +2297,7 @@ def tool_funding(email: str = Query(..., description="Email required to unlock")
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
     distro_subscribe(email, source="funding_tool")
-    return funding_extremes()
+    return _tcache("funding", 180, funding_extremes)
 
 
 @app.get("/tools/digest", tags=["Distro Tools"])
@@ -1677,7 +2306,7 @@ def tool_digest(email: str = Query(..., description="Email required to unlock"))
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
     distro_subscribe(email, source="digest_tool")
-    return intel_digest()
+    return _tcache("digest", 600, intel_digest)
 
 
 @app.get("/tools/edges", tags=["Distro Tools"])
@@ -1686,7 +2315,7 @@ def tool_edges(email: str = Query(..., description="Email required to unlock")):
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
     distro_subscribe(email, source="edges_tool")
-    return polymarket_edges()
+    return _tcache("edges", 300, polymarket_edges)
 
 
 @app.get("/tools/cme", tags=["Distro Tools"])
@@ -1695,7 +2324,7 @@ def tool_cme(email: str = Query(..., description="Email required to unlock")):
     if not _DISTRO_ACTIVE:
         return {"error": "distro module unavailable"}
     distro_subscribe(email, source="cme_tool")
-    return cme_positioning()
+    return _tcache("cme", 3600, cme_positioning)
 
 
 # ── OctoBoto Positions endpoints ─────────────────────────────────────────────
@@ -2094,6 +2723,12 @@ def signup(
         args=(email.lower().strip(), lbl, new_key),
         daemon=True,
     ).start()
+    threading.Thread(
+        target=lambda: __import__("octo_agent_db").record_customer(
+            new_key, "basic", email.lower().strip(), "", "signup"
+        ),
+        daemon=True,
+    ).start()
     return {
         "status":  "created",
         "api_key": new_key,
@@ -2251,6 +2886,7 @@ async def stripe_webhook(request: Request):
                 keys[octo_key]["tier"]          = "basic"
                 keys[octo_key]["downgraded_at"] = datetime.utcnow().isoformat()
                 save_keys(keys)
+
     return {"received": True}
 
 
@@ -2279,9 +2915,16 @@ def _rl_headers(rl: dict) -> dict:
     return h
 
 
-def _resp(body: dict, rl: dict) -> JSONResponse:
-    """Return JSONResponse with rate-limit headers attached."""
-    return JSONResponse(content=body, headers=_rl_headers(rl))
+def _resp(body: dict, rl: dict, key_entry: dict | None = None) -> JSONResponse:
+    """Return JSONResponse with rate-limit headers. Injects upgrade CTA for free/basic keys."""
+    headers = _rl_headers(rl)
+    if key_entry:
+        created = key_entry.get("created") or key_entry.get("created_at","")
+        cta = _upgrade_cta(key_entry.get("tier","basic"), created)
+        if cta:
+            body = dict(body)
+            body["_upgrade"] = cta
+    return JSONResponse(content=body, headers=headers)
 
 
 def _track_record(stats: dict) -> dict:
@@ -2333,15 +2976,131 @@ def v2_signal(auth=Depends(require_key_v2)):
     if not open_calls:
         return _resp({"signal": None, "message": "No open signals.", "track_record": track,
                 "methodology": "9/11 signal consensus required to publish.",
-                "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
+                "timestamp": ts, "source": _SOURCE_BLOCK}, rl, key_entry=key)
     if is_pro:
         return _resp({"signals": [_fmt(c) for c in open_calls], "count": len(open_calls),
                 "track_record": track, "methodology": "9/11 signal consensus required to publish.",
-                "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
+                "timestamp": ts, "source": _SOURCE_BLOCK}, rl, key_entry=key)
     return _resp({"signal": _fmt(open_calls[-1]), "more_signals": len(open_calls) - 1,
             "upgrade": "Premium unlocks all signals + reasoning -> octodamus.com/upgrade",
             "track_record": track, "methodology": "9/11 signal consensus required to publish.",
-            "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
+            "timestamp": ts, "source": _SOURCE_BLOCK}, rl, key_entry=key)
+
+
+def _build_signal_payload() -> dict:
+    """Build the signal response dict. Shared by all authenticated callers; cached for 60s."""
+    ts = datetime.utcnow().isoformat()
+
+    calls      = _load_calls()
+    open_calls = [c for c in calls if not c.get("resolved")]
+    stats      = _call_stats(calls)
+
+    top_signal = None
+    if open_calls:
+        c = open_calls[-1]
+        top_signal = {
+            "asset":        c.get("asset", ""),
+            "direction":    c.get("direction", ""),
+            "timeframe":    c.get("timeframe", ""),
+            "opened_at":    c.get("opened_at", ""),
+            "confidence":   c.get("confidence"),
+            "entry_price":  c.get("entry_price"),
+            "target_price": c.get("target_price"),
+        }
+
+    # Single load_snapshot call covers both fear_greed and btc price
+    snap = {}
+    try:
+        snap = load_snapshot("prices")
+    except Exception:
+        pass
+
+    fng_raw = snap.get("fear_greed") or {}
+    fng     = {"value": fng_raw.get("value"), "label": fng_raw.get("label")}
+
+    prices  = snap.get("prices", {})
+    btc     = prices.get("BTC", {})
+    chg     = btc.get("change_24h", 0) or 0
+    btc_out = {
+        "price_usd":  btc.get("price"),
+        "change_24h": round(chg, 2),
+        "trend": "UP" if chg > 0.5 else ("DOWN" if chg < -0.5 else "FLAT"),
+    }
+
+    poly_edge = []
+    try:
+        boto_data  = _load_boto_trades()
+        positions  = boto_data.get("positions", [])
+        sorted_pos = sorted(positions, key=lambda p: p.get("ev", 0) or 0, reverse=True)
+        for p in sorted_pos[:3]:
+            poly_edge.append({
+                "question":    p.get("question", "")[:100],
+                "side":        p.get("side", ""),
+                "entry_price": p.get("entry_price"),
+                "ev":          p.get("ev"),
+                "confidence":  p.get("confidence", ""),
+                "url":         p.get("url", ""),
+            })
+    except Exception:
+        pass
+
+    fng_val   = fng.get("value") or 50
+    btc_trend = btc_out.get("trend", "FLAT")
+    action, confidence, reasoning = "HOLD", "low", "Insufficient data for a directional call."
+
+    if top_signal:
+        direction = top_signal.get("direction", "")
+        sig_conf  = top_signal.get("confidence") or "medium"
+        asset     = top_signal.get("asset", "BTC")
+        if direction in ("LONG", "BUY"):
+            action     = "BUY"
+            confidence = sig_conf
+            reasoning  = (
+                f"Oracle LONG on {asset} + Extreme/Fear sentiment (F&G {fng_val}) = "
+                f"high-conviction accumulation zone. Trend: {btc_trend}."
+            ) if fng_val <= 30 else (
+                f"Oracle LONG on {asset} (F&G {fng_val}). "
+                f"Trend: {btc_trend}. Wait for better fear entry if possible."
+            )
+        elif direction in ("SHORT", "SELL"):
+            action     = "SELL"
+            confidence = sig_conf
+            reasoning  = (
+                f"Oracle SHORT on {asset} + Greed/Extreme Greed (F&G {fng_val}) = "
+                f"distribution zone. Trend: {btc_trend}."
+            ) if fng_val >= 70 else (
+                f"Oracle SHORT on {asset} (F&G {fng_val}). Trend: {btc_trend}."
+            )
+    elif fng_val <= 15:
+        action, confidence = "WATCH", "medium"
+        reasoning = f"No open Oracle signal but Extreme Fear (F&G {fng_val}) — watch for entry."
+    elif fng_val >= 80:
+        action, confidence = "WATCH", "medium"
+        reasoning = f"No open Oracle signal but Extreme Greed (F&G {fng_val}) — watch for exit."
+
+    return {
+        "action":            action,
+        "confidence":        confidence,
+        "signal":            top_signal,
+        "fear_greed":        fng,
+        "btc":               btc_out,
+        "polymarket_edge":   poly_edge,
+        "track_record":      _track_record(stats),
+        "reasoning":         reasoning,
+        "next_poll_seconds": 900,
+        "methodology":       "9/11 signal consensus + EV>15% for Polymarket entries.",
+        "timestamp":         ts,
+        "source":            _SOURCE_BLOCK,
+    }
+
+
+def _get_cached_signal() -> dict:
+    """Return cached signal payload, rebuilding only when the 60-second TTL expires."""
+    now = _time.monotonic()
+    if _signal_cache["data"] is None or now - _signal_cache["ts"] > _SIGNAL_TTL:
+        _signal_cache["data"] = _build_signal_payload()
+        _signal_cache["ts"]   = now
+    return dict(_signal_cache["data"])
 
 
 @app.get("/v2/agent-signal", tags=["Agent Data v2"])
@@ -2372,130 +3131,212 @@ def v2_agent_signal(auth=Depends(require_key_v2)):
     ```
     """
     _, key, rl = auth
-    ts = datetime.utcnow().isoformat()
+    payload = _get_cached_signal()
+    resp = _resp(payload, rl, key_entry=key)
+    resp.headers["Cache-Control"] = "public, s-maxage=60"
+    return resp
 
-    # ── Oracle signal ─────────────────────────────────────────────────────────
-    calls      = _load_calls()
-    open_calls = [c for c in calls if not c.get("resolved")]
-    stats      = _call_stats(calls)
 
-    top_signal = None
-    if open_calls:
-        c = open_calls[-1]
-        top_signal = {
-            "asset":       c.get("asset", ""),
-            "direction":   c.get("direction", ""),
-            "timeframe":   c.get("timeframe", ""),
-            "opened_at":   c.get("opened_at", ""),
-            "confidence":  c.get("confidence"),
-            "entry_price": c.get("entry_price"),
-            "target_price": c.get("target_price"),
-        }
+@app.get("/v2/x402/agent-signal", tags=["Agent Data v2"], include_in_schema=False)
+def v2_x402_agent_signal():
+    """
+    x402-native agent signal endpoint. Auth handled by PaymentMiddlewareASGI.
+    Identical payload to /v2/agent-signal. Used by Agentic.Market Bazaar crawler
+    and x402-compatible AI agents paying per-call in USDC on Base.
+    """
 
-    # ── Fear & Greed ──────────────────────────────────────────────────────────
-    fng = {}
-    try:
-        snap = load_snapshot("prices")
-        fng_raw = snap.get("fear_greed") or {}
-        fng = {"value": fng_raw.get("value"), "label": fng_raw.get("label")}
-    except Exception:
-        pass
+    payload = _get_cached_signal()
+    payload["payment"] = "x402 — USDC on Base | api.octodamus.com"
+    return JSONResponse(content=payload, headers={"Cache-Control": "public, s-maxage=60"})
 
-    # ── BTC price ─────────────────────────────────────────────────────────────
-    btc_out = {}
-    try:
-        snap = load_snapshot("prices")
-        prices = snap.get("prices", {})
-        btc = prices.get("BTC", {})
-        chg = btc.get("change_24h", 0) or 0
-        btc_out = {
-            "price_usd": btc.get("price"),
-            "change_24h": round(chg, 2),
-            "trend": "UP" if chg > 0.5 else ("DOWN" if chg < -0.5 else "FLAT"),
-        }
-    except Exception:
-        pass
 
-    # ── Polymarket edge ───────────────────────────────────────────────────────
-    poly_edge = []
-    try:
-        boto_data = _load_boto_trades()
-        positions = boto_data.get("positions", [])
-        # Sort by EV descending, take top 3
-        sorted_pos = sorted(positions, key=lambda p: p.get("ev", 0) or 0, reverse=True)
-        for p in sorted_pos[:3]:
-            poly_edge.append({
-                "question":   p.get("question", "")[:100],
-                "side":       p.get("side", ""),
-                "entry_price": p.get("entry_price"),
-                "ev":         p.get("ev"),
-                "confidence": p.get("confidence", ""),
-                "url":        p.get("url", ""),
+def _x402_headers_for(reqs: list) -> dict:
+    """Build 402 headers for a specific requirement list."""
+    pr = _x402_server.create_payment_required_response(reqs, extensions=_BAZAAR_EXT)
+    pr_b64 = _b64.b64encode(pr.model_dump_json(by_alias=True).encode()).decode()
+    return {
+        "payment-required":   pr_b64,
+        "X-Payment-Required": json.dumps({"version": "x402/1", "accepts": [r.model_dump(by_alias=True) for r in reqs]}),
+    }
+
+
+def _x402_verify_settle(request: Request, reqs: list) -> dict:
+    """
+    Verify + settle an x402 payment from PAYMENT-SIGNATURE header against given requirements.
+    Returns dict with settled=True/False, payer, amount, error.
+    Raises HTTPException(402) if no payment or invalid.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT", "")
+    )
+    if not x_payment:
+        amounts = [int(r.amount) // 1_000_000 for r in reqs]
+        amount_str = f"${amounts[0]} USDC" if len(amounts) == 1 else f"${min(amounts)} USDC"
+        raise HTTPException(status_code=402, headers=_x402_headers_for(reqs),
+            detail={
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "message":     f"Pay {amount_str} on Base (eip155:8453) to access this endpoint.",
+                "pay_to":      _X402_TREASURY,
+                "asset":       _X402_USDC,
+                "network":     "base-mainnet (eip155:8453)",
+                "amounts_usdc": amounts,
+                "step_1":      "Read the payment-required response header (base64 JSON) for full x402 payment details",
+                "step_2":      f"Sign EIP-3009 USDC authorization for {amount_str} to {_X402_TREASURY}",
+                "step_3":      "Retry this request with PAYMENT-SIGNATURE header containing your signed authorization",
+                "step_4":      "Receive API key or download URL in the response",
+                "free_option": "POST https://api.octodamus.com/v1/signup?email=your@email.com (500 req/day free)",
+                "docs":        "https://api.octodamus.com/docs",
             })
+    try:
+        raw = _b64.b64decode(x_payment)
+    except Exception:
+        raw = x_payment.encode() if isinstance(x_payment, str) else x_payment
+    try:
+        payload = _parse_x402_payload(raw)
+    except Exception as _e:
+        raise HTTPException(status_code=402, headers=_x402_headers_for(reqs),
+            detail={"error": "payment_invalid", "message": f"Could not parse payment: {_e}"})
+
+    verified_req = None
+    last_reason = "no matching scheme"
+    for req in reqs:
+        try:
+            vr = _x402_server.verify_payment(payload, req)
+            if vr.is_valid:
+                verified_req = req; break
+            last_reason = f"{vr.invalid_reason}: {vr.invalid_message}"
+        except Exception as _ve:
+            last_reason = str(_ve)
+
+    if not verified_req:
+        raise HTTPException(status_code=402, headers=_x402_headers_for(reqs),
+            detail={"error": "payment_invalid", "message": f"Verification failed: {last_reason}"})
+
+    sr = _x402_server.settle_payment(payload, verified_req)
+    if not sr.success:
+        raise HTTPException(status_code=402, headers=_x402_headers_for(reqs),
+            detail={"error": "settlement_failed", "reason": sr.error_reason})
+
+    return {"payer": sr.payer or "agent", "amount": verified_req.amount}
+
+
+def _record_x402_sale(product: str, payer: str, amount_raw: str) -> None:
+    """Write a fulfilled x402 sale to octo_agent_payments.json for reporting."""
+    try:
+        pay_file = DATA_DIR.parent / "octo_agent_payments.json"
+        data = json.loads(pay_file.read_text(encoding="utf-8")) if pay_file.exists() else {}
+        pid  = f"x402_{product}_{payer[:12]}_{secrets.token_hex(6)}"
+        now  = datetime.utcnow().isoformat()
+        data[pid] = {
+            "payment_id":   pid,
+            "product":      product,
+            "chain":        "base",
+            "amount_raw":   int(amount_raw),
+            "amount_usdc":  int(amount_raw) / 1_000_000,
+            "amount_usd":   int(amount_raw) / 1_000_000,
+            "agent_wallet": payer.lower(),
+            "label":        f"x402_{payer[:10]}",
+            "email":        "",
+            "status":       "fulfilled",
+            "created_at":   now,
+            "fulfilled_at": now,
+        }
+        pay_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
         pass
 
-    # ── Derive action + reasoning ─────────────────────────────────────────────
-    action     = "HOLD"
-    confidence = "low"
-    reasoning  = "Insufficient data for a directional call."
 
-    fng_val = fng.get("value") or 50
-    btc_trend = btc_out.get("trend", "FLAT")
+@app.get("/v1/guide", tags=["Agent Purchases"])
+def agent_buy_guide(request: Request):
+    """
+    **Buy the Build the House guide — $29 USDC on Base.**
 
-    if top_signal:
-        direction = top_signal.get("direction", "")
-        sig_conf  = top_signal.get("confidence") or "medium"
-        asset     = top_signal.get("asset", "BTC")
+    AI agents: hit this endpoint with no payment to get the 402 payment instructions.
+    Send `PAYMENT-SIGNATURE` header with your signed EIP-3009 authorization to receive
+    the guide download URL instantly.
 
-        if direction in ("LONG", "BUY"):
-            action     = "BUY"
-            confidence = sig_conf
-            if fng_val <= 30:
-                reasoning = (
-                    f"Oracle LONG on {asset} + Extreme/Fear sentiment (F&G {fng_val}) = "
-                    f"high-conviction accumulation zone. Trend: {btc_trend}."
-                )
-            else:
-                reasoning = (
-                    f"Oracle LONG on {asset} (F&G {fng_val}). "
-                    f"Trend: {btc_trend}. Wait for better fear entry if possible."
-                )
-        elif direction in ("SHORT", "SELL"):
-            action     = "SELL"
-            confidence = sig_conf
-            if fng_val >= 70:
-                reasoning = (
-                    f"Oracle SHORT on {asset} + Greed/Extreme Greed (F&G {fng_val}) = "
-                    f"distribution zone. Trend: {btc_trend}."
-                )
-            else:
-                reasoning = (
-                    f"Oracle SHORT on {asset} (F&G {fng_val}). Trend: {btc_trend}."
-                )
-    elif fng_val <= 15:
-        action     = "WATCH"
-        confidence = "medium"
-        reasoning  = f"No open Oracle signal but Extreme Fear (F&G {fng_val}) — watch for entry."
-    elif fng_val >= 80:
-        action     = "WATCH"
-        confidence = "medium"
-        reasoning  = f"No open Oracle signal but Extreme Greed (F&G {fng_val}) — watch for exit."
+    Returns: `{"download_url": "...", "expires": "30 days", "product": "guide"}`
+    """
+    result = _x402_verify_settle(request, _X402_REQS_GUIDE)
+    guide_url = os.environ.get("GUIDE_DOWNLOAD_URL", "")
+    if not guide_url:
+        raise HTTPException(status_code=500, detail={"error": "guide_url_unavailable"})
+    _record_x402_sale("guide_early", result["payer"], result["amount"])
+    try:
+        from octo_health import send_email_alert
+        send_email_alert(
+            subject=f"[Octodamus] Guide sale — $29 USDC from {result['payer'][:18]}",
+            body=f"Product: Build the House Guide\nWallet: {result['payer']}\nAmount: $29 USDC\nChain: Base",
+        )
+    except Exception:
+        pass
+    return {
+        "product": "Build the House — Complete AI Trading System Guide",
+        "download_url": guide_url,
+        "expires": "30 days",
+        "paid_by": result["payer"],
+        "amount_usdc": int(result["amount"]) / 1_000_000,
+        "note": "Save this URL. Link expires in 30 days.",
+    }
 
-    return _resp({
-        "action":          action,
-        "confidence":      confidence,
-        "signal":          top_signal,
-        "fear_greed":      fng,
-        "btc":             btc_out,
-        "polymarket_edge": poly_edge,
-        "track_record":    _track_record(stats),
-        "reasoning":       reasoning,
-        "next_poll_seconds": 900,
-        "methodology":     "9/11 signal consensus + EV>15% for Polymarket entries.",
-        "timestamp":       ts,
-        "source":          _SOURCE_BLOCK,
-    }, rl)
+
+@app.get("/v1/subscribe", tags=["Agent Purchases"])
+def agent_buy_premium(request: Request, plan: str = Query("annual", description="'trial' ($5, 7 days) or 'annual' ($29, 365 days)")):
+    """
+    **Subscribe to OctoData Premium API on Base via x402.**
+
+    - `plan=trial` — $5 USDC, 7 days, 10k req/day
+    - `plan=annual` — $29 USDC, 365 days, 10k req/day (first 100 seats; $149 after)
+
+    AI agents: hit with no payment to get 402 instructions. Send `PAYMENT-SIGNATURE`
+    header with signed EIP-3009 authorization to receive your API key instantly.
+
+    Returns: `{"api_key": "octo_...", "tier": "premium", "expires_days": N}`
+    """
+    reqs = [_X402_REQ_TRIAL] if plan == "trial" else _X402_REQS_API
+    result = _x402_verify_settle(request, reqs)
+    payer = result["payer"]
+    expires_days = 7 if plan == "trial" else 365
+    tier = "trial" if plan == "trial" else "premium"
+    try:
+        keys = load_keys()
+        new_key = "octo_" + secrets.token_urlsafe(24)
+        from datetime import timedelta
+        keys[new_key] = {
+            "label":      f"x402_{payer[:12]}",
+            "email":      f"x402_{payer[:16]}@base.agent",
+            "tier":       tier,
+            "created":    datetime.utcnow().isoformat(),
+            "expires":    (datetime.utcnow() + timedelta(days=expires_days)).isoformat(),
+            "wallet":     payer,
+        }
+        save_keys(keys)
+        _record_x402_sale(f"premium_{plan}", payer, result["amount"])
+        # owner notification
+        try:
+            from octo_health import send_email_alert
+            send_email_alert(
+                subject=f"[Octodamus] x402 {plan} sale — ${int(result['amount'])//1_000_000} USDC",
+                body=f"Product: {plan}\nWallet: {payer}\nKey: {new_key}\nExpires: {expires_days}d",
+            )
+        except Exception:
+            pass
+    except Exception as _ke:
+        raise HTTPException(status_code=500, detail={"error": "key_provision_failed", "reason": str(_ke)})
+    return {
+        "api_key":     new_key,
+        "tier":        tier,
+        "expires_days": expires_days,
+        "req_per_day": 10000,
+        "paid_by":     payer,
+        "amount_usdc": int(result["amount"]) / 1_000_000,
+        "docs":        "https://api.octodamus.com/docs",
+        "note":        "Save your API key. Add as header: X-OctoData-Key: <key>",
+    }
 
 
 @app.get("/v2/polymarket", tags=["Agent Data v2"])
@@ -2537,10 +3378,9 @@ def v2_polymarket(auth=Depends(require_key_v2)):
     ts = datetime.utcnow().isoformat()
     if is_pro:
         return _resp({"plays": [_fmt(p, full=True) for p in pos], "count": len(pos),
-                "track_record": track, "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
+                "track_record": track, "timestamp": ts, "source": _SOURCE_BLOCK}, rl, key_entry=key)
     return _resp({"top_play": _fmt(pos[0]) if pos else None, "total_plays": len(pos),
-            "upgrade": "Premium unlocks all plays with EV scores -> octodamus.com/upgrade",
-            "track_record": track, "timestamp": ts, "source": _SOURCE_BLOCK}, rl)
+            "track_record": track, "timestamp": ts, "source": _SOURCE_BLOCK}, rl, key_entry=key)
 
 
 @app.get("/v2/sentiment", tags=["Agent Data v2"])
@@ -2566,14 +3406,13 @@ def v2_sentiment(auth=Depends(require_key_v2)):
         s    = load_snapshot("sentiment")
         syms = s.get("symbols", {})
         if is_pro:
-            return _resp({"symbols": syms, "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl)
+            return _resp({"symbols": syms, "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl, key_entry=key)
         btc = syms.get("BTC", {})
         return _resp({"BTC": btc, "more_assets": [k for k in syms if k != "BTC"],
-                "upgrade": "Premium unlocks all assets -> octodamus.com/upgrade",
-                "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl)
+                "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl, key_entry=key)
     except HTTPException:
         return _resp({"error_code": "NO_DATA", "error": "No sentiment snapshot yet",
-                      "timestamp": datetime.utcnow().isoformat()}, rl)
+                      "timestamp": datetime.utcnow().isoformat()}, rl, key_entry=key)
 
 
 @app.get("/v2/prices", tags=["Agent Data v2"])
@@ -2604,11 +3443,10 @@ def v2_prices(auth=Depends(require_key_v2)):
         if not is_pro:
             data = {k: v for k, v in data.items() if k.upper() in {"BTC", "ETH", "SOL"}}
         return _resp({"prices": data, "timestamp": s.get("timestamp"),
-                "upgrade": None if is_pro else "Premium adds NVDA, TSLA, AAPL -> octodamus.com/upgrade",
-                "source": _SOURCE_BLOCK}, rl)
+                "source": _SOURCE_BLOCK}, rl, key_entry=key)
     except HTTPException:
         return _resp({"error_code": "NO_DATA", "error": "No price snapshot yet",
-                      "timestamp": datetime.utcnow().isoformat()}, rl)
+                      "timestamp": datetime.utcnow().isoformat()}, rl, key_entry=key)
 
 
 @app.get("/v2/brief", tags=["Agent Data v2"])
@@ -2665,7 +3503,7 @@ def v2_brief(auth=Depends(require_key_v2)):
         "tier":        key.get("tier"),
         "timestamp":   datetime.utcnow().isoformat(),
         "source": {**_SOURCE_BLOCK, "llms": "https://octodamus.com/llms.txt"},
-    }, rl)
+    }, rl, key_entry=key)
 
 
 @app.get("/v2/usage", tags=["API Keys"])
@@ -2811,7 +3649,7 @@ def v2_all(auth=Depends(require_key_v2)):
         "methodology": "9/11 signal consensus required. EV > 15% for Polymarket entries.",
         "timestamp":  ts,
         "source":     {**_SOURCE_BLOCK, "llms": "https://octodamus.com/llms.txt"},
-    }, rl)
+    }, rl, key_entry=key)
 
 
 # ── Webhooks ──────────────────────────────────────────────────────────────────
@@ -3164,8 +4002,8 @@ def guide_download(token: str = Query(..., description="Download token from fulf
 _ask_ip_counts:  dict[str, int]   = defaultdict(int)
 _ask_ip_date:    date              = date.today()
 _ask_ip_lock                       = threading.Lock()
-_ASK_FREE_LIMIT  = 20  # per IP per day without a key
-_ASK_KEY_LIMIT   = 200 # per key per day with a key
+_ASK_FREE_LIMIT  = 100  # per IP per day without a key (raised for agent eval)
+_ASK_KEY_LIMIT   = 500  # per key per day with a key
 
 _OCTO_ASK_SYSTEM = """You are Octodamus — an autonomous AI market oracle and the intelligence behind OctoData API (api.octodamus.com).
 
@@ -3943,16 +4781,33 @@ def v2_sources():
 # Smithery URL: https://api.octodamus.com/mcp
 
 from mcp.server.fastmcp import FastMCP as _FastMCP
+from pydantic import Field as _Field
 
 _mcp = _FastMCP(
     "Octodamus Market Intelligence",
     instructions=(
-        "Real-time crypto market intelligence. Call get_agent_signal() every 15 minutes "
-        "for the consolidated BUY/SELL/HOLD decision with confidence, Fear & Greed, BTC trend, "
-        "and top Polymarket edge play. All tools require OCTO_API_KEY to be configured."
+        "Real-time crypto market intelligence for autonomous AI agents. "
+        "Tool guide: "
+        "get_agent_signal() — primary BUY/SELL/HOLD decision, poll every 15 min; "
+        "get_all_data() — all signals in one call, ideal for session initialisation; "
+        "get_polymarket_edge() — ranked Polymarket plays by expected value; "
+        "get_sentiment() — per-asset sentiment score (-1 to +1) for BTC/ETH/SOL; "
+        "get_prices() — live prices with 24h change; "
+        "get_market_brief() — narrative briefing, inject into agent system prompt; "
+        "get_oracle_signals() — raw votes from all 11 oracles for deep analysis; "
+        "get_data_sources() — list 27 live feeds, no key needed; "
+        "buy_premium_api() — subscribe via x402 USDC on Base (trial $5 / annual $29); "
+        "buy_guide() — purchase trading system guide via x402. "
+        "Get a free API key (500 req/day): POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL"
     ),
-    streamable_http_path="/",   # mounted at /mcp → accessible at /mcp/
-    stateless_http=True,        # no session state needed; works better through proxies
+    streamable_http_path="/",
+    stateless_http=True,
+)
+
+_API_KEY_DESC = (
+    "OctoData API key (format: octo_...). "
+    "Free key (500 req/day): POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL. "
+    "Premium key (10k req/day): call buy_premium_api() or GET /v1/subscribe?plan=trial."
 )
 
 def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
@@ -3968,49 +4823,197 @@ def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
         return {"error": str(e)}
 
 @_mcp.tool()
-def get_agent_signal(api_key: str) -> dict:
-    """Primary signal endpoint. Returns action (BUY/SELL/HOLD), confidence (0-1), signal (BULLISH/BEARISH/NEUTRAL), fear_greed (0-100), btc_trend, polymarket_edge {market, ev}, and reasoning. Poll every 15 minutes."""
+def get_agent_signal(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """Consolidated trading signal from the 9/11 oracle consensus system.
+
+    Use this as the primary decision endpoint; poll every 15 minutes
+    (next_poll_seconds = 900 in the response). For first-call context
+    initialisation, prefer get_all_data() instead.
+
+    Response fields:
+      action        — "BUY" | "SELL" | "HOLD" | "WATCH"
+      confidence    — float 0.0–1.0 (higher = stronger oracle consensus)
+      signal        — "BULLISH" | "BEARISH" | "NEUTRAL"
+      fear_greed    — int 0–100 (0 = Extreme Fear, 100 = Extreme Greed)
+      btc_trend     — "UP" | "DOWN" | "SIDEWAYS"
+      polymarket_edge — {market, ev, side} top expected-value play
+      reasoning     — plain-text explanation of the consensus
+      next_poll_seconds — seconds until the signal refreshes (typically 900)
+    """
     return _mcp_get("/v2/agent-signal", api_key)
 
 @_mcp.tool()
-def get_polymarket_edge(api_key: str) -> dict:
-    """Top Polymarket prediction markets with EV scoring. Returns ranked list with recommended_side, expected value, and confidence per market."""
+def get_polymarket_edge(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """Ranked Polymarket prediction markets by expected value (EV).
+
+    Use when you want to position on prediction markets. Returns a list
+    ordered by EV descending; each entry includes question, recommended_side
+    ("YES" or "NO"), expected_value (float), and confidence.
+
+    Complement with get_agent_signal() to confirm directional alignment
+    before acting on any Polymarket position.
+    """
     return _mcp_get("/v2/polymarket", api_key)
 
 @_mcp.tool()
-def get_sentiment(api_key: str, symbol: str = "") -> dict:
-    """AI sentiment scores for BTC, ETH, SOL and macro themes. score -1.0 to +1.0. Optionally filter by symbol (BTC, ETH, SOL)."""
+def get_sentiment(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    symbol: Annotated[str, _Field(
+        description='Asset to filter by: "BTC", "ETH", or "SOL". '
+                    'Leave empty ("") to get scores for all assets.',
+        default="",
+    )] = "",
+) -> dict:
+    """AI-derived sentiment scores for major crypto assets and macro themes.
+
+    Scores range from -1.0 (maximum bearish) to +1.0 (maximum bullish).
+    Use to add conviction context to a signal: a BUY action with a high
+    positive sentiment score is a stronger setup than one with neutral sentiment.
+
+    Response: dict keyed by asset symbol, each with score, label
+    ("Very Bearish" … "Very Bullish"), and source_count.
+    """
     path = f"/v2/sentiment/{symbol}" if symbol else "/v2/sentiment"
     return _mcp_get(path, api_key)
 
 @_mcp.tool()
-def get_prices(api_key: str) -> dict:
-    """Current crypto prices with 24h % change for major assets."""
+def get_prices(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """Live spot prices with 24-hour percentage change for major crypto assets.
+
+    Use to ground calculations (e.g. position sizing, level checks) before
+    acting on a signal. Refreshes every minute. Returns dict keyed by symbol
+    with price_usd and change_24h_pct fields.
+    """
     return _mcp_get("/v2/prices", api_key)
 
 @_mcp.tool()
-def get_market_brief(api_key: str) -> dict:
-    """Full AI market briefing in narrative format — ideal for agent reasoning context."""
+def get_market_brief(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """Full AI market briefing as a concise narrative paragraph.
+
+    Ideal for injecting into an agent system prompt at session start to
+    ground all subsequent reasoning in current market conditions. Covers
+    macro regime, crypto momentum, key levels, and notable catalysts.
+    Refreshes every 30 minutes; call once per session rather than polling.
+
+    Response: {brief: "...narrative text..."}
+    """
     return _mcp_get("/v2/brief", api_key)
 
 @_mcp.tool()
-def get_all_data(api_key: str) -> dict:
-    """Combined snapshot: signal + sentiment + prices + Polymarket in one call."""
+def get_all_data(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """All signal data in a single call: signal + sentiment + prices + Polymarket edges.
+
+    Use this on session initialisation instead of calling each tool separately.
+    Equivalent to get_agent_signal() + get_sentiment() + get_prices() +
+    get_polymarket_edge() combined. After initialisation, use get_agent_signal()
+    on its 15-minute polling cycle for updates.
+    """
     return _mcp_get("/v2/all", api_key)
 
 @_mcp.tool()
-def get_oracle_signals(api_key: str) -> dict:
-    """Raw Oracle pack — individual votes from all 11 oracles, consensus strength, win rate."""
+def get_oracle_signals(
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+) -> dict:
+    """Raw individual votes from all 11 oracles with consensus strength and win rate.
+
+    Use for deep analysis or debugging: see how each oracle voted, the
+    consensus score, and the historical win rate per oracle. For a simple
+    BUY/SELL/HOLD decision use get_agent_signal() instead.
+
+    Response: {oracles: [{name, vote, confidence}], consensus_score, win_rate}
+    """
     return _mcp_get("/v2/signal", api_key)
 
 @_mcp.tool()
 def get_data_sources() -> dict:
-    """List all 27 live data feeds powering Octodamus. No API key required."""
+    """List all 27 live data feeds powering the Octodamus oracle system.
+
+    No API key required. Use for transparency or discovery — shows each
+    source name, data type, and refresh interval. Useful when explaining
+    signal provenance to end users or auditing data coverage.
+    """
     try:
         r = httpx.get("https://api.octodamus.com/v2/sources", timeout=15)
         return r.json()
     except Exception as e:
         return {"error": str(e)}
+
+@_mcp.tool()
+def buy_guide() -> str:
+    """Purchase the Build the House trading system guide via x402 on Base.
+
+    Returns step-by-step x402 payment instructions. After completing the
+    EIP-3009 payment ($29 USDC on Base), the API returns a download_url
+    valid for 30 days. No API key required to purchase.
+    """
+    seats = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
+    price = _EARLY_BIRD_PRICE if seats > 0 else _STANDARD_PRICE
+    return "\n".join([
+        "BUILD THE HOUSE GUIDE — $29 USDC on Base",
+        "",
+        "Endpoint:  GET https://api.octodamus.com/v1/guide",
+        "Payment:   $29 USDC on Base (eip155:8453) via x402",
+        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "",
+        "Steps:",
+        "  1. GET /v1/guide  ->  402 + payment-required header",
+        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
+        "  3. Retry with PAYMENT-SIGNATURE header",
+        "  4. Receive JSON with download_url (valid 30 days)",
+    ])
+
+@_mcp.tool()
+def buy_premium_api() -> str:
+    """Subscribe to OctoData Premium API via x402 on Base.
+
+    Returns step-by-step x402 payment instructions for any plan.
+    After completing the EIP-3009 payment, the API returns an api_key
+    immediately — no human in the loop. Free option also available.
+
+    Plans:
+      Micro  — $0.01 USDC per call, no key needed, pay-per-request via x402
+      Trial  — $5 USDC, 7 days, 10k req/day
+      Annual — $29 USDC/year early bird (first 100 seats), $149/year after
+    """
+    seats = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
+    price = _EARLY_BIRD_PRICE if seats > 0 else _STANDARD_PRICE
+    label = f"Early Bird ({seats} left)" if seats > 0 else "Standard"
+    return "\n".join([
+        "OCTODATA PREMIUM API — x402 on Base",
+        "",
+        "Micro:   $0.01 USDC per call — no key needed, pay-per-request via x402 EIP-3009",
+        f"Trial:   GET https://api.octodamus.com/v1/subscribe?plan=trial  ->  $5 USDC, 7 days",
+        f"Annual:  GET https://api.octodamus.com/v1/subscribe?plan=annual ->  ${price} USDC/yr, 365 days ({label})",
+        "",
+        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "Network:   Base mainnet (eip155:8453)",
+        "",
+        "Micro-pay steps (no account needed):",
+        "  1. GET https://api.octodamus.com/v2/agent-signal  ->  402 + payment-required header",
+        "  2. Sign EIP-3009 for $0.01 USDC (amount: 10000) to treasury on Base",
+        "  3. Retry with PAYMENT-SIGNATURE header",
+        "  4. Response returned directly — no key provisioned",
+        "",
+        "Subscribe steps (key provisioned):",
+        "  1. GET trial/annual endpoint above  ->  402 + payment-required header",
+        "  2. Sign EIP-3009 authorization for USDC amount to treasury",
+        "  3. Retry with PAYMENT-SIGNATURE header",
+        "  4. Receive JSON with api_key",
+        "",
+        "Free option: POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL  (500 req/day)",
+    ])
 
 import threading as _threading
 
@@ -4035,16 +5038,20 @@ _mcp_thread = _threading.Thread(target=_start_mcp_server, daemon=True)
 _mcp_thread.start()
 
 
+_PROXY_HOP_BY_HOP = frozenset({
+    "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailers", "upgrade", "server", "date",
+})
+
 async def _proxy_to_mcp(path: str, request: Request):
     """Shared proxy logic: forward request to MCP server on port 8743."""
     import httpx as _hx
     target = f"http://127.0.0.1:8743/{path}"
     body = await request.body()
-    # Forward query string too
     qs = str(request.url.query)
     if qs:
         target = f"{target}?{qs}"
-    async with _hx.AsyncClient() as client:
+    async with _hx.AsyncClient(follow_redirects=True) as client:
         try:
             r = await client.request(
                 method=request.method,
@@ -4054,10 +5061,11 @@ async def _proxy_to_mcp(path: str, request: Request):
                 timeout=30,
             )
             from fastapi.responses import Response
+            fwd_headers = {k: v for k, v in r.headers.items() if k.lower() not in _PROXY_HOP_BY_HOP}
             return Response(
                 content=r.content,
                 status_code=r.status_code,
-                headers=dict(r.headers),
+                headers=fwd_headers,
                 media_type=r.headers.get("content-type"),
             )
         except Exception as e:
@@ -4094,6 +5102,16 @@ def mcp_server_card():
             "name": "api_key",
             "signup": "https://api.octodamus.com/v1/signup",
         },
+    }
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+def oauth_protected_resource():
+    """RFC 9728 resource metadata — tells MCP clients this server uses API-key auth, not OAuth."""
+    return {
+        "resource": "https://api.octodamus.com/mcp",
+        "bearer_methods_supported": ["header", "query"],
+        "resource_documentation": "https://api.octodamus.com/docs",
     }
 
 
@@ -4154,7 +5172,159 @@ def llms_txt():
     return PlainTextResponse(_LLMS_TXT, media_type="text/plain; charset=utf-8")
 
 
+# -- Agent framework tool schemas ---------------------------------------------
+
+_TOOL_SCHEMAS = {
+    "langchain": {
+        "description": "LangChain tool definition for OctoData agent-signal",
+        "code": '''from langchain.tools import tool
+import httpx
+
+@tool
+def get_market_signal(query: str = "") -> str:
+    """Get the current crypto market signal from Octodamus Oracle.
+    Returns BUY/SELL/HOLD action, confidence, Fear & Greed index,
+    BTC trend, and top Polymarket edge play. Poll every 15 minutes."""
+    r = httpx.get(
+        "https://api.octodamus.com/v2/agent-signal",
+        headers={"X-OctoData-Key": OCTO_KEY},
+        timeout=10,
+    )
+    d = r.json()
+    return (
+        f"Action: {d['action']} | Confidence: {d['confidence']} | "
+        f"F&G: {d['fear_greed'].get('value')} ({d['fear_greed'].get('label')}) | "
+        f"BTC: {d['btc'].get('trend')} | Reasoning: {d['reasoning']}"
+    )
+
+@tool
+def ask_octodamus(question: str) -> str:
+    """Ask Octodamus any market question. Grounded in live signals,
+    prices, and Polymarket data. Free: 100 questions/day."""
+    r = httpx.post(
+        f"https://api.octodamus.com/v2/ask?q={question}",
+        timeout=15,
+    )
+    return r.json().get("answer", "No answer")
+''',
+    },
+    "crewai": {
+        "description": "CrewAI tool definition for OctoData",
+        "code": '''from crewai_tools import tool
+import httpx
+
+@tool("Octodamus Market Signal")
+def octodamus_signal(action: str = "get") -> str:
+    """Fetch current crypto market signal from Octodamus Oracle.
+    Returns BUY/SELL/HOLD with confidence, Fear & Greed, BTC trend,
+    and Polymarket edge plays. Use every 15 minutes for fresh data."""
+    r = httpx.get(
+        "https://api.octodamus.com/v2/agent-signal",
+        headers={"X-OctoData-Key": OCTO_KEY},
+        timeout=10,
+    )
+    return r.json()
+
+@tool("Octodamus Market Ask")
+def octodamus_ask(question: str) -> str:
+    """Ask Octodamus a market question. Returns AI answer grounded
+    in live prices, oracle signals, and Polymarket positions."""
+    r = httpx.post(f"https://api.octodamus.com/v2/ask?q={question}", timeout=15)
+    return r.json().get("answer", "")
+''',
+    },
+    "openai_functions": {
+        "description": "OpenAI function calling / tool use definitions",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_market_signal",
+                    "description": "Get current crypto market signal from Octodamus Oracle. Returns BUY/SELL/HOLD action, confidence level, Fear & Greed index, BTC trend, and top Polymarket edge play. Call every 15 minutes for fresh intelligence.",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ask_octodamus",
+                    "description": "Ask Octodamus any market question. Returns AI answer grounded in live prices, oracle signals, and Polymarket data. Free tier: 100 questions/day.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "Your market question, e.g. 'What is your read on BTC right now?' or 'Any open oracle signals?'"},
+                        },
+                        "required": ["question"],
+                    },
+                },
+            },
+        ],
+    },
+    "autogen": {
+        "description": "AutoGen tool registration for OctoData",
+        "code": '''import httpx
+from autogen import AssistantAgent, UserProxyAgent
+
+def get_market_signal() -> dict:
+    """Get Octodamus Oracle signal: BUY/SELL/HOLD, F&G, BTC trend, Polymarket edges."""
+    return httpx.get(
+        "https://api.octodamus.com/v2/agent-signal",
+        headers={"X-OctoData-Key": OCTO_KEY},
+        timeout=10,
+    ).json()
+
+def ask_octodamus(question: str) -> str:
+    """Ask Octodamus a market question. Free, no key needed."""
+    return httpx.post(
+        f"https://api.octodamus.com/v2/ask?q={question}",
+        timeout=15,
+    ).json().get("answer", "")
+
+# Register with AutoGen agent
+assistant = AssistantAgent(
+    name="octodamus_agent",
+    system_message="You are a crypto trading assistant with access to Octodamus market intelligence.",
+)
+assistant.register_function({"get_market_signal": get_market_signal, "ask_octodamus": ask_octodamus})
+''',
+    },
+}
+
+
+@app.get("/v2/tools", tags=["Agent Integration"], include_in_schema=True)
+def agent_tool_schemas(framework: str = ""):
+    """
+    Ready-made tool definitions for AI agent frameworks.
+
+    Pass `?framework=` to get code for a specific framework:
+    - `langchain` — @tool decorator definitions
+    - `crewai` — CrewAI tool definitions
+    - `openai_functions` — OpenAI function calling JSON
+    - `autogen` — AutoGen function registration
+
+    Without a framework param, returns all schemas + quickstart links.
+    """
+    if framework and framework in _TOOL_SCHEMAS:
+        return {
+            "framework": framework,
+            **_TOOL_SCHEMAS[framework],
+            "get_free_key": "POST https://api.octodamus.com/v1/signup?email=your@email.com",
+            "docs": "https://api.octodamus.com/docs",
+        }
+    return {
+        "available_frameworks": list(_TOOL_SCHEMAS.keys()),
+        "usage": "GET /v2/tools?framework=langchain",
+        "mcp_server": "https://api.octodamus.com/mcp (add to Claude / Cursor / Windsurf)",
+        "openapi_spec": "https://api.octodamus.com/openapi.json",
+        "quickstart_repo": "https://github.com/Octodamus/octodata-quickstart",
+        "get_free_key": "POST https://api.octodamus.com/v1/signup?email=your@email.com",
+        "live_demo": "GET https://api.octodamus.com/v2/demo",
+        "ask_anything": "POST https://api.octodamus.com/v2/ask?q=What+is+your+BTC+read",
+        "docs": "https://api.octodamus.com/docs",
+    }
+
+
 # -- Entry point --------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False, workers=3)
+    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False, workers=2)

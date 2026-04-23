@@ -25,9 +25,9 @@ PROJECT_DIR  = Path(r"C:\Users\walli\octodamus")
 EVENTS_FILE  = PROJECT_DIR / "data" / "acp_events.jsonl"
 ALERT_STATE  = PROJECT_DIR / "data" / "acp_monitor_state.json"
 
-STUCK_MIN_MIN        = 30    # funded job older than this = stuck
+STUCK_MIN_MIN        = 8     # funded job older than this = stuck (SLA is 5min)
 STUCK_MAX_MIN        = 240   # funded job older than this = already expired by network
-SILENCE_THRESHOLD_H  = 24   # listener not seen for this long = suspicious
+SILENCE_THRESHOLD_H  = 2.0   # 2 hours -- ACP marketplace can be quiet for hours normally
 
 
 PID_FILE = PROJECT_DIR / "data" / "acp_worker.pid"
@@ -49,14 +49,12 @@ def _acp_is_running() -> bool:
 
 def _restart_acp_worker() -> bool:
     try:
-        subprocess.Popen(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-             "-File", str(PROJECT_DIR / "run_acp_worker.ps1")],
-            creationflags=0x00000008  # DETACHED_PROCESS
+        # Use schtasks -- fire-and-forget, no blocking sleep needed
+        r = subprocess.run(
+            ["schtasks", "/Run", "/TN", "Octodamus-ACP-Worker"],
+            capture_output=True, text=True, timeout=15,
         )
-        # tsx listener takes 25-35s to start -- wait 60s before checking
-        time.sleep(60)
-        return _acp_is_running()
+        return "SUCCESS" in r.stdout or r.returncode == 0
     except Exception:
         return False
 
@@ -140,29 +138,35 @@ def check_stuck_jobs() -> list[str]:
 
 
 def check_last_activity() -> float:
-    """Return hours since ACP worker last logged 'Watching for events'.
-    This confirms the listener subprocess connected successfully.
-    Returns -1 if log not found."""
+    """
+    Return hours since the ACP worker last wrote ANY log line.
+    A timestamp-bearing log line means the process is alive and working.
+    Silence means the process is dead or the listener disconnected.
+
+    Note: 'Watching for events' only prints on startup. After that the log
+    is only written when jobs arrive or replay runs. The ACP marketplace can
+    be genuinely quiet for hours — that is normal, not a disconnection.
+    """
     log_file = PROJECT_DIR / "logs" / "octo_acp_worker.log"
     if not log_file.exists():
         return -1.0
     try:
         lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         now_ts = datetime.now(timezone.utc).timestamp()
+        import time as _time
+        import re as _re
+        # Walk backwards looking for any timestamped line (format: YYYY-MM-DD HH:MM:SS)
+        ts_pattern = _re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
         for line in reversed(lines):
-            if "Watching for events" in line or "Listener connected" in line:
-                # Parse timestamp like "2026-04-16 16:18:52,053"
-                parts = line.split(" ")
-                if len(parts) >= 2:
-                    try:
-                        dt = datetime.strptime(parts[0] + " " + parts[1].split(",")[0], "%Y-%m-%d %H:%M:%S")
-                        from datetime import timezone as tz
-                        import time
-                        local_ts = time.mktime(dt.timetuple())
-                        return (now_ts - local_ts) / 3600
-                    except Exception:
-                        pass
-        return 99.0  # found log but no connect entry
+            m = ts_pattern.match(line)
+            if m:
+                try:
+                    dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+                    local_ts = _time.mktime(dt.timetuple())
+                    return (now_ts - local_ts) / 3600
+                except Exception:
+                    pass
+        return 99.0  # log exists but no parseable timestamp
     except Exception:
         return -1.0
 
@@ -228,16 +232,27 @@ def run():
     if hours_silent < 0:
         print("[WARN] Events file missing")
     elif hours_silent > SILENCE_THRESHOLD_H:
-        print(f"[WARN] No ACP events in {hours_silent:.1f}h -- listener may be disconnected")
-        if not _already_alerted(state, "silence", cooldown_h=6):
+        mins_silent = hours_silent * 60
+        print(f"[WARN] No ACP events in {mins_silent:.0f}min -- auto-restarting worker")
+        # Kill and restart immediately -- don't wait for human
+        try:
+            subprocess.run(
+                ["powershell", "-Command",
+                 "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*octo_acp_worker*' "
+                 "-and $_.CommandLine -notlike '*powershell*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                capture_output=True, timeout=10
+            )
+        except Exception:
+            pass
+        restarted = _restart_acp_worker()
+        print(f"[{'OK ' if restarted else 'ERR'}] ACP worker restart: {'success' if restarted else 'FAILED'}")
+        # Only email if restart also failed, or first time silence detected
+        if not _already_alerted(state, "silence", cooldown_h=1):
             send_email_alert(
-                subject=f"[Octodamus WARNING] ACP listener silent {hours_silent:.0f}h -- {now_str}",
+                subject=f"[Octodamus] ACP silent {mins_silent:.0f}min -- auto-restarted {'OK' if restarted else 'FAILED'} -- {now_str}",
                 body=(
-                    f"No ACP events have been received in {hours_silent:.1f} hours.\n\n"
-                    f"This may mean the event listener disconnected from the Virtuals ACP network.\n"
-                    f"The worker process may be running but not receiving jobs.\n\n"
-                    f"To fix: restart the ACP worker\n"
-                    f"  schtasks /run /tn Octodamus-ACP-Worker\n\n"
+                    f"ACP listener was silent for {mins_silent:.0f} minutes.\n\n"
+                    f"Auto-restart: {'SUCCESS' if restarted else 'FAILED -- manual intervention needed'}\n\n"
                     f"Log: C:\\Users\\walli\\octodamus\\logs\\octo_acp_worker.log"
                 )
             )

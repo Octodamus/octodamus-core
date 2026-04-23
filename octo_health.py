@@ -47,12 +47,16 @@ EXPECTED_TASKS = [
   "Octodamus-AutoResolve",
   "Octodamus-BotoResolve",
   "Octodamus-Mentions",
+  "Octodamus-Engage-9am",
+  "Octodamus-Engage-1pm",
+  "Octodamus-Engage-5pm",
   # Infrastructure
-  "Octodamus-API-Server",
+  # "Octodamus-API-Server",  # disabled -- NSSM service OctoDataAPI owns the API server now
   "Octodamus-ACP-Worker",
   "Octodamus-Cloudflared",
   "Octodamus-XStats",
   "Octodamus-HealthCheck",
+  "Octodamus-WorkerCleanup",
   "Octodamus-GDrive-Backup",
   "Octodamus-FlightSample",
 ]
@@ -477,6 +481,190 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   return 0
 
 
+import re as _re
+
+# ── Process definitions: script fragment → (nssm_service | None, schtasks_task | None)
+_CRITICAL_PROCESSES = [
+    # (script_fragment,          nssm_service,     schtasks_task,              keep_newest_only)
+    ("octo_api_server",         "OctoDataAPI",     None,                        True),
+    ("octo_acp_worker",          None,             "Octodamus-ACP-Worker",      True),
+    ("telegram_bot",             None,             "Octodamus-Telegram",        True),
+    ("octo_boto",                None,             None,                        True),
+    ("cloudflared",              None,             "Octodamus-Cloudflared",     True),
+]
+
+
+def dedup_processes(silent: bool = False) -> dict:
+    """
+    For each critical process, detect duplicate instances and kill all but the newest.
+    NSSM-managed processes: stop service → kill all → start service for clean restart.
+    Returns {"deduped": {script: count_killed}}.
+    """
+    def _log(msg):
+        if not silent:
+            print(msg)
+
+    result = {"deduped": {}}
+
+    # Get all Python processes + cloudflared with creation time
+    try:
+        wmi_out = subprocess.run(
+            ["powershell", "-Command",
+             "Get-WmiObject Win32_Process | "
+             "Select-Object ProcessId, CommandLine, CreationDate | "
+             "ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=20
+        ).stdout.strip()
+        if not wmi_out:
+            return result
+        procs = json.loads(wmi_out)
+        if isinstance(procs, dict):
+            procs = [procs]
+    except Exception as e:
+        _log(f"[dedup] WMI query failed: {e}")
+        return result
+
+    for script, nssm_svc, schtask, _ in _CRITICAL_PROCESSES:
+        matches = [
+            p for p in procs
+            if p.get("CommandLine") and script in (p["CommandLine"] or "")
+            and "spawn_main" not in (p["CommandLine"] or "")
+            and "claude" not in (p["CommandLine"] or "").lower()
+        ]
+        if len(matches) <= 1:
+            continue
+
+        # Sort by CreationDate descending — keep newest (last in list after sort asc)
+        matches.sort(key=lambda p: p.get("CreationDate") or "")
+        to_kill = matches[:-1]  # kill all but newest
+        _log(f"[dedup] {script}: {len(matches)} instances — killing {len(to_kill)} duplicate(s)")
+
+        if nssm_svc:
+            # Stop service cleanly, kill any stragglers, restart
+            subprocess.run(["nssm", "stop", nssm_svc], capture_output=True, timeout=15)
+            for p in matches:  # kill ALL, nssm will restart clean
+                subprocess.run(["taskkill", "/F", "/PID", str(p["ProcessId"])],
+                               capture_output=True)
+            subprocess.run(["nssm", "start", nssm_svc], capture_output=True, timeout=15)
+            _log(f"[dedup] {nssm_svc}: stopped, killed {len(matches)}, restarted")
+            result["deduped"][script] = len(matches) - 1
+        else:
+            # Kill older instances, keep newest
+            killed = 0
+            for p in to_kill:
+                r = subprocess.run(["taskkill", "/F", "/PID", str(p["ProcessId"])],
+                                   capture_output=True, text=True)
+                if "SUCCESS" in r.stdout:
+                    killed += 1
+            _log(f"[dedup] {script}: killed {killed} duplicate(s), kept PID {matches[-1]['ProcessId']}")
+            result["deduped"][script] = killed
+
+            # If schtask defined and we killed something, ensure at least one is alive
+            if schtask and killed > 0:
+                still_alive = any(
+                    script in (p.get("CommandLine") or "")
+                    for p in procs
+                    if p.get("ProcessId") == matches[-1]["ProcessId"]
+                )
+                if not still_alive:
+                    subprocess.run(["schtasks", "/Run", "/TN", schtask], capture_output=True)
+
+    return result
+
+
+def cleanup_stale_workers(silent: bool = False) -> dict:
+    """
+    Kill uvicorn spawn_main workers whose parent process no longer exists,
+    then restart the API server if port 8742 is not healthy.
+
+    Returns {"killed": int, "restarted": bool}.
+    """
+    def _log(msg):
+        if not silent:
+            print(msg)
+
+    result = {"killed": 0, "restarted": False}
+
+    # ── Step 0: kill duplicate process instances across all critical feeds ────
+    dedup = dedup_processes(silent=silent)
+    total_deduped = sum(dedup.get("deduped", {}).values())
+    if total_deduped:
+        _log(f"[dedup] Killed {total_deduped} duplicate process(es) across feeds")
+    result["deduped"] = dedup.get("deduped", {})
+
+    # ── Step 1: find all live PIDs ────────────────────────────────────────────
+    try:
+        live_result = subprocess.run(
+            ["powershell", "-Command",
+             "Get-Process | Select-Object -ExpandProperty Id | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=15
+        )
+        live_pids = set(json.loads(live_result.stdout.strip() or "[]"))
+    except Exception as e:
+        _log(f"[worker-cleanup] Could not get live PIDs: {e}")
+        return result
+
+    # ── Step 2: find spawn_main workers ───────────────────────────────────────
+    try:
+        wmi_result = subprocess.run(
+            ["powershell", "-Command",
+             "Get-WmiObject Win32_Process | "
+             "Where-Object { $_.CommandLine -like '*spawn_main*' } | "
+             "Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=20
+        )
+        raw = wmi_result.stdout.strip()
+        if not raw:
+            _log("[worker-cleanup] No spawn_main workers found.")
+        else:
+            workers = json.loads(raw)
+            if isinstance(workers, dict):
+                workers = [workers]
+
+            for w in workers:
+                pid = w.get("ProcessId")
+                cmdline = w.get("CommandLine", "")
+                m = _re.search(r"parent_pid=(\d+)", cmdline)
+                if not m:
+                    continue
+                parent_pid = int(m.group(1))
+                if parent_pid not in live_pids:
+                    kill = subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True, text=True
+                    )
+                    if "SUCCESS" in kill.stdout:
+                        result["killed"] += 1
+                        _log(f"[worker-cleanup] Killed orphan worker PID {pid} (dead parent {parent_pid})")
+                    else:
+                        _log(f"[worker-cleanup] Could not kill PID {pid}: {kill.stdout.strip()}")
+    except Exception as e:
+        _log(f"[worker-cleanup] Worker scan error: {e}")
+
+    # ── Step 3: check if API server is healthy ────────────────────────────────
+    api_healthy = False
+    try:
+        r = httpx.get("http://localhost:8742/health", timeout=6)
+        api_healthy = r.status_code == 200
+    except Exception:
+        pass
+
+    if not api_healthy:
+        _log("[worker-cleanup] Port 8742 not healthy — restarting API server.")
+        subprocess.run(
+            ["nssm", "restart", "OctoDataAPI"],
+            capture_output=True
+        )
+        result["restarted"] = True
+
+    summary = f"[worker-cleanup] Done — killed {result['killed']} orphan(s), restarted={result['restarted']}"
+    _log(summary)
+    return result
+
+
 if __name__ == "__main__":
-  context = sys.argv[1] if len(sys.argv) > 1 else "manual"
-  sys.exit(run_health_check(auto_restart=True, context=context))
+    context = sys.argv[1] if len(sys.argv) > 1 else "manual"
+    if context == "cleanup":
+        r = cleanup_stale_workers(silent=False)
+        sys.exit(0)
+    sys.exit(run_health_check(auto_restart=True, context=context))

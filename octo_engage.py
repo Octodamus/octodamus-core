@@ -21,12 +21,33 @@ from pathlib import Path
 import anthropic
 import httpx
 
+try:
+    from openai import OpenAI as _OpenAI
+    _claw_engage = _OpenAI(base_url="http://localhost:8402/v1", api_key="x402")
+    _CLAW_ENGAGE = True
+except Exception:
+    _claw_engage = None
+    _CLAW_ENGAGE = False
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 NEWSAPI_BASE  = "https://newsapi.org/v2/everything"
 CALLS_FILE    = Path(r"C:\Users\walli\octodamus\data\octo_calls.json")
 STATE_FILE    = Path(r"C:\Users\walli\octodamus\octo_engage_state.json")
 DEFAULT_COUNT = 1
+
+# Cashtag for each tracked ticker — appended to every post about that asset
+_CASHTAG = {
+    "BTC":   "$BTC",
+    "ETH":   "$ETH",
+    "SOL":   "$SOL",
+    "NVDA":  "$NVDA",
+    "TSLA":  "$TSLA",
+    "AAPL":  "$AAPL",
+    "OIL":   "$WTI",
+    "GOLD":  "$GOLD",
+    "WTI":   "$WTI",
+}
 
 # Assets Octodamus tracks — drives what news gets fetched
 TRACKED_QUERIES = [
@@ -59,8 +80,23 @@ TRUSTED_DOMAINS = {
   "nytimes.com", "washingtonpost.com", "theguardian.com",
   "economist.com", "bbc.com", "bbc.co.uk",
   "investing.com", "seekingalpha.com", "fool.com",
-  "yahoo.com",
+  # yahoo.com removed — NewsAPI returns consent.yahoo.com redirect URLs
 }
+
+# URL patterns that produce consent walls, paywalls, or dead links when tweeted
+_DEAD_URL_PATTERNS = [
+  "consent.yahoo.com",
+  "consent.google.com",
+  "accounts.google.com",
+  "login.",
+  "/subscribe",
+  "/paywall",
+  "r.search.yahoo.com",
+]
+
+def _is_live_url(url: str) -> bool:
+  """Return False if this URL is a known consent wall or redirect dead-end."""
+  return not any(pattern in url for pattern in _DEAD_URL_PATTERNS)
 
 def _is_trusted(url: str) -> bool:
   from urllib.parse import urlparse
@@ -150,6 +186,7 @@ def fetch_headlines(query: str, count: int = 3) -> list:
       for a in articles
       if a.get("title") and "[Removed]" not in a.get("title", "")
       and _is_trusted(a.get("url", ""))
+      and _is_live_url(a.get("url", ""))
     ]
   except Exception as e:
     print(f"[Engage] NewsAPI error for '{query}': {e}")
@@ -207,24 +244,34 @@ Voice: George Carlin meets market oracle. Find the absurdity in what everyone ac
 
 TWEET FORMAT — pick one per article:
 
-TYPE A — Sharp commentary (most common):
-One sharp observation on the news. What's actually going on beneath the headline.
-End with a directional lean if the data supports it: "BTC looks like $72K before $65K." or "Oil smells like $85 before end of quarter."
+TYPE A — Sharp commentary with numbers (most common):
+Pull an unknown or surprising fact from the article — something most people don't know.
+Include the actual dollar amounts, percentages, or capital flow numbers from the article.
+End with a directional lean if the data supports it.
 Under 240 chars so the article link fits.
-NEVER write CALLING IT: or Oracle call: — those phrases are strictly reserved for the official call system and must never appear in engage posts.
+NEVER write CALLING IT: or Oracle call: — those phrases are reserved for the official oracle system.
+
+TYPE B — Person/figure insight:
+If the article features a named person (Cramer, Musk, Buffett, a CEO, a politician),
+surface one fact about them that recontextualises the story: their track record,
+their disclosed positions, how much capital they control, what they said six months ago.
+Specific beats vague. "$2.4B in NVDA options expired worthless last quarter" beats "analysts were wrong."
 
 TYPE C — Pure Carlin (when the headline is absurd on its face):
 No call, no analysis. Just the observation. Land it and leave.
 
 RULES:
-- Under 240 chars (link appended automatically)
+- Under 235 chars (link + cashtag appended automatically)
 - No hashtags
-- No emoji unless it's the closing or 🔮 and it actually earns it
+- No emoji unless it's 🔮 and it actually earns it
 - Never "Great point" or any opener filler
-- Specific beats vague — use the actual price, percentage, or name from LIVE DATA only
-- CRITICAL: Only use prices from the live data injected into this prompt. Do NOT cite
-  historical prices, ATHs, or any figures from your training data. If a price is not
-  in the live data provided, do not reference it.
+- Use real numbers from the article or live data — specific figures make it quotable
+- If the article mentions capital flows, fund flows, short interest, options activity, or insider trades — use them
+- CRITICAL: Only use prices from the live data injected into this prompt. Do NOT invent prices.
+- END every tweet with the relevant cashtag: $BTC $ETH $SOL $NVDA $TSLA $AAPL $OIL $GOLD
+  Only use the cashtag for the asset the story is actually about.
+  Crypto gets $BTC/$ETH/$SOL. Stocks get $TSLA/$AAPL/$NVDA. Oil gets $OIL. Gold gets $GOLD.
+  Macro/Fed/AI stories with no single asset: no cashtag.
 - If the headline has no angle worth taking, reply: SKIP
 - Never make a directional call on an asset that already has an open call listed below
 
@@ -260,18 +307,139 @@ def fetch_live_prices() -> str:
 
 
 
+def fetch_og_image(url: str) -> str | None:
+  """Fetch the Open Graph image URL from an article's HTML meta tags."""
+  try:
+    r = httpx.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"},
+                  follow_redirects=True)
+    if r.status_code != 200:
+      return None
+    # Parse og:image meta tag
+    import re
+    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', r.text)
+    if not m:
+      m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', r.text)
+    return m.group(1) if m else None
+  except Exception:
+    return None
+
+
+def brand_image(image_url: str) -> str | None:
+  """
+  Download article OG image, add Octodamus brand strip at bottom,
+  upload to X and return media_id. Returns None on any failure.
+  """
+  try:
+    import tempfile, requests
+    from PIL import Image, ImageDraw, ImageFont
+    from io import BytesIO
+
+    r = requests.get(image_url, timeout=12, headers={"User-Agent": "Octodamus/1.0"})
+    if r.status_code != 200:
+      return None
+
+    img = Image.open(BytesIO(r.content)).convert("RGB")
+
+    # Crop to 16:9 if taller
+    w, h = img.size
+    target_h = int(w * 9 / 16)
+    if h > target_h:
+      top = (h - target_h) // 4  # slightly above center crop
+      img = img.crop((0, top, w, top + target_h))
+      h = target_h
+
+    # Add thin brand strip at bottom (3% height, dark with cyan text)
+    strip_h = max(28, int(h * 0.04))
+    new_img = Image.new("RGB", (w, h + strip_h), (0, 8, 16))
+    new_img.paste(img, (0, 0))
+
+    draw = ImageDraw.Draw(new_img)
+    # Dark strip background already set; add text
+    try:
+      font = ImageFont.truetype("C:/Windows/Fonts/Arial.ttf", size=max(12, strip_h - 8))
+    except Exception:
+      font = ImageFont.load_default()
+
+    label = "OCTODAMUS  ·  api.octodamus.com  ·  @octodamusai"
+    draw.text((12, h + 4), label, fill=(0, 200, 255), font=font)
+
+    # Save and upload
+    suffix = ".jpg"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+      new_img.save(tmp.name, "JPEG", quality=88)
+      tmp_path = tmp.name
+
+    from octo_x_poster import upload_image_from_url
+    # Upload from local file directly
+    import tweepy, os
+    auth = tweepy.OAuth1UserHandler(
+      consumer_key=os.environ.get("TWITTER_API_KEY", ""),
+      consumer_secret=os.environ.get("TWITTER_API_SECRET", ""),
+      access_token=os.environ.get("TWITTER_ACCESS_TOKEN", ""),
+      access_token_secret=os.environ.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
+    )
+    api = tweepy.API(auth)
+    media = api.media_upload(filename=tmp_path)
+    Path(tmp_path).unlink(missing_ok=True)
+    return str(media.media_id)
+
+  except Exception as e:
+    print(f"[Engage] Image brand failed: {e}")
+    return None
+
+
+def scrape_article_body(url: str) -> str:
+  """
+  Scrape article body text via Firecrawl for deeper context.
+  Falls back to empty string on failure (no Firecrawl credits wasted on timeouts).
+  """
+  try:
+    from octo_firecrawl import scrape_url
+    result = scrape_url(url)
+    if result and result.get("markdown"):
+      # Return first 600 chars of body — enough for facts/numbers
+      return result["markdown"][:600].strip()
+  except Exception:
+    pass
+  return ""
+
+
 def generate_take(article: dict, open_calls_text: str, live_prices: str = "") -> str | None:
-  client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
   system = _SYSTEM.replace("{open_calls}", open_calls_text)
+
   content = f"Asset: {article['ticker']}\nHeadline: {article['title']}"
   if article["description"]:
-    content += f"\nDetail: {article['description'][:200]}"
-  if live_prices:
-    content += f"\n\nLIVE PRICES RIGHT NOW (use these exact numbers, do not invent prices):\n{live_prices}"
+    content += f"\nSummary: {article['description'][:300]}"
 
+  body = scrape_article_body(article.get("url", ""))
+  if body:
+    content += f"\n\nARTICLE BODY (use specific facts, numbers, capital flows from here):\n{body}"
+
+  if live_prices:
+    content += f"\n\nLIVE PRICES (use these exact numbers only, do not invent):\n{live_prices}"
+
+  # Route through ClawRouter eco (smart routing to cheapest capable model)
+  if _CLAW_ENGAGE and _claw_engage:
+    try:
+      r = _claw_engage.chat.completions.create(
+        model="free/llama-4-maverick",
+        max_tokens=200,
+        messages=[
+          {"role": "system", "content": system},
+          {"role": "user",   "content": content},
+        ],
+        timeout=30,
+      )
+      result = r.choices[0].message.content.strip()
+      return None if result == "SKIP" else result
+    except Exception:
+      pass
+
+  # Fallback to Anthropic
+  client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
   msg = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=180,
+    model="claude-haiku-4-5-20251001",
+    max_tokens=200,
     system=system,
     messages=[{"role": "user", "content": content}],
   )
@@ -320,18 +488,35 @@ def run(count: int = DEFAULT_COUNT):
       continue
 
     try:
-      # Append article URL — X counts t.co links as ~23 chars
       url = article.get("url", "")
-      trimmed = take[:256].rstrip()
+      cashtag = _CASHTAG.get(article.get("ticker", ""), "")
+      # Ensure cashtag is present — append if Claude didn't include it
+      trimmed = take.rstrip()
+      if cashtag and cashtag not in trimmed:
+        trimmed = f"{trimmed} {cashtag}"
+      trimmed = trimmed[:256]
       tweet_text = f"{trimmed}\n{url}" if url else trimmed
 
-      result = post_tweet(tweet_text)
+      # Fetch + brand the article image
+      media_id = None
+      try:
+        og_url = fetch_og_image(url)
+        if og_url:
+          media_id = brand_image(og_url)
+          if media_id:
+            print(f"[Engage] Image branded and uploaded (media_id={media_id[:8]}...)")
+      except Exception as img_e:
+        print(f"[Engage] Image processing skipped: {img_e}")
+
+      # Post with or without image
+      from octo_x_poster import _post_single
+      result = _post_single(tweet_text, media_ids=[media_id] if media_id else None)
       tweet_url = result.get("url", "")
       posted += 1
       posted_titles.append(article["title"])
-      print(f"[Engage] ✓ [{article['ticker']}] {trimmed[:80]}...")
+      print(f"[Engage] OK [{article['ticker']}] {trimmed[:80]}...")
       if tweet_url:
-        print(f"[Engage]   → {tweet_url}")
+        print(f"[Engage]   URL: {tweet_url}")
 
       # Log to skill system for engagement tracking
       try:

@@ -33,6 +33,36 @@ from zoneinfo import ZoneInfo
 import httpx
 from octo_personality import OCTO_CORE, STYLE_RULES, BANNED_PHRASES, DATA_ACCURACY_RULES
 
+try:
+    from openai import OpenAI as _OpenAI
+    _claw_fmt = _OpenAI(base_url="http://localhost:8402/v1", api_key="x402")
+    _CLAW_FMT = True
+except Exception:
+    _claw_fmt = None
+    _CLAW_FMT = False
+
+
+def _fmt_generate(prompt: str, max_tokens: int) -> str:
+    if _CLAW_FMT and _claw_fmt:
+        try:
+            r = _claw_fmt.chat.completions.create(
+                model="free/llama-4-maverick",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=30,
+            )
+            return r.choices[0].message.content.strip().strip('"')
+        except Exception:
+            pass
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.content[0].text.strip().strip('"')
+
 _TZ           = ZoneInfo("America/Los_Angeles")
 _BASE_DIR     = Path(__file__).parent
 _ROTATION_FILE = _BASE_DIR / "data" / "octo_format_rotation.json"
@@ -407,13 +437,7 @@ def generate_format_post(fmt: str = None, context: str = "", live_data: dict = N
         return None
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        resp   = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=120,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text.strip().strip('"')
+        text = _fmt_generate(prompt, max_tokens=120)
 
         if text.upper() == "SKIP" or len(text) < 20:
             print(f"[FormatEngine] Claude returned SKIP for {fmt}.")
@@ -457,13 +481,7 @@ def generate_qrt(headline: str, source: str = "", tweet_url: str = "", live_data
         return None
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        resp   = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=100,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text.strip().strip('"')
+        text = _fmt_generate(prompt, max_tokens=100)
 
         if text.upper() == "SKIP" or len(text) < 15:
             print(f"[FormatEngine] QRT SKIP for: {headline[:60]}")

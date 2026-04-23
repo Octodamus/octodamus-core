@@ -260,12 +260,14 @@ Format:
   open interest. Frame it as what gave you the read, not as a product pitch.
   Something like: "The funding rate composite at -0.04% did what it always does --
   told the truth before the price did." Let it feel like insider knowledge being shared.
-- [N/N] The closing thought. The line that stays. Optionally a quiet nod to
-  api.octodamus.com -- one line, natural, never salesy.
+- [N/N] The closing thought. The line that stays with the reader.
+  No links. No product mentions. Just the thought.
 - Max 280 characters per tweet. Count carefully.
 - Adjust N to fit the day (5-8 tweets is the range).
 - Voice: wit, precision, quiet authority. No hype. No cheerleading. No emojis.
-- Do not start with a date line.
+- No links, no URLs, no product mentions anywhere in the thread. Write like a person.
+- Do not start with a date line. The title and date are added automatically.
+- Do not sign off with your name — the signature is added automatically.
 - CRITICAL: Only use prices, percentages, and statistics explicitly provided in the context. Never invent numbers."""
 
 
@@ -359,7 +361,7 @@ def _format_email(date_str: str, body: str) -> str:
     while lines and (lines[0].strip() == "" or _looks_like_date(lines[0])):
         lines.pop(0)
     body = _strip_generated_signature("\n".join(lines))
-    return f"{_short_date(date_str)}\n\nMy thoughts on {date_str}.\n\n" + body + SIGNATURE
+    return f"My thoughts on {date_str}.\n\n" + body + SIGNATURE
 
 
 def _looks_like_date(line: str) -> bool:
@@ -368,6 +370,30 @@ def _looks_like_date(line: str) -> bool:
         r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December)",
         line.strip()
     ))
+
+
+def _send_gmail(subject: str, body: str, dry_run: bool = False):
+    """Send journal entry to octodamusai@gmail.com only."""
+    if dry_run:
+        print("\n" + "="*62)
+        print(f"TO: octodamusai@gmail.com")
+        print(f"SUBJECT: {subject}")
+        print("="*62)
+        print(body)
+        print("="*62 + "\n")
+        return
+    user, pw = _gmail_creds()
+    if not user or not pw:
+        print("[WARN] Gmail creds missing")
+        return
+    msg            = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"]    = user
+    msg["To"]      = "octodamusai@gmail.com"
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as s:
+        s.starttls()
+        s.login(user, pw)
+        s.send_message(msg)
 
 
 def _send(subject: str, body: str, dry_run: bool = False):
@@ -516,10 +542,137 @@ def _context_block_from_raw(raw_ctx: str, news: list) -> str:
     return lines[0] + "\n" + news_lines + "\n" + "\n".join(lines[1:])
 
 
+JOURNAL_BANNER = Path(r"C:\Users\walli\octodamus\data\journal_banner.jpg")
+
+
+def _journal_title(date_str: str) -> str:
+    """
+    Format: 'Journal - Wednesday 04.22.26'
+    date_str is like '2026-04-22' or 'April 22, 2026'
+    """
+    from datetime import datetime
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        try:
+            dt = datetime.strptime(date_str, "%B %d, %Y")
+        except ValueError:
+            dt = datetime.now()
+    day_name  = dt.strftime("%A")          # Wednesday
+    date_fmt  = dt.strftime("%m.%d.%y")   # 04.22.26
+    return f"Journal - {day_name} {date_fmt}"
+
+
+def _parse_thread_tweets(thread_text: str, date_str: str = "") -> list[str]:
+    """
+    Split thread text into individual tweet strings.
+    Prepends title to first tweet, appends signature to last.
+    """
+    import re
+    parts = re.split(r'\[\d+/\d+\]', thread_text)
+    tweets = [p.strip() for p in parts if p.strip()]
+    if not tweets:
+        return tweets
+
+    # Prepend title to first tweet (date shown once, here only)
+    title = _journal_title(date_str) if date_str else ""
+    if title:
+        tweets[0] = f"{title}\n\n{tweets[0]}"
+
+    # Strip any API/product links Claude snuck in — journal should read as human
+    import re as _re
+    tweets = [_re.sub(r'api\.octodamus\.com\S*', '', t).strip() for t in tweets]
+    tweets = [_re.sub(r'https?://\S+', '', t).strip() for t in tweets]
+    tweets = [t for t in tweets if t]  # remove any now-empty tweets
+
+    # Append signature to last tweet
+    sig = "\n\n-- O C T O D A M U S"
+    if not tweets[-1].endswith("O C T O D A M U S"):
+        tweets[-1] = tweets[-1] + sig
+
+    return tweets
+
+
+def _post_journal_thread(thread_text: str, date_str: str, dry_run: bool = False):
+    """
+    Post the journal thread to X with the banner image on the first tweet.
+    Banner image → tweet 1 (hook). Remaining tweets reply in thread.
+    """
+    if dry_run:
+        print("[Journal] Dry run — would post thread to X")
+        tweets = _parse_thread_tweets(thread_text, date_str)
+        for i, t in enumerate(tweets, 1):
+            print(f"  [{i}/{len(tweets)}] {t[:80]}...")
+        return
+
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from octo_x_poster import _post_single
+
+        tweets = _parse_thread_tweets(thread_text, date_str)
+        if not tweets:
+            print("[Journal] No tweets parsed from thread")
+            return
+
+        # Upload banner for first tweet
+        media_id = None
+        if JOURNAL_BANNER.exists():
+            try:
+                import tweepy, os, json
+                s = json.loads(Path(r"C:\Users\walli\octodamus\.octo_secrets").read_text(encoding="utf-8"))
+                data = s.get("secrets", s)
+                auth = tweepy.OAuth1UserHandler(
+                    consumer_key=data.get("TWITTER_API_KEY", ""),
+                    consumer_secret=data.get("TWITTER_API_SECRET", ""),
+                    access_token=data.get("TWITTER_ACCESS_TOKEN", ""),
+                    access_token_secret=data.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
+                )
+                api = tweepy.API(auth)
+                media = api.media_upload(filename=str(JOURNAL_BANNER))
+                media_id = str(media.media_id)
+                print(f"[Journal] Banner uploaded (media_id={media_id[:8]}...)")
+            except Exception as e:
+                print(f"[Journal] Banner upload failed: {e}")
+
+        # Post first tweet with banner
+        result = _post_single(tweets[0], media_ids=[media_id] if media_id else None)
+        parent_id = result.get("id")
+        print(f"[Journal] Tweet 1/{len(tweets)} posted: {result.get('url','')}")
+        time.sleep(3)
+
+        # Post remaining tweets as replies
+        for i, tweet in enumerate(tweets[1:], 2):
+            if not parent_id:
+                break
+            try:
+                import tweepy, os, json
+                s = json.loads(Path(r"C:\Users\walli\octodamus\.octo_secrets").read_text(encoding="utf-8"))
+                d = s.get("secrets", s)
+                client_tw = tweepy.Client(
+                    consumer_key=d.get("TWITTER_API_KEY", ""),
+                    consumer_secret=d.get("TWITTER_API_SECRET", ""),
+                    access_token=d.get("TWITTER_ACCESS_TOKEN", ""),
+                    access_token_secret=d.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
+                )
+                resp = client_tw.create_tweet(text=tweet, in_reply_to_tweet_id=parent_id)
+                parent_id = str(resp.data["id"])
+                print(f"[Journal] Tweet {i}/{len(tweets)} posted")
+                time.sleep(3)
+            except Exception as e:
+                print(f"[Journal] Tweet {i} failed: {e}")
+                break
+
+        print(f"[Journal] Thread posted: {len(tweets)} tweets")
+
+    except Exception as e:
+        print(f"[Journal] Thread post failed: {e}")
+
+
 def run_daily(dry_run: bool = False):
-    client  = anthropic.Anthropic(api_key=_anthropic_key())
-    calls   = _load_calls()
-    summary = _day_summary(calls)
+    client   = anthropic.Anthropic(api_key=_anthropic_key())
+    calls    = _load_calls()
+    summary  = _day_summary(calls)
     date_str = summary["date"]
 
     print("Fetching live market data...")
@@ -528,21 +681,14 @@ def run_daily(dry_run: bool = False):
     news = _get_daily_news(date_str)
     ctx  = _context_block(summary, news=news, market_data=market_data)
 
-    print(f"Generating journal entry...")
-    entry   = _generate(ctx, client)
+    print("Generating journal entry...")
+    entry     = _generate(ctx, client)
     formatted = _format_email(date_str, entry)
     _save(datetime.now().strftime("%Y-%m-%d"), formatted)
-    _send(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
-    time.sleep(2)
 
-    print(f"Generating X thread...")
-    thread = _generate_thread(ctx, client)
-    _send(f"Octodamus X Thread -- {date_str}", _format_thread_email(date_str, thread), dry_run=dry_run)
-    time.sleep(2)
-
-    print(f"Generating article...")
-    article = _generate_article(ctx, client)
-    _send(f"Octodamus Article -- {date_str}", _format_article_email(date_str, article), dry_run=dry_run)
+    # Send to octodamusai@gmail.com only — no Evernote, no X
+    _send_gmail(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
+    print(f"[Journal] Sent to octodamusai@gmail.com")
 
 
 if __name__ == "__main__":

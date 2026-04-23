@@ -55,7 +55,7 @@ def _clob():
     return clob_status_str()
 check("CLOB V2", _clob)
 
-# ── BotCoin Math
+# ── OctoBoto Math
 def _boto_math():
     from octo_boto_math import is_valid_market, V2_READY
     return f"V2_READY={V2_READY}"
@@ -137,12 +137,6 @@ def _tg():
     import telegram_bot
     return "module ok"
 check("Telegram Bot", _tg)
-
-# ── BotCoin miner
-def _botcoin():
-    from octo_boto_botcoin import get_epoch_info
-    return "module ok"
-check("BotCoin Miner", _botcoin)
 
 # ── AutoResolve
 def _autoresolve():

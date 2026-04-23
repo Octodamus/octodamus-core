@@ -36,6 +36,13 @@ except ImportError:
     def orderbook_context_str(market): return ""
 
 try:
+    from octo_predexon import get_smart_money_context as _predexon_smart_money
+    _PREDEXON_AVAILABLE = True
+except ImportError:
+    _PREDEXON_AVAILABLE = False
+    def _predexon_smart_money(market_id, question=""): return ""
+
+try:
     from octo_boto_consensus import get_consensus_context
     _CONSENSUS_AVAILABLE = True
 except ImportError:
@@ -370,6 +377,10 @@ def estimate(
     octo_signal, octo_direction = _get_octodamus_signal_context(question)
     ob_section       = orderbook_ctx_str if orderbook_ctx_str else ""
     consensus_section = get_consensus_context(question)
+    # Smart money positioning from Predexon via ClawRouter ($0.005/req, cached 10 min)
+    smart_money_section = _predexon_smart_money(market_id, question) if market_id else ""
+    if smart_money_section:
+        smart_money_section = f"\n\n{smart_money_section}"
 
     # Volume confidence tier (Markov state reliability signal)
     from octo_boto_math import volume_confidence_tier
@@ -400,6 +411,22 @@ def estimate(
     except Exception:
         cat_context = ""
 
+    # Serial escalation context — inject for geopolitical/oil/energy markets
+    _geo_keywords = ["oil", "crude", "hormuz", "iran", "israel", "opec", "conflict",
+                     "war", "ceasefire", "escalat", "sanction", "attack", "strike",
+                     "gold", "safe haven", "dollar", "dxy", "ecb", "fed rate"]
+    _q_lower = (question + " " + (description or "")).lower()
+    serial_escalation_note = ""
+    if any(kw in _q_lower for kw in _geo_keywords):
+        serial_escalation_note = """
+⚡ SERIAL ESCALATION SIGNAL: This market involves geopolitical or macro events.
+Research shows markets systematically underreact to correlated event sequences.
+Each escalation (strike, ceasefire break, sanction, rate surprise) raises the
+probability of the next event in the sequence — crowd prices lag this pattern.
+If recent news shows an escalation chain, bias your estimate toward continuation.
+If de-escalation is confirmed, bias toward correlated risk-on moves (equities, crypto).
+"""
+
     prompt = f"""PREDICTION MARKET ANALYSIS
 
 Question: {question}
@@ -408,7 +435,7 @@ Context: {description[:300] if description else "None provided"}{date_hint}
 ━━━ SIGNAL DATA — form your raw probability estimate from THIS first ━━━
 (Institutional best practice: anchor on data, NOT on market price.
  Do not look at the crowd price yet. Build your independent view first.)
-{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{consensus_section}{cat_context}
+{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{smart_money_section}{consensus_section}{cat_context}{serial_escalation_note}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 TASK: Determine if the market is mispriced. Form your estimate from signals alone, then compare.
@@ -598,8 +625,10 @@ def batch_estimate(
         vel_pct = float(m.get("_velocity_pct", 0) or 0)  # injected by octo_boto.py
 
         # Apply volume-adjusted EV floor (thin markets need bigger edge)
-        from octo_boto_math import volume_ev_floor
+        # Then apply overtrade penalty (Freeport: top traders do 2.1 trades/day, not 5.8)
+        from octo_boto_math import volume_ev_floor, ev_threshold_with_overtrade_penalty
         adjusted_min_ev = volume_ev_floor(vol24, min_ev)
+        adjusted_min_ev = ev_threshold_with_overtrade_penalty(adjusted_min_ev)
 
         ai    = estimate(
             market_id=m["id"],
@@ -643,6 +672,24 @@ def batch_estimate(
 
     # Sort by composite score — NOT raw EV
     results.sort(key=lambda x: x["score"], reverse=True)
+
+    # Cross-market correlation scan — runs once after all plays are identified.
+    # Finds logical dependencies between top plays and the full candidate pool.
+    if results:
+        try:
+            from octo_boto_correlations import find_correlated_plays
+            for r in results[:3]:  # only scan top 3 plays to control cost
+                corr = find_correlated_plays(
+                    primary_question=r["market"]["question"],
+                    primary_price=r["market"]["yes_price"],
+                    primary_side=r["trade"]["side"],
+                    candidate_markets=candidates,
+                    api_key=api_key,
+                )
+                r["correlated_plays"] = corr
+        except Exception as e:
+            print(f"[Correlations] scan error: {e}")
+
     return results
 
 

@@ -82,6 +82,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Guide - Download URL":         "GUIDE_DOWNLOAD_URL",
     "AGENT - Octodamus - Firecrawl API":               "FIRECRAWL_API_KEY",
     "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
+    "AGENT - Octodamus - LunarCrush - API":            "LUNARCRUSH_API_KEY",
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
@@ -134,6 +135,18 @@ def _get_username(item_name: str) -> str:
 def _get_notes(item_name: str) -> str:
     item = _get_item(item_name)
     return item.get("notes", "") or ""
+
+
+def _get_custom_fields(item_name: str) -> dict:
+    """Read all custom fields from a Bitwarden item as {field_name: value}."""
+    item = _get_item(item_name)
+    result = {}
+    for f in (item.get("fields") or []):
+        name  = (f.get("name")  or "").strip()
+        value = (f.get("value") or "").strip()
+        if name and value:
+            result[name] = value
+    return result
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -287,6 +300,19 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
             loaded[env_var] = value
     if twitter and verbose:
         print(f"[Bitwarden] âœ“ AGENT - Octodamus - Social - Twitter API")
+
+    # Coinbase CDP API (multi-field: CDP_API_KEY_ID, CDP_API_KEY_SECRET)
+    try:
+        cdp = _get_custom_fields("AGENT - Octodamus - Coinbase CDP API")
+        for field_name in ("CDP_API_KEY_ID", "CDP_API_KEY_SECRET"):
+            if cdp.get(field_name):
+                os.environ[field_name] = cdp[field_name]
+                loaded[field_name] = cdp[field_name]
+        if cdp.get("CDP_API_KEY_ID") and verbose:
+            print("[Bitwarden] Coinbase CDP API loaded")
+    except Exception as _e:
+        if verbose:
+            print(f"[Bitwarden] CDP API (non-critical): {_e}")
 
     # Gmail multi-field item
     gmail = _load_gmail_from_bw()

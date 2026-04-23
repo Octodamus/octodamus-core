@@ -444,6 +444,59 @@ def _check_price_hallucination(text: str, live_btc: float | None) -> str | None:
     return None
 
 
+def _get_signal_feeds_context() -> str:
+    """Pull aviation, TSA, macro, and geopolitical feeds for system prompt injection."""
+    lines = ["LIVE SIGNAL FEEDS:"]
+
+    # Aviation signal
+    try:
+        from octo_flights import get_signal as get_aviation_signal
+        sig = get_aviation_signal()
+        if sig and sig.get("signal") != "WARM_UP":
+            lines.append(f"- Aviation: {sig.get('signal','?')} | WoW delta: {sig.get('delta_pct',0):+.1f}%")
+        else:
+            lines.append("- Aviation: warming up (14-day sample period)")
+    except Exception as e:
+        lines.append(f"- Aviation: unavailable ({e})")
+
+    # TSA travel signal
+    try:
+        from octo_flights import get_tsa_signal
+        tsa = get_tsa_signal()
+        if tsa and not tsa.get("error"):
+            lines.append(f"- TSA Travel: {tsa.get('signal','?')} | 7d avg: {tsa.get('avg_7d',0):,.0f} pax")
+        else:
+            lines.append("- TSA Travel: unavailable")
+    except Exception as e:
+        lines.append(f"- TSA Travel: unavailable ({e})")
+
+    # Cross-asset macro signal
+    try:
+        from octo_macro import get_macro_signal
+        macro = get_macro_signal()
+        if macro and macro.get("status") == "live":
+            score = macro.get("score", 0)
+            signal = macro.get("signal", "NEUTRAL")
+            lines.append(f"- Macro (FRED): {signal} | score {score:+d}/5 | {macro.get('brief','')[:80]}")
+        else:
+            lines.append("- Macro (FRED): unavailable")
+    except Exception as e:
+        lines.append(f"- Macro (FRED): unavailable ({e})")
+
+    # Geopolitical context (Firecrawl, cached 2h) — returns str
+    try:
+        from octo_firecrawl import get_geopolitical_context
+        geo = get_geopolitical_context()
+        if geo and isinstance(geo, str) and len(geo) > 10:
+            lines.append(f"- Geopolitical: {geo[:150]}")
+        else:
+            lines.append("- Geopolitical: no signal")
+    except Exception as e:
+        lines.append(f"- Geopolitical: unavailable ({e})")
+
+    return "\n".join(lines)
+
+
 def _get_live_prices() -> str:
     """Fetch live crypto prices for system prompt injection."""
     # Try shared Binance WebSocket feed first (instant, no rate limits)
@@ -491,14 +544,14 @@ def _get_live_prices() -> str:
     return "LIVE PRICES: unavailable. HARD STOP — do NOT quote any price, do NOT make any oracle call, do NOT reference any specific dollar figure. Tell the user live data is temporarily down."
 
 def build_system_prompt() -> str:
-    live_prices = _get_live_prices()
+    live_prices   = _get_live_prices()
+    signal_feeds  = _get_signal_feeds_context()
 
     live_context = f"""LIVE NOW:
 - Posting to @octodamusai on X via Twitter API v2 (OAuth 1.0a direct, no middleware)
-- 20 posts/day max via X API v2 pay-per-use — probabilistic schedule, peak 3am-9pm PT, market-adaptive
+- 20 posts/day max via X API v2 pay-per-use -- probabilistic schedule, peak 3am-9pm PT, market-adaptive
 - Auto-reply to @mentions (10 replies/day cap, prompt injection protected)
 - Task Scheduler runs 38 tasks automatically whether Christopher is logged in or not
-- Signal modules: OctoEyes, OctoPulse, OctoGecko, OctoFX, OctoPredict, OctoGeo
 - octodamus.com live on Vercel | Treasury: {TREASURY_WALLET} on Base mainnet
 
 X CONTENT ENGINE:
@@ -506,10 +559,14 @@ X CONTENT ENGINE:
 - QRT scanner: checks breaking news every 30 min, 7am-9pm PT
 - Engagement tracking: winning formats get more rotation slots
 
-MCP SERVER (mcp.octodamus.com:8765):
-- Free tier: 50 req/day, basic signals | Premium: $29 USDC/year, unlimited, all tools
-- Subscription flow: /api/subscribe?wallet=0xAGENT → send 29 USDC → /api/activate
-- Payment watcher daemon running, auto-issues keys within 5 min of confirmation
+MCP SERVER (api.octodamus.com):
+- Free tier: 50 req/day | Early Bird: $29/yr (first 100 seats) | Standard: $149/yr | Pro: $49/mo | Enterprise: $499/mo
+- x402 native payment on Base
+
+OCTOBOTO STATUS:
+- Trading on Polymarket prediction markets
+- Paper trading / live track-record building phase
+- Vision: AI-managed copytrading -- deposit capital, Octodamus manages it, takes % of profits
 
 CURRENT CONTEXT:
 {build_live_context()}"""
@@ -520,6 +577,7 @@ CURRENT CONTEXT:
         live_prices=live_prices,
         call_record=call_record,
         live_context=live_context,
+        signal_feeds=signal_feeds,
     )
 
 
@@ -595,6 +653,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/clear          wipe conversation memory\n"
         "/chart [ticker] [tf]  TradingView chart screenshot + analysis\n"
         "/see <url> [question] screenshot any web page + Claude Vision\n"
+        "/feeds          live status of all signal feeds\n"
+        "/boto           OctoBoto trading bot status + open positions\n"
+        "/correlations   cross-market correlated plays from last scan\n"
         "/start          restart session"
     )
 
@@ -980,6 +1041,71 @@ async def see_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"See error: {e}")
 
 
+async def feeds_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/feeds — Show live status of all Octodamus signal feeds."""
+    await update.message.reply_text("Pulling signal feeds...")
+    feeds = _get_signal_feeds_context()
+    # Also add OctoBoto guardrails status
+    try:
+        from octo_boto_math import count_trades_today, MAX_TRADES_PER_DAY
+        trades_today = count_trades_today()
+        boto_line = f"\nOctoBoto: {trades_today}/{MAX_TRADES_PER_DAY} trades today"
+    except Exception:
+        boto_line = "\nOctoBoto: feed unavailable"
+    await update.message.reply_text(feeds + boto_line)
+
+
+async def boto_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/boto — OctoBoto trading bot status and open positions."""
+    await update.message.reply_text("Loading OctoBoto status...")
+    lines = ["OCTOBOTO STATUS"]
+    lines.append("Role: autonomous trading bot powered by Octodamus signal")
+    lines.append("Current phase: track-record building on Polymarket")
+    lines.append("Vision: AI-managed copytrading -- deposit capital, AI grows it, takes % of profits")
+    lines.append("")
+
+    # Trade count today
+    try:
+        from octo_boto_math import count_trades_today, MAX_TRADES_PER_DAY
+        trades = count_trades_today()
+        lines.append(f"Trades today: {trades}/{MAX_TRADES_PER_DAY} (guardrail: max {MAX_TRADES_PER_DAY})")
+    except Exception as e:
+        lines.append(f"Trade count: unavailable ({e})")
+
+    # Open Polymarket positions
+    try:
+        from octo_boto_tracker import get_open_positions
+        positions = get_open_positions()
+        if positions:
+            lines.append(f"\nOpen positions ({len(positions)}):")
+            for p in positions[:5]:
+                lines.append(f"  {p.get('market_id','?')[:20]} | {p.get('side','?')} @ {p.get('entry_price',0):.1%} | size {p.get('size',0):.2f}")
+        else:
+            lines.append("\nOpen positions: none")
+    except Exception as e:
+        lines.append(f"\nOpen positions: unavailable ({e})")
+
+    # Correlated plays from cache (populated by last batch scan — no API call here)
+    try:
+        from octo_boto_correlations import _load_cache, format_correlated_plays
+        corr_cache = _load_cache()
+        all_corr = []
+        for entry in corr_cache.values():
+            all_corr.extend(entry.get("plays", []))
+        if all_corr:
+            lines.append("")
+            lines.append(format_correlated_plays(all_corr[:4]))
+    except Exception:
+        pass
+
+    # Guardrails summary
+    lines.append("\nGuardrails (Freeport Markets top-1% PnL data):")
+    lines.append("  Max 3 trades/day | 2.4x leverage max | 31h median hold")
+    lines.append("  Serial escalation signal active for geo/oil/macro markets")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def scrape_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     /scrape <url> [optional question]
@@ -1006,6 +1132,26 @@ async def scrape_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         log.exception("scrape_command error")
         await update.message.reply_text(f"Scrape error: {e}")
+
+
+async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/correlations -- Show cross-market correlated plays from last scan."""
+    try:
+        from octo_boto_correlations import _load_cache, format_correlated_plays
+        corr_cache = _load_cache()
+        if not corr_cache:
+            await update.message.reply_text("No correlation data yet. Run a boto scan first.")
+            return
+        lines = ["CORRELATED PLAYS (from last scan)"]
+        for entry in corr_cache.values():
+            plays = entry.get("plays", [])
+            if plays:
+                lines.append(format_correlated_plays(plays))
+        if len(lines) == 1:
+            lines.append("No correlations found in last scan.")
+        await update.message.reply_text("\n".join(lines)[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Correlations error: {e}")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1036,6 +1182,9 @@ def main() -> None:
     app.add_handler(CommandHandler("chart",     chart_command))
     app.add_handler(CommandHandler("see",       see_command))
     app.add_handler(CommandHandler("scrape",    scrape_command))
+    app.add_handler(CommandHandler("feeds",     feeds_command))
+    app.add_handler(CommandHandler("boto",         boto_command))
+    app.add_handler(CommandHandler("correlations", correlations_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 

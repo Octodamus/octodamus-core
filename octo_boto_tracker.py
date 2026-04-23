@@ -330,9 +330,14 @@ class PaperTracker:
         ]
         daily_pnl = round(sum(t.get("pnl", 0) for t in closed_today), 2)
 
-        # Count unbroken losing streak from the most recent trade backwards
+        # Count unbroken losing streak from today's trades only.
+        # Streaks from previous sessions don't carry into a new day — each
+        # session starts fresh. This prevents a permanent block from old losses.
         consecutive = 0
         for t in reversed(self._data["closed"]):
+            closed_on = (t.get("closed_at") or "")[:10]
+            if closed_on and closed_on < today:
+                break  # reached yesterday's trades — stop counting
             if not t.get("won", True):
                 consecutive += 1
             else:

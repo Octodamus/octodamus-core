@@ -170,6 +170,10 @@ MAX_TRADES_PER_WEEK = 999     # Hard cap — quality over quantity
 SCAN_COOLDOWN   = 3 * 60   # Prevent /scan spam — 3 min cooldown
 MIN_CONF_AUTO   = {"high"}  # confidence levels that trigger auto-entry
 
+# Session guard notification dedup — send Telegram alert only once per guard activation
+from datetime import date as _date
+_sg_notified_date: str = ""   # ISO date of last guard notification sent
+
 GAMMA  = GammaClient(min_liquidity=3_000)
 TRACKER = PaperTracker()
 
@@ -289,6 +293,9 @@ _SECTOR_MAP = {
                     "iran", "israel", "north korea"],
 }
 MAX_SECTOR_POSITIONS = 2   # max open positions per sector before skipping
+
+# Filter rules live in octo_boto_filters.py (lightweight, no Telegram imports)
+from octo_boto_filters import is_no_edge_market, BLOCKED_SECTORS
 
 
 def get_market_sector(question: str) -> str:
@@ -647,6 +654,14 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
           parse_mode=ParseMode.MARKDOWN
         )
         break
+
+      # No-edge gate — skip political/geopolitical markets entirely
+      if is_no_edge_market(market.get("question", "")):
+        await update.message.reply_text(
+          f"⏭️ Skipping #{i} — no signal edge (geopolitical/political market)",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
 
       # Sector correlation gate (#7) — max 2 open per sector
       sector_count = count_sector_positions(sector)
@@ -1163,6 +1178,14 @@ async def cmd_contrascan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
           parse_mode=ParseMode.MARKDOWN
         )
         break
+
+      # No-edge gate
+      if is_no_edge_market(market.get("question", "")):
+        await update.message.reply_text(
+          f"⏭️ Skipping #{i} — no signal edge (geopolitical/political market)",
+          parse_mode=ParseMode.MARKDOWN
+        )
+        continue
 
       sector_count = count_sector_positions(sector)
       if sector_count >= MAX_SECTOR_POSITIONS:
@@ -1742,11 +1765,15 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
     _sg = TRACKER.session_guard(max_daily_loss=30.0, max_consecutive_losses=3)
     if _sg["blocked"]:
       log.warning(f"[AutoScan] Session guard — {_sg['reason']} — skipping all entries")
-      await ctx.bot.send_message(
-        chat_id,
-        f"🛑 *Auto-scan session guard* — {_sg['reason']}\nNo entries until tomorrow.",
-        parse_mode=ParseMode.MARKDOWN
-      )
+      global _sg_notified_date
+      _today = _date.today().isoformat()
+      if _sg_notified_date != _today:
+        _sg_notified_date = _today
+        await ctx.bot.send_message(
+          chat_id,
+          f"🛑 *Auto-scan session guard* — {_sg['reason']}\nNo entries until tomorrow.",
+          parse_mode=ParseMode.MARKDOWN
+        )
       return
 
     # Soft drawdown pause — skip entries if -15% from peak
@@ -1787,6 +1814,11 @@ async def _auto_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
 
       if _tl_skip:
         log.info(f"[AutoScan] Skipping — {_tl_skip} | {m.get('question', '')[:60]}")
+        continue
+
+      # No-edge gate — skip political/geopolitical markets entirely
+      if is_no_edge_market(m.get("question", "")):
+        log.info(f"[AutoScan] Skipping — no signal edge: {m.get('question','')[:60]}")
         continue
 
       # Sector correlation gate

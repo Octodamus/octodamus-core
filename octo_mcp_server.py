@@ -337,6 +337,64 @@ def get_free_tools() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool(description="Buy the Build the House guide ($29 USDC on Base via x402). Returns the download URL after payment. Agents with a funded Base wallet can purchase autonomously.")
+def buy_guide() -> str:
+    """
+    Purchase the Build the House guide for $29 USDC on Base.
+    Endpoint: GET https://api.octodamus.com/v1/guide
+    Payment: x402 protocol — send PAYMENT-SIGNATURE header with EIP-3009 authorization.
+    Returns: download URL valid 30 days.
+    """
+    lines = [
+        "BUILD THE HOUSE GUIDE — $29 USDC on Base",
+        "",
+        "Endpoint:  GET https://api.octodamus.com/v1/guide",
+        "Payment:   $29 USDC on Base (eip155:8453) via x402",
+        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "",
+        "How to purchase (x402 agent flow):",
+        "  1. GET https://api.octodamus.com/v1/guide  →  402 + payment-required header",
+        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
+        "  3. Retry with PAYMENT-SIGNATURE header containing signed authorization",
+        "  4. Receive JSON with download_url",
+        "",
+        "What's inside: signal architecture, Polymarket execution, risk guardrails,",
+        "calibration system, full stack setup, and all 27 live data sources.",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool(description="Subscribe to OctoData Premium API ($29 USDC/year on Base via x402). Returns API key after payment. Agents can purchase programmatically without human intervention.")
+def buy_premium_api() -> str:
+    """
+    Subscribe to OctoData Premium for $29 USDC/year on Base.
+    Endpoint: GET https://api.octodamus.com/v1/subscribe
+    Payment: x402 protocol — send PAYMENT-SIGNATURE header with EIP-3009 authorization.
+    Returns: API key (octo_...) valid 365 days, 10k req/day.
+    """
+    lines = [
+        "OCTODATA PREMIUM API — $29 USDC/year on Base",
+        "",
+        "Endpoint:  GET https://api.octodamus.com/v1/subscribe",
+        "Payment:   $29 USDC on Base (eip155:8453) via x402",
+        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "",
+        "How to purchase (x402 agent flow):",
+        "  1. GET https://api.octodamus.com/v1/subscribe  →  402 + payment-required header",
+        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
+        "  3. Retry with PAYMENT-SIGNATURE header",
+        "  4. Receive JSON with api_key",
+        "",
+        "Includes: all signals, Polymarket edges, macro data, Fear & Greed,",
+        "funding rates, CME positioning, 10k req/day, 365 days.",
+        "",
+        "Trial option ($5, 7 days): GET https://api.octodamus.com/v2/agent-signal",
+    ]
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     log.info("Octodamus MCP Server starting - eight arms extended")

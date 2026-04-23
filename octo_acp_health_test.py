@@ -34,7 +34,6 @@ from octo_report_handlers import get_handler
 
 API_LOCAL   = "http://localhost:8742"
 API_TUNNEL  = "https://api.octodamus.com"
-DASH_LOCAL  = "http://localhost:8901"
 KEYS_FILE   = Path(__file__).parent / "data" / "api_keys.json"
 
 TIMEOUT_FAST   = 8    # port/health checks
@@ -96,7 +95,6 @@ def _build_api_tests(key: str) -> list:
     return [
         # -- Port checks --
         ("Port: API server (8742)",        "GET", API_LOCAL,  "/health",             {},   200, ["status"],          50),
-        ("Port: BOTCOIN dashboard (8901)", "GET", DASH_LOCAL, "/",                   {},   200, None,               200),
 
         # -- Public endpoints (no auth) --
         ("Public: GET /",                  "GET", API_LOCAL,  "/",                   {},   200, ["name"],            50),

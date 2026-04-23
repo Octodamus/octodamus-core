@@ -62,7 +62,8 @@ TRIAL_DAYS = 7  # premium_trial key expires after this many days
 PAYMENT_TTL_SECONDS = 3600   # payments expire after 1 hour
 CONFIRM_BLOCKS      = 2      # blocks to wait before considering final
 
-_PAYMENTS_FILE = Path(__file__).parent / "data" / "octo_agent_payments.json"
+_PAYMENTS_FILE  = Path(__file__).parent / "data" / "octo_agent_payments.json"
+_FULFILL_LOCK   = threading.Lock()  # prevents concurrent fulfillment race condition
 
 # Minimal ERC-20 Transfer ABI
 USDC_ABI = [
@@ -420,7 +421,13 @@ def _match_transfer_to_payment(transfer: dict, payments: dict) -> Optional[str]:
         return candidates[0][0]
 
     # USDC (Base or ETH)
-    value = transfer["value"]
+    value    = transfer["value"]
+    tx_hash  = transfer.get("tx_hash", "")
+
+    # Never match a tx already used to fulfill another payment
+    if tx_hash and any(p.get("tx_hash") == tx_hash for p in payments.values()
+                       if p.get("status") not in ("pending", "expired")):
+        return None
 
     candidates = [
         (pid, p) for pid, p in payments.items()
@@ -458,11 +465,31 @@ def _is_expired(payment: dict) -> bool:
 def _fulfill_payment(payment_id: str, tx_hash: str, block: int) -> dict:
     """
     Payment confirmed on-chain. Provision the product and return to agent.
+    Uses a file-level lock to prevent race conditions with parallel workers.
     """
-    payments = _load_payments()
-    payment  = payments.get(payment_id)
-    if not payment:
-        return {"error": "payment not found"}
+    with _FULFILL_LOCK:
+        # Reload inside the lock — another worker may have already fulfilled
+        payments = _load_payments()
+        payment  = payments.get(payment_id)
+        if not payment:
+            return {"error": "payment not found"}
+        if payment.get("status") != "pending":
+            return {"error": "already_fulfilled", "status": payment.get("status")}
+
+        # Prevent same tx_hash from fulfilling more than one intent
+        used_tx_hashes = {p.get("tx_hash") for p in payments.values() if p.get("tx_hash")}
+        if tx_hash in used_tx_hashes:
+            already = next((pid for pid, p in payments.items() if p.get("tx_hash") == tx_hash), None)
+            print(f"[AgentPay] TX {tx_hash[:16]}... already used for {already} — skipping {payment_id}")
+            return {"error": "tx_already_used", "used_by": already}
+
+        # Mark as processing immediately so concurrent workers see it
+        payment["status"]    = "processing"
+        payment["tx_hash"]   = tx_hash
+        payment["block"]     = block
+        payments[payment_id] = payment
+        _save_payments(payments)
+    # Lock released — now provision the product outside the lock
 
     product = payment["product"]
 
@@ -539,6 +566,46 @@ def _fulfill_payment(payment_id: str, tx_hash: str, block: int) -> dict:
             }, timeout=5)
     except Exception:
         pass
+
+    # Owner notification
+    try:
+        from octo_health import send_email_alert
+        chain = payment.get("chain", "base")
+        if chain == "btc":
+            amount_str = f"{payment.get('amount_btc', '?')} BTC (${payment.get('amount_usd', '?')})"
+        elif chain == "eth":
+            amount_str = f"${payment.get('amount_usdc', '?')} USDC on Ethereum"
+        else:
+            amount_str = f"${payment.get('amount_usdc', '?')} USDC on Base"
+        wallet = payment.get("agent_wallet") or payment.get("email") or "unknown"
+        key_line = f"Key: {result.get('api_key')}\n" if result.get("api_key") else ""
+        send_email_alert(
+            subject=f"[Octodamus] Sale: {product} — {amount_str}",
+            body=(
+                f"Payment confirmed.\n\n"
+                f"Product:  {product}\n"
+                f"Amount:   {amount_str}\n"
+                f"Wallet:   {wallet}\n"
+                f"TX:       {tx_hash}\n"
+                f"Pay ID:   {payment_id}\n"
+                f"{key_line}"
+                f"Fulfilled: {payment.get('fulfilled_at','')}"
+            ),
+        )
+    except Exception as _e:
+        print(f"[AgentPay] Owner notify failed (non-critical): {_e}")
+
+    # Record in customer database
+    try:
+        from octo_agent_db import record_customer
+        api_key = result.get("api_key", "")
+        if api_key:
+            tier   = "trial" if "trial" in product else "premium"
+            wallet = payment.get("agent_wallet", "")
+            email  = payment.get("email", "")
+            record_customer(api_key, tier, email, wallet, f"payment:{product}")
+    except Exception as _e:
+        print(f"[AgentPay] Customer DB record failed (non-critical): {_e}")
 
     return result
 

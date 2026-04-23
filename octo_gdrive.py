@@ -52,7 +52,7 @@ EXCLUDE_NAMES = {
     "octo_predict.py.bak_filter", "octo_predict.py.bak_fix2",
     "octo_predict.py.bak_parser", "octo_predict.py.bak_terms",
     # runtime / log files
-    "nohup.out", "octo_startup.log", "botcoin_withdraw.log",
+    "nohup.out", "octo_startup.log",
     # large binary / generated
     "octo_logo_b64.txt",
 }

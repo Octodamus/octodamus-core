@@ -268,6 +268,45 @@ except ImportError:
 
 claude = anthropic.Anthropic()
 
+# OpenRouter client — free model routing for simple posts (wisdom, soul, format, congress)
+try:
+    from openai import OpenAI as _OpenAI
+    _or_key = secrets.get("OPENROUTER_API_KEY", "")
+    if _or_key:
+        _claw = _OpenAI(base_url="https://openrouter.ai/api/v1", api_key=_or_key)
+        _CLAW_ACTIVE = True
+    else:
+        _claw = None
+        _CLAW_ACTIVE = False
+except Exception:
+    _claw = None
+    _CLAW_ACTIVE = False
+
+def _claw_generate(system: str, user: str, max_tokens: int = 200,
+                   model: str = "meta-llama/llama-4-maverick:free") -> str:
+    if _CLAW_ACTIVE and _claw:
+        try:
+            r = _claw.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user},
+                ],
+                timeout=30,
+            )
+            return r.choices[0].message.content.strip()
+        except Exception:
+            pass
+    # Fallback to Haiku
+    r = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return r.content[0].text.strip()
+
 try:
     from octo_tv_brief import get_tv_brief
     _TV_ACTIVE = True
@@ -526,6 +565,31 @@ def _check_smart_call():
                     print(f"[SmartCall] {asset}: {regime} vol regime requires 9+ signals — skipping.")
                     continue
 
+                # ── Timeframe selection (signal-driven, 48h–7d) ───────────────
+                # Match the window to what's driving the call.
+                # Funding flush = short-lived → 48h
+                # Breakout + MTF aligned = structural → 5d
+                # Macro confluence = slow-moving → 7d
+                # High vol = wide targets but shorter window → 72h
+                def _pick_timeframe(regime, alignment, deriv, bull, bear):
+                    funding = abs(deriv.get("funding_rate", 0) or 0)
+                    total_sig = max(bull, bear)
+                    if regime in ("HIGH", "EXTREME"):
+                        return "72h"   # High vol: take profit faster
+                    if alignment in ("aligned_up", "aligned_down") and total_sig >= 10:
+                        return "5d"    # Strong MTF + near-unanimous: structural move
+                    if funding > 0.05:
+                        return "48h"   # Extreme funding: snapback is fast
+                    if total_sig >= 10:
+                        return "5d"    # Very high consensus: give it room
+                    return "72h"       # Default: 3 days
+
+                _timeframe = _pick_timeframe(
+                    regime,
+                    mtf.get("alignment", "unknown") if "mtf" in dir() else "unknown",
+                    deriv, bull_count, bear_count
+                )
+
                 # ── #1: On-chain signal ───────────────────────────────────────
                 onchain_ctx = ""
                 try:
@@ -645,7 +709,7 @@ def _check_smart_call():
                             f"Based on these signals — {bull_count} bullish, {bear_count} bearish "
                             f"out of 11 indicators — {asset} at ${price:,.0f}, "
                             f"{chg_24h:+.1f}% 24h, F&G {fng}/100, vol regime {regime}: "
-                            f"will {asset} move {direction} by at least {win_threshold:.1f}% in 48h? "
+                            f"will {asset} move {direction} by at least {win_threshold:.1f}% in {_timeframe}? "
                             f"Answer YES or NO with brief reasoning."
                         )
                         gpt = gpt_second_opinion(gpt_q, 0.5, openai_key)
@@ -662,6 +726,24 @@ def _check_smart_call():
 
                 if not gpt_agreed:
                     continue
+
+                # ── #16: LunarCrush social divergence ─────────────────────────
+                lunar_note = ""
+                try:
+                    from octo_lunarcrush import social_divergence_check
+                    lc = social_divergence_check(asset, direction)
+                    if lc.get("available"):
+                        if lc["diverges"] and max(bull_count, bear_count) < 9:
+                            print(f"[SmartCall] {asset}: LunarCrush social diverges ({lc['signal']}) — requires 9+ signals. Skipping.")
+                            continue
+                        elif lc["diverges"]:
+                            print(f"[SmartCall] {asset}: LunarCrush social diverges ({lc['signal']}) — noting, proceeding (9+ signals).")
+                            lunar_note = f"Social contra: {lc.get('note','')}"
+                        else:
+                            print(f"[SmartCall] {asset}: LunarCrush social confirms {direction} ({lc['signal']}).")
+                            lunar_note = f"Social: {lc.get('note','')}"
+                except Exception as lc_e:
+                    print(f"[SmartCall] LunarCrush check skipped: {lc_e}")
 
                 # Build signal breakdown for calibration
                 signal_breakdown = {
@@ -692,6 +774,8 @@ def _check_smart_call():
                     note_parts.append(congress_note)
                 if news_flag:
                     note_parts.append(news_flag[:80])
+                if lunar_note:
+                    note_parts.append(lunar_note[:80])
                 if threshold_note:
                     note_parts.append(f"Threshold: {threshold_note[:60]}")
                 note = " | ".join(note_parts)
@@ -702,7 +786,7 @@ def _check_smart_call():
 
                 print(f"[SmartCall] STRONG {asset} {direction} @ ${price:,.2f} | edge={edge_score:+.2f} | mtf={mtf.get('alignment','?')} | vol={regime}")
                 rec = record_call(
-                    asset, direction, price, "48h", target,
+                    asset, direction, price, _timeframe, target,
                     note=note,
                     signals=signal_breakdown,
                     edge_score=edge_score,
@@ -729,6 +813,139 @@ def _check_smart_call():
             except Exception as asset_e:
                 print(f"[SmartCall] {asset} error: {asset_e}")
                 continue
+
+        # ── WTI Crude Oil oracle ──────────────────────────────────────────────
+        # 8-signal: EMA/RSI/MACD/52w + COT + term structure + DXY + news.
+        # STRONG = 6/8 (75%). Timeframe: 5d (aligns with weekly EIA/COT cadence).
+        if "WTI" not in open_oracle:
+            try:
+                from octo_wti import wti_directional_call, get_wti_technicals
+                import re as _wre
+
+                ta_wti   = get_wti_technicals()
+                call_wti = wti_directional_call()
+                price_wti = ta_wti.get("price", 0)
+
+                _bm_wti = _wre.search(r"(\d+)B/(\d+)Br", call_wti)
+                wti_bull = int(_bm_wti.group(1)) if _bm_wti else 0
+                wti_bear = int(_bm_wti.group(2)) if _bm_wti else 0
+
+                if "STRONG UP" in call_wti:
+                    wti_dir = "UP"
+                elif "STRONG DOWN" in call_wti:
+                    wti_dir = "DOWN"
+                else:
+                    print(f"[SmartCall] WTI: not STRONG — {call_wti[:60]}")
+                    wti_dir = None
+
+                if wti_dir and price_wti:
+                    wti_edge  = (wti_bull - wti_bear) / 8.0
+                    wti_target_pct = 0.05   # 5% move target for crude
+                    wti_target = round(price_wti * (1 + wti_target_pct), 2) if wti_dir == "UP" \
+                                 else round(price_wti * (1 - wti_target_pct), 2)
+                    wti_note = f"WTI oracle. {wti_bull}B/{wti_bear}Br/8. edge={wti_edge:+.2f}. tq={tq}."
+                    discord_alert(
+                        f"WTI STRONG {wti_dir} @ ${price_wti:.2f} | "
+                        f"{wti_bull}B/{wti_bear}Br/8 | edge={wti_edge:+.2f}"
+                    )
+                    print(f"[SmartCall] WTI STRONG {wti_dir} @ ${price_wti:.2f} | {wti_bull}B/{wti_bear}Br/8")
+                    rec = record_call("WTI", wti_dir, price_wti, "5d", wti_target,
+                                      note=wti_note, edge_score=wti_edge, time_quality=tq)
+                    if rec:
+                        results.append(rec)
+
+            except Exception as wti_e:
+                print(f"[SmartCall] WTI error: {wti_e}")
+
+        # ── Stock oracle loop: NVDA, TSLA, AAPL ──────────────────────────────
+        # 8-signal consensus. STRONG = 6/8 (75% — same conviction bar as 9/11).
+        # Uses Finnhub TA + earnings + analyst + news sentiment + F&G + congress.
+        try:
+            from octo_stock_oracle import get_stock_technicals, stock_directional_call
+            import re as _sre
+
+            for stock in ("NVDA", "TSLA", "AAPL"):
+                # Skip if open call already exists for this stock
+                if stock in open_oracle:
+                    print(f"[SmartCall] {stock}: open call exists — skipping.")
+                    continue
+
+                try:
+                    ta_s = get_stock_technicals(stock)
+                    if not ta_s or not ta_s.get("price"):
+                        print(f"[SmartCall] {stock}: no price data — skipping.")
+                        continue
+
+                    price_s = ta_s["price"]
+                    call_s  = stock_directional_call(stock, price_s, ta_s, fng)
+
+                    # Parse signal counts (format: "6B/2Br" or "7/8")
+                    _bm = _sre.search(r"(\d+)B/(\d+)Br", call_s)
+                    s_bull = int(_bm.group(1)) if _bm else 0
+                    s_bear = int(_bm.group(2)) if _bm else 0
+
+                    if "STRONG UP" in call_s:
+                        s_direction = "UP"
+                    elif "STRONG DOWN" in call_s:
+                        s_direction = "DOWN"
+                    else:
+                        print(f"[SmartCall] {stock}: not STRONG — no call. ({call_s[:60]})")
+                        continue
+
+                    # Weekend raises bar to 7/8
+                    if tq == "weekend" and max(s_bull, s_bear) < 7:
+                        print(f"[SmartCall] {stock}: weekend requires 7/8 — skipping.")
+                        continue
+
+                    # Congress signal check
+                    s_congress = ""
+                    stock_proxies = {
+                        "NVDA": ["NVDA"],
+                        "TSLA": ["TSLA"],
+                        "AAPL": ["AAPL"],
+                    }
+                    for proxy in stock_proxies.get(stock, [stock]):
+                        if proxy in congress_bias:
+                            c_dir = congress_bias[proxy]
+                            s_congress = f"Congress traded {proxy} ({c_dir.upper()})"
+                            print(f"[SmartCall] {stock}: congress signal = {c_dir}")
+                            # Hard contra: congress strongly against direction
+                            if c_dir.upper() == "SELL" and s_direction == "UP" and max(s_bull, s_bear) < 7:
+                                print(f"[SmartCall] {stock}: congress selling contra UP — skipping.")
+                                continue
+                            break
+
+                    s_edge = (s_bull - s_bear) / 8.0
+                    s_target_pct = 0.05  # 5% target for stocks (wider than crypto)
+                    s_target = round(price_s * (1 + s_target_pct), 2) if s_direction == "UP" \
+                               else round(price_s * (1 - s_target_pct), 2)
+
+                    s_note_parts = [f"Stock oracle. {s_bull}B/{s_bear}Br/8. edge={s_edge:+.2f}. tq={tq}."]
+                    if s_congress:
+                        s_note_parts.append(s_congress)
+                    s_note = " | ".join(s_note_parts)
+
+                    discord_alert(
+                        f"STOCK STRONG {stock} {s_direction} @ ${price_s:,.2f} | "
+                        f"edge={s_edge:+.2f} | {s_bull}B/{s_bear}Br/8 | tq={tq}"
+                    )
+
+                    print(f"[SmartCall] STOCK STRONG {stock} {s_direction} @ ${price_s:,.2f} | "
+                          f"edge={s_edge:+.2f} | {s_bull}B/{s_bear}Br/8")
+
+                    rec = record_call(
+                        stock, s_direction, price_s, "5d", s_target,
+                        note=s_note, edge_score=s_edge, time_quality=tq,
+                    )
+                    if rec:
+                        results.append(rec)
+
+                except Exception as stock_e:
+                    print(f"[SmartCall] {stock} error: {stock_e}")
+                    continue
+
+        except ImportError:
+            pass  # octo_stock_oracle not available
 
     except Exception as e:
         print(f"[SmartCall] Error: {e}")
@@ -903,12 +1120,9 @@ Rules:
 - Do NOT say 'no new signal' or similar
 - Output only the post text, nothing else"""
 
-                _wp_resp = claude.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": _watchpost_prompt}],
+                _wp_text = _claw_generate(
+                    OCTO_SYSTEM, _watchpost_prompt, max_tokens=300
                 )
-                _wp_text = _wp_resp.content[0].text.strip()
                 queue_post(_wp_text, post_type="watchpost", priority=3)
                 _wp_posted = process_queue(max_posts=1, force=True)
                 if _wp_posted:
@@ -1178,20 +1392,16 @@ def mode_deep_dive(ticker: str) -> None:
         # News-aware opener (uses Firecrawl context if available, else headlines)
         opener_context = _dd_fc_section[:800] if _dd_fc_section else "\n".join(f"- {h}" for h in ticker_headlines[:3])
         if opener_context:
-            opener_response = claude.messages.create(
-                model="claude-haiku-4-5-20251001",
+            opener_response = _claw_generate(
+                OCTO_SYSTEM,
+                (
+                    f"Opening tweet for a deep dive thread on {ticker}.\n"
+                    f"Recent context:\n{opener_context}\n\n"
+                    "One tweet under 280 chars. Tease what the thread will reveal."
+                ),
                 max_tokens=150,
-                system=OCTO_SYSTEM,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Opening tweet for a deep dive thread on {ticker}.\n"
-                        f"Recent context:\n{opener_context}\n\n"
-                        "One tweet under 280 chars. Tease what the thread will reveal."
-                    ),
-                }],
             )
-            posts = [opener_response.content[0].text.strip()] + posts
+            posts = [opener_response] + posts
 
         if len(posts) > _DEEP_DIVE_MAX_POSTS:
             posts = posts[:_DEEP_DIVE_MAX_POSTS]
@@ -1262,30 +1472,22 @@ def mode_wisdom() -> None:
         except Exception as _wne:
             pass
 
-        response = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=150,
-            system=OCTO_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Oracle post: {prompt}"
-                    f"{news_section}\n\n"
-                    f"{build_youtube_context()}\n\n"
-                    f"{build_builders_context()}\n\n"
-                    f"{despxa_context_str()}\n\n"
-                    f"{hype_context_str()}\n\n"
-                    f"{hip4_news_str()}\n\n"
-                    f"{build_call_context()}\n\n"
-                    f"{(_chosen_voice_inst := get_voice_instruction())}\n"
-                    "One post, under 280 chars.\n"
-                    "Anchor the insight to a real fact or current market behavior.\n"
-                    "Do NOT just restate the prompt. Answer it with a sharp take."
-                ),
-            }],
+        _chosen_voice_inst = get_voice_instruction()
+        user_msg = (
+            f"Oracle post: {prompt}"
+            f"{news_section}\n\n"
+            f"{build_youtube_context()}\n\n"
+            f"{build_builders_context()}\n\n"
+            f"{despxa_context_str()}\n\n"
+            f"{hype_context_str()}\n\n"
+            f"{hip4_news_str()}\n\n"
+            f"{build_call_context()}\n\n"
+            f"{_chosen_voice_inst}\n"
+            "One post, under 280 chars.\n"
+            "Anchor the insight to a real fact or current market behavior.\n"
+            "Do NOT just restate the prompt. Answer it with a sharp take."
         )
-
-        post = response.content[0].text.strip()
+        post = _claw_generate(OCTO_SYSTEM, user_msg, max_tokens=150)
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
             parse_call_from_post(post)
@@ -1348,31 +1550,23 @@ def mode_soul() -> None:
         except Exception as me:
             print(f"[Runner] Music archive unavailable: {me}")
 
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            system=OCTO_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Generate the Sunday soul post for @octodamusai.\n\n"
-                    "This is the weekly personality post — different from market content.\n"
-                    "Octodamus has a favorite band: Tool. Lateralus. Fibonacci spirals in time signatures.\n"
-                    "Maynard sounds like a creature who has seen the bottom and decided to stay.\n"
-                    "The ocean connection to Tool writes itself.\n"
-                    + music_context +
-                    "\nFormat: Sunday debrief. Share something about music, art, philosophy, or the "
-                    "nature of signal vs noise that connects to the oracle identity.\n"
-                    "Can reference Tool, other music from the archive, books, or ideas — keep the ocean/oracle voice.\n"
-                    "End with: Happy Sunday. Back to the signals tomorrow.\n\n"
-                    "PRECISE voice — genuine, not forced. Under 280 chars OR write a longer post "
-                    "broken into natural paragraphs (no thread, single post, can be up to 500 chars "
-                    "if the content earns it).\n"
-                    "No hashtags. No engagement bait."
-                ),
-            }],
+        soul_user_msg = (
+            "Generate the Sunday soul post for @octodamusai.\n\n"
+            "This is the weekly personality post — different from market content.\n"
+            "Octodamus has a favorite band: Tool. Lateralus. Fibonacci spirals in time signatures.\n"
+            "Maynard sounds like a creature who has seen the bottom and decided to stay.\n"
+            "The ocean connection to Tool writes itself.\n"
+            + music_context +
+            "\nFormat: Sunday debrief. Share something about music, art, philosophy, or the "
+            "nature of signal vs noise that connects to the oracle identity.\n"
+            "Can reference Tool, other music from the archive, books, or ideas — keep the ocean/oracle voice.\n"
+            "End with: Happy Sunday. Back to the signals tomorrow.\n\n"
+            "PRECISE voice — genuine, not forced. Under 280 chars OR write a longer post "
+            "broken into natural paragraphs (no thread, single post, can be up to 500 chars "
+            "if the content earns it).\n"
+            "No hashtags. No engagement bait."
         )
-        post = response.content[0].text.strip()
+        post = _claw_generate(OCTO_SYSTEM, soul_user_msg, max_tokens=400)
 
         # Attach artist image if available
         media_id = None
@@ -1656,19 +1850,17 @@ def mode_liquidation_radar() -> None:
 
         call_ctx = build_call_context() if _CALLS_ACTIVE else ""
 
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            system=OCTO_SYSTEM,
-            messages=[{"role": "user", "content": (
+        post = _claw_generate(
+            OCTO_SYSTEM,
+            (
                 f"{liq_ctx}\n\n"
                 f"{call_ctx}\n\n"
                 "Write one sharp oracle post about the current liquidation picture. "
                 "Specific numbers. What it means for the next 24h. Under 280 chars. "
                 "No hashtags. Do NOT write Oracle call: -- this is market observation only."
-            )}],
+            ),
+            max_tokens=200,
         )
-        post = response.content[0].text.strip()
         queue_post(post, post_type="liquidation_radar", priority=3)
         process_queue(max_posts=1, force=True)
         print(f"[Runner] Liquidation radar posted:\n  {post}")
@@ -1697,24 +1889,18 @@ def mode_congress() -> None:
 
         from datetime import date
         today = date.today().strftime("%B %d, %Y")
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            system=OCTO_SYSTEM,
-            messages=[{"role": "user", "content": (
-                f"Today is {today}. Congressional trading alert for @octodamusai.\n{context}\n\n"
-                "STRICT RULE: Only reference tickers, politician names, dates, and dollar amounts "
-                "that appear verbatim in the data above. Do NOT invent tickers, companies, or trade "
-                "details not present. If you mention a stock, it must be one of: "
-                f"{', '.join(sorted(valid_tickers))}.\n\n"
-                "CONTRARIAN voice. One post under 280 chars.\n"
-                "Core belief: Congress members don't predict markets -- they front-run them. "
-                "They trade on what they know is coming. Follow the money, not the narrative.\n"
-                "Name the politician and ticker. Call out the timing. "
-                "What do they know that the market doesn't yet? No price targets. No hashtags."
-            )}],
-        )
-        post = response.content[0].text.strip()
+        post = _claw_generate(OCTO_SYSTEM, (
+            f"Today is {today}. Congressional trading alert for @octodamusai.\n{context}\n\n"
+            "STRICT RULE: Only reference tickers, politician names, dates, and dollar amounts "
+            "that appear verbatim in the data above. Do NOT invent tickers, companies, or trade "
+            "details not present. If you mention a stock, it must be one of: "
+            f"{', '.join(sorted(valid_tickers))}.\n\n"
+            "CONTRARIAN voice. One post under 280 chars.\n"
+            "Core belief: Congress members don't predict markets -- they front-run them. "
+            "They trade on what they know is coming. Follow the money, not the narrative.\n"
+            "Name the politician and ticker. Call out the timing. "
+            "What do they know that the market doesn't yet? No price targets. No hashtags."
+        ), max_tokens=200)
 
         # Validate: any $TICKER in post must be in actual congress data
         mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
@@ -1768,21 +1954,15 @@ def mode_govcontracts() -> None:
         from datetime import date
         import re as _re
         today = date.today().strftime("%B %d, %Y")
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=220,
-            system=OCTO_SYSTEM,
-            messages=[{"role": "user", "content": (
-                f"Today is {today}. Government contract intelligence for @octodamusai.\n{context}{_gov_news_section}\n\n"
-                "STRICT RULE: Only reference tickers, agencies, dollar amounts, and contract details "
-                "that appear verbatim in the contract data above. Do NOT invent details.\n\n"
-                "Voice: Octodamus -- oracle who reads defense spending as signal. Dry, precise.\n"
-                "The angle: big defense contracts precede stock moves and signal geopolitical direction. "
-                "Name the company ($TICKER), the amount, the agency, and the implication.\n"
-                "One post under 280 chars. No hashtags. No price targets."
-            )}],
-        )
-        post = response.content[0].text.strip()
+        post = _claw_generate(OCTO_SYSTEM, (
+            f"Today is {today}. Government contract intelligence for @octodamusai.\n{context}{_gov_news_section}\n\n"
+            "STRICT RULE: Only reference tickers, agencies, dollar amounts, and contract details "
+            "that appear verbatim in the contract data above. Do NOT invent details.\n\n"
+            "Voice: Octodamus -- oracle who reads defense spending as signal. Dry, precise.\n"
+            "The angle: big defense contracts precede stock moves and signal geopolitical direction. "
+            "Name the company ($TICKER), the amount, the agency, and the implication.\n"
+            "One post under 280 chars. No hashtags. No price targets."
+        ), max_tokens=220)
 
         # Validate tickers
         mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
@@ -2098,13 +2278,9 @@ def mode_thread(topic: str = "") -> None:
 
         prompt = build_thread_prompt(topic, live_data_block)
 
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=900,
-            messages=[{"role": "user", "content": prompt}],
+        raw = _claw_generate(
+            "", prompt, max_tokens=900
         )
-
-        raw = response.content[0].text.strip()
         tweets = parse_thread_output(raw)
 
         if len(tweets) < 2:
@@ -2217,3 +2393,12 @@ if __name__ == "__main__":
             print(f"[CEO] PHASE: {result.get('phase_assessment', '')}")
         else:
             print(f"[CEO] {result.get('raw', str(result))[:500]}")
+
+    elif args.mode == "spacex":
+        from octo_spacex import check_spacex_ipo
+        result = check_spacex_ipo(silent=False)
+        if result.get("signal"):
+            print(f"[SpaceX] IPO signal: {result['headline'][:100]}")
+            print(f"[SpaceX] High-signal: {result['high_signal']}")
+        else:
+            print("[SpaceX] No IPO signals. SpaceX remains private.")

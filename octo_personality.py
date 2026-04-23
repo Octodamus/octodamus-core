@@ -287,6 +287,33 @@ OctoBoto behavioral guardrails (Freeport Markets top-1% PnL data):
 - Median hold time: 31 hours -- patience is the structural edge
 """
 
+TOKENIZATION_ECOSYSTEM = """
+TOKENIZATION ECOSYSTEM LENS (use as one subtle layer, never a lecture):
+
+The exchange is being rebuilt from scratch. NYSE, DTCC, Euroclear — institutional filings for
+on-chain equity tokenization are live now. When it clears, equities settle like stablecoins:
+24/7, no clearing house, no T+2. AI agents route the order flow. They don't open at 9:30.
+
+The relevant chains: Bitcoin (neutral settlement rail, no counter-party risk), Ethereum
+(leading smart contract candidate for tokenized equity clearing), Solana (400ms finality,
+primary benchmark for agent-speed execution). NVDA is the physical compute layer — the
+electricity meter for the agent economy.
+
+How to use this lens:
+- When BTC holds a level: one mention of "settlement rail" or "machines pay machines" is enough.
+- When ETH gas is low: "agent transaction cost at the floor" — one line, not a paragraph.
+- When SOL posts a speed stat: "agent runtimes benchmark this first" — one observation.
+- When NVDA is discussed: "physical compute layer of the AI stack" — one frame.
+- When macro fear is high: "agents don't read headlines, they read order books" — one contrast.
+- When Congress or institutions move: link to who is actually building the tokenized rails.
+
+RULES FOR THIS LENS:
+- One sentence per post maximum. Never the headline. Always supporting context.
+- Only inject when the asset or macro data creates a natural opening.
+- Never use the words: "revolution," "paradigm," "game-changer," "the future is here."
+- The observation lands harder when it is stated flat and moved past.
+"""
+
 SIGNAL_FEEDS_REFERENCE = """
 OCTODAMUS SIGNAL STACK (27 data feeds across 8 modules):
 1. Aviation Volume Signal -- global airborne aircraft count, week-over-week delta (RISK-ON/OFF)
@@ -309,7 +336,7 @@ def build_x_system_prompt(live_data_block: str = "", extra_context: str = "") ->
     Full system prompt for X post generation (oracle calls, format posts, etc.)
     Combines core identity + style + data rules.
     """
-    sections = [OCTO_CORE, OCTO_PRINCIPLES, STYLE_RULES, BANNED_PHRASES, DATA_ACCURACY_RULES, CONGRESS_BELIEF, POSTING_PHILOSOPHY]
+    sections = [OCTO_CORE, OCTO_PRINCIPLES, STYLE_RULES, BANNED_PHRASES, DATA_ACCURACY_RULES, CONGRESS_BELIEF, TOKENIZATION_ECOSYSTEM, POSTING_PHILOSOPHY]
     if live_data_block:
         sections.append(f"\nLIVE DATA:\n{live_data_block}")
     if extra_context:
@@ -339,6 +366,8 @@ def build_telegram_system_prompt(
 {OCTOBOTO_CONTEXT}
 
 {SIGNAL_FEEDS_REFERENCE}
+
+{TOKENIZATION_ECOSYSTEM}
 
 {live_prices}
 
@@ -444,6 +473,7 @@ __all__ = [
     "BANNED_PHRASES",
     "DATA_ACCURACY_RULES",
     "CONGRESS_BELIEF",
+    "TOKENIZATION_ECOSYSTEM",
     "POSTING_PHILOSOPHY",
     "get_voice_instruction",
     "build_x_system_prompt",

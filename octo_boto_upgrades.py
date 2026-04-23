@@ -176,13 +176,25 @@ class BinancePriceFeed:
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        _fail_count = 0
         while self._running:
             try:
                 loop.run_until_complete(self._ws_loop())
+                _fail_count = 0  # reset on clean exit
             except Exception as e:
-                log.warning(f"[BinanceWS] Connection error: {e} — reconnecting in 5s")
                 self._connected = False
-                time.sleep(5)
+                err_str = str(e)
+                # HTTP 451 = geo-blocked by Binance — back off for 30 min, don't spam
+                if "451" in err_str:
+                    if _fail_count == 0:
+                        log.warning("[BinanceWS] HTTP 451 — geo-blocked by Binance. Latency arb disabled. Retrying in 30min.")
+                    _fail_count += 1
+                    time.sleep(1800)
+                else:
+                    _fail_count += 1
+                    delay = min(5 * _fail_count, 300)  # back off up to 5 min
+                    log.warning(f"[BinanceWS] Connection error: {e} — reconnecting in {delay}s")
+                    time.sleep(delay)
 
     async def _ws_loop(self):
         try:
