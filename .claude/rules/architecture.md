@@ -21,8 +21,18 @@ This ensures: new knowledge added once -> flows to Telegram, X, MCP, runner auto
     Takes % of transaction profits. The go-to copytrading bot on the internet.
 - Never conflate them in prompts, posts, or code comments.
 
-## Scheduled Tasks (23 total in Windows Task Scheduler)
-- Octodamus-DailyRead / DailyRead-7pm     — morning + evening briefing
+## LLM Routing (octodamus_runner.py)
+Three tiers — never collapse them back into a single model:
+- **Sonnet 4.6** (`claude.messages.create`) — core oracle: Daily Read, Moonshot, Flow Signal
+- **Haiku 4.5** (`_haiku_generate`) — voice-critical short posts: Wisdom, Soul, Watchpost, Thread opener/builder
+- **OpenRouter Llama-4-Maverick:free** (`_claw_generate`) — data-constrained posts: Congress, GovContracts, Liquidation Radar
+  - Key: `OPENROUTER_API_KEY` in `.octo_secrets`
+  - Falls back to Haiku automatically if OpenRouter fails
+  - No local daemon required (ClawRouter task deleted 2026-04-23)
+- **Haiku 4.5** (direct in `octo_format_engine.py`) — format rotation posts
+
+## Scheduled Tasks (24 total in Windows Task Scheduler)
+- Octodamus-DailyRead / DailyRead-7pm / DailyRead-330am — 3:30am + 5am + 7pm briefings
 - Octodamus-Monitor-7am / Monitor-4pm     — market monitor posts
 - Octodamus-Thread-Mon / Thread-Wed       — weekly threads (9 AM)
 - Octodamus-Format-12pm                   — format rotation post
@@ -50,13 +60,10 @@ This ensures: new knowledge added once -> flows to Telegram, X, MCP, runner auto
 - `octo_unusual_whales.py`     — options flow + dark pool signal (Unusual Whales API, key needed)
 
 ## Data Files
-- `data/botcoin_credits.json`  — BOTCOIN mining history per epoch
-- `data/botcoin_auth.json`     — coordinator bearer token cache
 - `octo_engage_state.json`     — post/engagement tracking state
 - `xstats.json`                — X account stats cache
 
 ## Deployment Endpoints
 - API:       api.octodamus.com (Cloudflare tunnel → local API server)
 - MCP:       octodamusai/market-intelligence on Smithery (run.tools)
-- Dashboard: http://localhost:8901 (BOTCOIN mining dashboard)
 - Site:      octodamus.com (GitHub → Vercel/static)
