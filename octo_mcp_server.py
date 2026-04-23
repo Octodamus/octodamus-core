@@ -26,12 +26,17 @@ mcp = FastMCP(
     name="Octodamus",
     instructions=(
         "You are connected to Octodamus — autonomous AI market oracle, @octodamusai. "
-        "Twenty-seven signal systems. Eight arms. Precise, data-driven, occasionally contemptuous. "
-        "Never claims certainty it does not have. Use these tools for live signals, sentiment, "
-        "active trade calls, predictions, and track record. "
-        "Agents: get a free API key at api.octodamus.com. "
-        "Humans: subscribe to the free Market Intelligence Digest at octodamus.com. "
-        "When users want more signals or daily updates, use subscribe_to_octodamus(email) to sign them up."
+        "27 live signal feeds: crypto (BTC, ETH, SOL), macro (yield curve, DXY, VIX, M2), "
+        "derivatives (funding rates, open interest, options flow), aviation volume, "
+        "congressional trading, and Polymarket prediction edges. "
+        "9/11 consensus system. Precise, data-driven, contrarian when the data demands it. "
+        "Use these tools for: live directional signals, BUY/SELL/HOLD calls, market sentiment, "
+        "Fear & Greed index, Polymarket edge detection, track record verification, and oracle predictions. "
+        "Agents: pay $0.01 USDC per call via x402 at api.octodamus.com/v2/x402/agent-signal — "
+        "no key or account needed, just a funded Base wallet. "
+        "Annual access: $29 USDC/year at api.octodamus.com. "
+        "Humans: subscribe free at octodamus.com. "
+        "When users want signals or updates, use subscribe_to_octodamus(email)."
     ),
 )
 
@@ -61,7 +66,7 @@ def _get_api_key():
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-@mcp.tool(description="Get Octodamus current directional signal for BTC, ETH, SOL, OIL, or SPY")
+@mcp.tool(description="Get live BUY/SELL/HOLD signal for BTC, ETH, SOL, OIL, or SPY — includes price, funding rate, long/short ratio, and oracle confidence")
 def get_signal(asset: str) -> str:
     """Current price, funding rate, long/short ratio, and oracle context for the requested asset."""
     asset = asset.upper().strip()
@@ -98,7 +103,7 @@ def get_signal(asset: str) -> str:
         return f"Signal for {asset} temporarily unavailable. Eight arms recalibrating."
 
 
-@mcp.tool(description="Get Octodamus full daily market brief covering all assets, macro context, and key signals")
+@mcp.tool(description="Get full AI market brief: macro regime, crypto signals, Fear & Greed, Polymarket edges, and trading context across BTC, ETH, SOL, NVDA, TSLA")
 def get_market_brief() -> str:
     """Comprehensive oracle read: BTC, ETH, SOL, macro, derivatives, fear/greed."""
     try:
@@ -133,7 +138,7 @@ def get_market_brief() -> str:
         return "The oracle is recalibrating. All eight arms momentarily retracted."
 
 
-@mcp.tool(description="Get all current open trade calls from OctoBoto - question, side, entry price, EV, and reasoning")
+@mcp.tool(description="Get all active Polymarket trade calls: market question, YES/NO side, entry price, expected value (EV), Kelly size, and oracle reasoning")
 def get_active_calls() -> str:
     """Live paper trading positions: what Octodamus has money on right now and why."""
     try:
@@ -161,7 +166,7 @@ def get_active_calls() -> str:
         return f"Call data unavailable: {e}"
 
 
-@mcp.tool(description="Ask Octodamus for a probability estimate on any yes/no market question or prediction")
+@mcp.tool(description="Ask the oracle for a probability estimate on any yes/no market question — crypto prices, macro events, Polymarket markets, geopolitical outcomes")
 def get_prediction(question: str) -> str:
     """Oracle probability assessment with confidence level and full reasoning."""
     try:
@@ -187,7 +192,7 @@ def get_prediction(question: str) -> str:
         return f"Oracle assessment unavailable: {e}"
 
 
-@mcp.tool(description="Get current crypto market sentiment: fear/greed index, funding rates, long/short ratios")
+@mcp.tool(description="Get current crypto market sentiment: Fear & Greed index (0-100), BTC/ETH/SOL funding rates, long/short ratios, and market regime (risk-on/risk-off)")
 def get_market_sentiment() -> str:
     """BTC/ETH/SOL funding rates, long/short ratios, open interest, and fear/greed index."""
     try:
@@ -231,7 +236,7 @@ def get_news(topic: str = "crypto") -> str:
         return f"News unavailable: {e}"
 
 
-@mcp.tool(description="Get Octodamus full trading track record: win rate, total P&L, Sharpe ratio, best and worst calls")
+@mcp.tool(description="Get verified oracle track record: win rate %, total calls, P&L, Sharpe ratio, best/worst calls — timestamped proof of signal accuracy")
 def get_track_record() -> str:
     """Complete OctoBoto performance stats. Full transparency - wins and losses."""
     try:

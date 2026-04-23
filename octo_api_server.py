@@ -753,11 +753,14 @@ class AgentTrackingMiddleware(_BaseHTTPMiddleware):
 
 app.add_middleware(AgentTrackingMiddleware)
 
-# x402 payment middleware — handles /v2/x402/* routes natively.
-# Returns 402 + Bazaar discovery extension for Agentic.Market indexing.
-# Verifies payments via CDP facilitator and settles on Base mainnet.
-# PaymentMiddlewareASGI not used — Bazaar extension injected directly into _x402_headers()
-# so /v2/agent-signal 402 response is discoverable by Agentic.Market Bazaar crawler.
+# x402 payment middleware — intercepts /v2/x402/* routes.
+# Returns 402 + Bazaar discovery extension when no payment present → agentic.market auto-indexes.
+# Verifies + settles payments via CDP facilitator on Base mainnet.
+app.add_middleware(
+    PaymentMiddlewareASGI,
+    server=_x402_server_aio,
+    routes=_X402_ROUTES,
+)
 
 
 @app.on_event("startup")
@@ -4472,6 +4475,15 @@ def v2_demo():
         "timestamp": datetime.utcnow().isoformat(),
         "get_key":  "POST https://api.octodamus.com/v1/signup?email=your@email.com",
         "upgrade":  "https://octodamus.com/api#pricing",
+        "x402": {
+            "pay_per_call":  "$0.01 USDC on Base — no key, no account",
+            "annual_access": "$29.00 USDC on Base — 365 days, 10k req/day",
+            "endpoint":      "GET https://api.octodamus.com/v2/x402/agent-signal",
+            "how":           "Send PAYMENT-SIGNATURE header with EIP-3009 USDC authorization",
+            "discovery":     "https://api.octodamus.com/.well-known/x402.json",
+            "network":       "Base (eip155:8453)",
+            "pay_to":        _X402_TREASURY,
+        },
         "source": {
             "name":   "OctoData API",
             "by":     "Octodamus (@octodamusai)",
