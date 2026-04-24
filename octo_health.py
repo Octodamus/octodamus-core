@@ -60,6 +60,8 @@ EXPECTED_TASKS = [
   "Octodamus-GDrive-Backup",
   "Octodamus-FlightSample",
   "Octodamus-ProfitAgent",
+  "Octodamus-ProfitAgent-Morning",
+  "Octodamus-ProfitAgent-Evening",
   "Octodamus-GenLayerMonitor",
 ]
 

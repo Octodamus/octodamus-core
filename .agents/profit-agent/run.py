@@ -182,13 +182,61 @@ Dead:          {state.get('dead', False)}
 """)
 
 
+def send_report(context: str = "status"):
+    """Email a wallet + activity summary. No new session. Used for 6am/6pm reports."""
+    state   = _load_state()
+    balance = _get_wallet_balance()
+    now     = datetime.now().strftime("%A %B %d %Y %I:%M %p")
+    started = state.get("started_at", "?")[:10]
+    sessions = state.get("sessions", 0)
+    last_run = state.get("last_run", "never")
+    start_balance = 201.00  # funded amount
+
+    # Simple P&L calc
+    pnl = balance - start_balance if balance >= 0 else 0
+    pnl_str = f"${pnl:+.2f} USDC ({pnl/start_balance*100:+.1f}%)" if balance >= 0 else "unknown"
+
+    # Last session output snippet
+    last_output = ""
+    if LOG_FILE.exists():
+        log = LOG_FILE.read_text(encoding="utf-8")
+        last_output = log[-2000:] if len(log) > 2000 else log
+
+    dead_line = ""
+    if state.get("dead"):
+        dead_line = f"\nSTATUS: DEAD — wallet depleted. Final: ${state.get('final_balance','?')}\n"
+
+    subject = f"[ProfitAgent] {context.title()} Report — {now}"
+    body = f"""Franklin Profit Agent — {context.title()} Report
+{'='*52}
+Time:          {now}
+Wallet:        ${balance:.2f} USDC
+P&L vs start:  {pnl_str}
+Sessions run:  {sessions}
+Last session:  {last_run}
+Started:       {started}
+{dead_line}
+Next sessions: 9am + 3pm daily
+
+--- Last Session Output ---
+{last_output if last_output else 'No sessions run yet.'}
+
+-- Profit Agent
+"""
+    _send_email(subject, body)
+    print(f"[ProfitAgent] {context.title()} report sent.")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry",    action="store_true", help="Print prompt, don't run")
     ap.add_argument("--status", action="store_true", help="Show wallet + session state")
+    ap.add_argument("--report", metavar="CONTEXT",  help="Email a status report (morning/evening/manual)")
     args = ap.parse_args()
 
     if args.status:
         show_status()
+    elif args.report:
+        send_report(args.report)
     else:
         run_session(dry_run=args.dry)
