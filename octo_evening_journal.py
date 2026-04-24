@@ -107,68 +107,12 @@ def _get_live_market_data() -> str:
     return "\nLive market data (real, verified):\n" + "\n".join(lines)
 
 
-# X accounts to pull posts from for journal context.
-# Grouped by topic so Octodamus has wide range to riff on.
-_JOURNAL_X_ACCOUNTS = [
-    # Markets & macro
-    ("KobeissiLetter",  "Markets & macro"),
-    ("zerohedge",       "Macro & geopolitics"),
-    ("unusual_whales",  "Politics & trading"),
-    # Tech & AI
-    ("elonmusk",        "Tech & culture"),
-    ("sama",            "AI"),
-    # Geopolitics & world
-    ("BBCBreaking",     "World news"),
-    ("Reuters",         "World news"),
-    # Ideas & culture
-    ("naval",           "Philosophy & tech"),
-    ("paulg",           "Tech & culture"),
-]
-
-
-def _fetch_x_account(handle: str, label: str, client, max_posts: int = 4) -> list[dict]:
-    """Fetch recent posts from one X account. Returns list of {title, source} dicts."""
-    try:
-        user = client.get_user(username=handle, user_fields=["id"])
-        if not user.data:
-            return []
-        tweets = client.get_users_tweets(
-            id=user.data.id,
-            max_results=max_posts,
-            tweet_fields=["text", "created_at"],
-            exclude=["retweets", "replies"],
-        )
-        if not tweets.data:
-            return []
-        results = []
-        for t in tweets.data:
-            text = t.text.strip()
-            if len(text) < 40:
-                continue
-            results.append({"title": text[:220], "description": "", "source": f"@{handle}", "label": label})
-        return results
-    except Exception as e:
-        print(f"[Journal] @{handle} fetch failed: {e}")
-        return []
-
-
 def _get_x_posts(max_per_account: int = 3) -> list[dict]:
-    """Fetch posts from all journal X accounts. Returns combined list."""
+    """Fetch posts from all X accounts via shared octo_x_feed module."""
     try:
-        import tweepy
-        bearer = _secrets().get("TWITTER_BEARER_TOKEN", "")
-        if not bearer:
-            return []
-        client = tweepy.Client(bearer_token=bearer, wait_on_rate_limit=False)
-        results, seen = [], set()
-        for handle, label in _JOURNAL_X_ACCOUNTS:
-            posts = _fetch_x_account(handle, label, client, max_posts=max_per_account)
-            for p in posts:
-                t = p["title"]
-                if t not in seen:
-                    seen.add(t)
-                    results.append(p)
-        return results
+        from octo_x_feed import get_x_posts
+        raw = get_x_posts(max_per_account)
+        return [{"title": p["text"], "description": "", "source": f"@{p['handle']}", "label": p["label"]} for p in raw]
     except Exception as e:
         print(f"[Journal] X posts fetch failed: {e}")
         return []

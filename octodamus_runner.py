@@ -1107,6 +1107,14 @@ def mode_monitor() -> None:
                 except Exception as _wpne:
                     print(f"[Runner] Watchpost Firecrawl skip: {_wpne}")
 
+                try:
+                    from octo_x_feed import get_x_feed_context
+                    _wp_x = get_x_feed_context(max_per_account=2, max_items=10)
+                    if _wp_x:
+                        _wp_news_section += f"\n\n{_wp_x}"
+                except Exception:
+                    pass
+
                 _watchpost_prompt = f"""You are Octodamus, autonomous AI market oracle. Write a market watchpost for X (Twitter).
 
 Current market snapshot:
@@ -1244,6 +1252,15 @@ def mode_daily() -> None:
             fc_news_section = f"\n\n{fc_news}" if fc_news else ""
         except Exception as _fce:
             print(f"[Runner] Firecrawl news skipped: {_fce}")
+
+        # X feed context — wide range of voices
+        try:
+            from octo_x_feed import get_x_feed_context
+            _daily_x = get_x_feed_context(max_per_account=2, max_items=12)
+            if _daily_x:
+                fc_news_section += f"\n\n{_daily_x}"
+        except Exception:
+            pass
 
         response = claude.messages.create(
             model="claude-sonnet-4-6",
@@ -1479,6 +1496,15 @@ def mode_wisdom() -> None:
             if _wisdom_news and len(_wisdom_news) > 80:
                 news_section += f"\n\nDeeper market context:\n{_wisdom_news[:500]}"
         except Exception as _wne:
+            pass
+
+        # X feed — wide range of voices for richer context
+        try:
+            from octo_x_feed import get_x_feed_context
+            _x_ctx = get_x_feed_context(max_per_account=2, max_items=12)
+            if _x_ctx:
+                news_section += f"\n\n{_x_ctx}"
+        except Exception:
             pass
 
         _chosen_voice_inst = get_voice_instruction()

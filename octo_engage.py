@@ -23,8 +23,15 @@ import httpx
 
 try:
     from openai import OpenAI as _OpenAI
-    _claw_engage = _OpenAI(base_url="http://localhost:8402/v1", api_key="x402")
-    _CLAW_ENGAGE = True
+    import json as _json
+    _or_key = _json.loads(Path(r"C:\Users\walli\octodamus\.octo_secrets").read_text(encoding="utf-8"))
+    _or_key = _or_key.get("secrets", _or_key).get("OPENROUTER_API_KEY", "")
+    if _or_key:
+        _claw_engage = _OpenAI(base_url="https://openrouter.ai/api/v1", api_key=_or_key)
+        _CLAW_ENGAGE = True
+    else:
+        _claw_engage = None
+        _CLAW_ENGAGE = False
 except Exception:
     _claw_engage = None
     _CLAW_ENGAGE = False
@@ -208,6 +215,17 @@ def gather_articles(max_total: int = 30) -> list:
         a["ticker"] = ticker
         all_articles.append(a)
     time.sleep(0.3)
+
+  # X feed — wide range of topics beyond tracked assets
+  try:
+    from octo_x_feed import get_x_feed_articles
+    x_articles = get_x_feed_articles(max_per_account=2)
+    for a in x_articles:
+      if a["title"] not in posted_titles:
+        all_articles.append(a)
+    print(f"[Engage] X feed: {len(x_articles)} posts added.")
+  except Exception as _xe:
+    print(f"[Engage] X feed failed: {_xe}")
 
   # Deduplicate by title
   seen, unique = set(), []
@@ -407,22 +425,25 @@ def scrape_article_body(url: str) -> str:
 def generate_take(article: dict, open_calls_text: str, live_prices: str = "") -> str | None:
   system = _SYSTEM.replace("{open_calls}", open_calls_text)
 
-  content = f"Asset: {article['ticker']}\nHeadline: {article['title']}"
-  if article["description"]:
-    content += f"\nSummary: {article['description'][:300]}"
-
-  body = scrape_article_body(article.get("url", ""))
-  if body:
-    content += f"\n\nARTICLE BODY (use specific facts, numbers, capital flows from here):\n{body}"
+  is_x_post = article.get("source") == "x_feed"
+  if is_x_post:
+      content = f"X post by @{article.get('handle','?')}: {article['title']}"
+  else:
+      content = f"Asset: {article['ticker']}\nHeadline: {article['title']}"
+      if article["description"]:
+          content += f"\nSummary: {article['description'][:300]}"
+      body = scrape_article_body(article.get("url", ""))
+      if body:
+          content += f"\n\nARTICLE BODY (use specific facts, numbers, capital flows from here):\n{body}"
 
   if live_prices:
     content += f"\n\nLIVE PRICES (use these exact numbers only, do not invent):\n{live_prices}"
 
-  # Route through ClawRouter eco (smart routing to cheapest capable model)
+  # Route through OpenRouter free model for cost efficiency
   if _CLAW_ENGAGE and _claw_engage:
     try:
       r = _claw_engage.chat.completions.create(
-        model="free/llama-4-maverick",
+        model="meta-llama/llama-4-maverick:free",
         max_tokens=200,
         messages=[
           {"role": "system", "content": system},
