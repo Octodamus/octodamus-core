@@ -293,21 +293,33 @@ Voice rules (non-negotiable):
 - For emails: direct, no fluff, assumes the reader is intelligent"""
 
 
-def tool_draft_content(task: str, context: str = "") -> str:
-    """Draft content in Octodamus voice using Claude Haiku. Auto-saves draft to disk."""
+def tool_draft_content(task: str, context: str = "", model: str = "haiku") -> str:
+    """Draft content in Octodamus voice. model='haiku' (default) or 'grok' (xAI, higher quality). Auto-saves."""
     try:
-        import anthropic, re as _re
-        client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY",""))
+        import re as _re
         prompt = f"{task}"
         if context:
             prompt += f"\n\nContext:\n{context[:2000]}"
-        r = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1000,
-            system=_DRAFT_VOICE,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = r.content[0].text.strip()
+        grok_key = _secrets().get("GROK_API_KEY", "")
+        if model == "grok" and grok_key:
+            from openai import OpenAI as _OAI
+            c = _OAI(base_url="https://api.x.ai/v1", api_key=grok_key)
+            r = c.chat.completions.create(
+                model="grok-3-mini",
+                max_tokens=1000,
+                messages=[{"role": "system", "content": _DRAFT_VOICE},
+                          {"role": "user",   "content": prompt}],
+            )
+            content = r.choices[0].message.content.strip()
+        else:
+            import anthropic
+            c = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY",""))
+            r = c.messages.create(
+                model="claude-haiku-4-5-20251001", max_tokens=1000,
+                system=_DRAFT_VOICE,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = r.content[0].text.strip()
         # Auto-save -- derive filename from task
         drafts_dir = Path(__file__).parent / "drafts"
         drafts_dir.mkdir(exist_ok=True)
@@ -420,12 +432,13 @@ TOOLS = [
     },
     {
         "name": "draft_content",
-        "description": "Draft marketing copy, email outreach, product descriptions, or research summaries. Uses Claude Haiku (cheap).",
+        "description": "Draft content in Octodamus voice. Use model='grok' for highest quality output (pitches, guides, key assets).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "task":    {"type": "string", "description": "What to write"},
                 "context": {"type": "string", "description": "Background context to include"},
+                "model":   {"type": "string", "description": "'haiku' (default, cheap) or 'grok' (xAI Grok-3-mini, higher quality)", "default": "haiku"},
             },
             "required": ["task"],
         },
@@ -516,7 +529,7 @@ TOOL_FNS = {
     "get_market_data":      lambda i: tool_get_market_data(i.get("asset", "BTC")),
     "get_octodamus_signal": lambda i: tool_get_octodamus_signal(),
     "get_polymarket_edges": lambda i: tool_get_polymarket_edges(),
-    "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", "")),
+    "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", ""), i.get("model", "haiku")),
     "send_email":           lambda i: tool_send_email(i["subject"], i["body"]),
     "list_drafts":          lambda i: tool_list_drafts(),
     "search_x402_bazaar":   lambda i: tool_search_x402_bazaar(i["query"]),

@@ -277,18 +277,25 @@ except ImportError:
 
 claude = anthropic.Anthropic()
 
-# OpenRouter client — free model routing for simple posts (wisdom, soul, format, congress)
+# Model routing — OpenRouter (free Llama) primary, Grok fallback, Haiku last resort
 try:
     from openai import OpenAI as _OpenAI
-    _or_key = secrets.get("OPENROUTER_API_KEY", "")
+    _or_key   = secrets.get("OPENROUTER_API_KEY", "")
+    _grok_key = secrets.get("GROK_API_KEY", "")
     if _or_key:
         _claw = _OpenAI(base_url="https://openrouter.ai/api/v1", api_key=_or_key)
+        _CLAW_ACTIVE = True
+    elif _grok_key:
+        _claw = _OpenAI(base_url="https://api.x.ai/v1", api_key=_grok_key)
         _CLAW_ACTIVE = True
     else:
         _claw = None
         _CLAW_ACTIVE = False
+    # Grok client available as secondary option for higher-quality tasks
+    _grok = _OpenAI(base_url="https://api.x.ai/v1", api_key=_grok_key) if _grok_key else None
 except Exception:
     _claw = None
+    _grok = None
     _CLAW_ACTIVE = False
 
 def _claw_generate(system: str, user: str, max_tokens: int = 200,
