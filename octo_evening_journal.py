@@ -107,20 +107,33 @@ def _get_live_market_data() -> str:
     return "\nLive market data (real, verified):\n" + "\n".join(lines)
 
 
-def _get_kobeissi_posts(max_posts: int = 8) -> list[dict]:
-    """Fetch recent @KobeissiLetter posts from X for market news context."""
+# X accounts to pull posts from for journal context.
+# Grouped by topic so Octodamus has wide range to riff on.
+_JOURNAL_X_ACCOUNTS = [
+    # Markets & macro
+    ("KobeissiLetter",  "Markets & macro"),
+    ("zerohedge",       "Macro & geopolitics"),
+    ("unusual_whales",  "Politics & trading"),
+    # Tech & AI
+    ("elonmusk",        "Tech & culture"),
+    ("sama",            "AI"),
+    # Geopolitics & world
+    ("BBCBreaking",     "World news"),
+    ("Reuters",         "World news"),
+    # Ideas & culture
+    ("naval",           "Philosophy & tech"),
+    ("paulg",           "Tech & culture"),
+]
+
+
+def _fetch_x_account(handle: str, label: str, client, max_posts: int = 4) -> list[dict]:
+    """Fetch recent posts from one X account. Returns list of {title, source} dicts."""
     try:
-        import tweepy
-        bearer = _secrets().get("TWITTER_BEARER_TOKEN", "")
-        if not bearer:
-            return []
-        client = tweepy.Client(bearer_token=bearer, wait_on_rate_limit=False)
-        user = client.get_user(username="KobeissiLetter", user_fields=["id"])
+        user = client.get_user(username=handle, user_fields=["id"])
         if not user.data:
             return []
-        uid = user.data.id
         tweets = client.get_users_tweets(
-            id=uid,
+            id=user.data.id,
             max_results=max_posts,
             tweet_fields=["text", "created_at"],
             exclude=["retweets", "replies"],
@@ -130,48 +143,76 @@ def _get_kobeissi_posts(max_posts: int = 8) -> list[dict]:
         results = []
         for t in tweets.data:
             text = t.text.strip()
-            # Skip very short or link-only posts
             if len(text) < 40:
                 continue
-            # Truncate long posts
-            results.append({"title": text[:200], "description": "", "source": "@KobeissiLetter"})
-        return results[:max_posts]
+            results.append({"title": text[:220], "description": "", "source": f"@{handle}", "label": label})
+        return results
     except Exception as e:
-        print(f"[Journal] KobeissiLetter fetch failed: {e}")
+        print(f"[Journal] @{handle} fetch failed: {e}")
+        return []
+
+
+def _get_x_posts(max_per_account: int = 3) -> list[dict]:
+    """Fetch posts from all journal X accounts. Returns combined list."""
+    try:
+        import tweepy
+        bearer = _secrets().get("TWITTER_BEARER_TOKEN", "")
+        if not bearer:
+            return []
+        client = tweepy.Client(bearer_token=bearer, wait_on_rate_limit=False)
+        results, seen = [], set()
+        for handle, label in _JOURNAL_X_ACCOUNTS:
+            posts = _fetch_x_account(handle, label, client, max_posts=max_per_account)
+            for p in posts:
+                t = p["title"]
+                if t not in seen:
+                    seen.add(t)
+                    results.append(p)
+        return results
+    except Exception as e:
+        print(f"[Journal] X posts fetch failed: {e}")
         return []
 
 
 def _get_daily_news(date_str: str = "") -> list[dict]:
-    """Pull today's top world + market headlines via Firecrawl + @KobeissiLetter posts."""
+    """Pull wide-ranging news: X accounts across markets, tech, geopolitics, culture + Firecrawl."""
     results = []
     seen = set()
 
-    # @KobeissiLetter posts — primary market news source
-    kobeissi = _get_kobeissi_posts(max_posts=6)
-    for r in kobeissi:
-        t = r.get("title", "").strip()
+    # X posts — primary source, wide range of voices
+    print("[Journal] Fetching X posts...")
+    for p in _get_x_posts(max_per_account=3):
+        t = p.get("title", "").strip()
         if t and t not in seen:
             seen.add(t)
-            results.append(r)
+            results.append(p)
 
-    # Firecrawl general news as supplement
+    # Firecrawl — broader world topics not covered by X accounts
     try:
         from octo_firecrawl import search_web
         label = date_str or datetime.now().strftime("%B %d %Y")
         queries = [
             f"top world news headlines {label}",
-            f"financial markets news {label}",
+            f"technology AI science news {label}",
+            f"geopolitics international news {label}",
+            f"sports culture entertainment {label}",
+            f"financial markets economy {label}",
         ]
         for q in queries:
-            for r in search_web(q, num_results=5, cache_hours=6.0):
+            for r in search_web(q, num_results=3, cache_hours=6.0):
                 t = r.get("title", "").strip()
                 if t and t not in seen:
                     seen.add(t)
-                    results.append({"title": t, "description": r.get("description", "")[:180]})
+                    results.append({
+                        "title":       t,
+                        "description": r.get("description", "")[:180],
+                        "source":      "news",
+                        "label":       "World news",
+                    })
     except Exception as e:
         print(f"[Journal] Firecrawl news fetch failed: {e}")
 
-    return results[:12]
+    return results[:20]
 
 
 def _day_summary(calls: list, ref_date=None) -> dict:
@@ -213,14 +254,15 @@ def _context_block(s: dict, news: list = None, market_data: str = "") -> str:
         lines.append(market_data)
 
     if news:
-        kobeissi = [n for n in news if n.get("source") == "@KobeissiLetter"]
-        general  = [n for n in news if n.get("source") != "@KobeissiLetter"]
-        if kobeissi:
-            lines.append("\n@KobeissiLetter posts today (primary market news source):")
-            for n in kobeissi[:6]:
-                lines.append(f"  - {n['title']}")
+        x_posts = [n for n in news if n.get("source", "").startswith("@")]
+        general  = [n for n in news if not n.get("source", "").startswith("@")]
+        if x_posts:
+            lines.append("\nVoices from X today (markets, tech, geopolitics, culture):")
+            for n in x_posts[:14]:
+                src = n.get("source", "")
+                lines.append(f"  [{src}] {n['title']}")
         if general:
-            lines.append("\nWorld & market headlines today:")
+            lines.append("\nWorld headlines today:")
             for n in general[:6]:
                 desc = f" -- {n['description'][:120]}" if n.get("description") else ""
                 lines.append(f"  - {n['title']}{desc}")
@@ -585,15 +627,16 @@ def _context_block_from_raw(raw_ctx: str, news: list) -> str:
     """Inject news headlines into a raw test context string."""
     if not news:
         return raw_ctx
-    kobeissi = [n for n in news if n.get("source") == "@KobeissiLetter"]
-    general  = [n for n in news if n.get("source") != "@KobeissiLetter"]
+    x_posts = [n for n in news if n.get("source", "").startswith("@")]
+    general  = [n for n in news if not n.get("source", "").startswith("@")]
     news_lines = ""
-    if kobeissi:
-        news_lines += "\n@KobeissiLetter posts today (primary market news source):"
-        for n in kobeissi[:6]:
-            news_lines += f"\n  - {n['title']}"
+    if x_posts:
+        news_lines += "\nVoices from X today (markets, tech, geopolitics, culture):"
+        for n in x_posts[:14]:
+            src = n.get("source", "")
+            news_lines += f"\n  [{src}] {n['title']}"
     if general:
-        news_lines += "\nWorld & market headlines today:"
+        news_lines += "\nWorld headlines today:"
         for n in general[:6]:
             desc = f" -- {n['description'][:120]}" if n.get("description") else ""
             news_lines += f"\n  - {n['title']}{desc}"
