@@ -323,9 +323,15 @@ _X402_REQ_MICRO = PaymentRequirements(
     amount="10000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
     extra=_USDC_EXTRA,
 )
-_X402_REQS       = [_X402_REQ_MICRO, _X402_REQ_TRIAL, _X402_REQ_ANNUAL]  # micro first — lowest barrier
-_X402_REQS_GUIDE = [_X402_REQ_GUIDE]
-_X402_REQS_API   = [_X402_REQ_ANNUAL]
+_X402_REQ_DERIV_GUIDE = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="3000000", pay_to=_X402_TREASURY, max_timeout_seconds=3600,
+    extra=_USDC_EXTRA,
+)
+_X402_REQS             = [_X402_REQ_MICRO, _X402_REQ_TRIAL, _X402_REQ_ANNUAL]
+_X402_REQS_GUIDE       = [_X402_REQ_GUIDE]
+_X402_REQS_DERIV_GUIDE = [_X402_REQ_DERIV_GUIDE]
+_X402_REQS_API         = [_X402_REQ_ANNUAL]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 
@@ -1667,6 +1673,16 @@ def well_known_x402():
                     {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
                 ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+            },
+            {
+                "path":        "/v2/guide/derivatives",
+                "method":      "GET",
+                "description": "5 Derivatives Signals Every Crypto Trader Must Know -- 25,000-word PDF guide. Funding rates, open interest, long/short ratio, liquidation maps, CME COT positioning. Returns PDF on payment.",
+                "pricing": [
+                    {"product": "one_time_purchase", "amount_usdc": 3.00, "description": "Single purchase, permanent access. No subscription."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/guide/derivatives/preview",
+                "returns":  "application/pdf",
             },
         ],
         "micro_pricing": {
@@ -4014,6 +4030,87 @@ def guide_download(token: str = Query(..., description="Download token from fulf
         raise HTTPException(status_code=503, detail="Guide URL not configured")
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url=guide_url, status_code=302)
+
+
+# -- Derivatives Guide ($3 USDC x402) ----------------------------------------
+
+_DERIV_GUIDE_PATH = Path(__file__).parent / "data" / "guides" / "derivatives_signals.pdf"
+
+@app.get("/v2/guide/derivatives", tags=["Agent Purchases"])
+def buy_derivatives_guide(request: Request):
+    """
+    5 Derivatives Signals Every Crypto Trader Must Know — $3 USDC on Base.
+    Pay via x402 EIP-3009 USDC authorization. Returns PDF directly on payment.
+    No account, no subscription, no API key required.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(3.0),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "5 Derivatives Signals Every Crypto Trader Must Know",
+                "price_usdc":  3.00,
+                "pay_to":      _X402_TREASURY,
+                "asset":       _X402_USDC,
+                "network":     "base-mainnet (eip155:8453)",
+                "how":         "Sign EIP-3009 USDC authorization for $3.00 to pay_to address, send as PAYMENT-SIGNATURE header",
+                "description": "25,000-word guide: funding rates, open interest, long/short ratio, liquidation maps, CME COT positioning. Real data, Octodamus voice.",
+                "preview":     "https://api.octodamus.com/v2/guide/derivatives/preview",
+                "discovery":   "https://api.octodamus.com/.well-known/x402.json",
+            })
+        )
+
+    # Verify and settle payment
+    _x402_verify_settle(request, _X402_REQS_DERIV_GUIDE)
+
+    # Serve the PDF
+    if not _DERIV_GUIDE_PATH.exists():
+        raise HTTPException(status_code=503, detail="Guide file not found")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        path=str(_DERIV_GUIDE_PATH),
+        media_type="application/pdf",
+        filename="5_Derivatives_Signals_Octodamus.pdf",
+        headers={"X-Octodamus-Product": "derivatives-guide-v1"},
+    )
+
+
+@app.get("/v2/guide/derivatives/preview", tags=["Agent Purchases"])
+def derivatives_guide_preview():
+    """Free preview of the derivatives guide — introduction and Signal 1 only."""
+    return {
+        "product":     "5 Derivatives Signals Every Crypto Trader Must Know",
+        "price_usdc":  3.00,
+        "buy":         "GET https://api.octodamus.com/v2/guide/derivatives (x402 $3 USDC)",
+        "signals":     ["Funding Rates", "Open Interest", "Long/Short Ratio", "Liquidation Maps", "CME COT Positioning"],
+        "word_count":  25000,
+        "preview":     (
+            "Derivatives markets are where conviction meets capital. "
+            "They are also where the market reveals what it actually believes, "
+            "stripped of narrative and sentiment. Five signals dominate the behaviour "
+            "of professional traders moving serious money through futures, perpetual swaps, "
+            "and options. These signals are not predictive — they are revealing."
+        ),
+        "current_data": {
+            "btc_usd":          77600,
+            "fear_greed":       39,
+            "hedge_fund_cme":   "net short 10,239 contracts",
+            "asset_mgr_cme":    "net long 5,261 contracts",
+        },
+        "by": "Octodamus (@octodamusai) · api.octodamus.com",
+    }
 
 
 # -- V2 Ask — Agent-to-Octodamus conversation (no auth required) -------------
