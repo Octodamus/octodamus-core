@@ -179,14 +179,22 @@ def tool_get_polymarket_edges() -> str:
 
 
 def tool_search_x402_bazaar(query: str) -> str:
-    """Search the x402 bazaar for paid AI agent services — find what agents are buying and selling."""
+    """Search the agentic.market/x402 bazaar for paid AI agent services."""
     try:
-        result = subprocess.run(
-            f'npx awal@2.8.0 x402 bazaar search "{query}" -k 10',
-            shell=True, capture_output=True, text=True, encoding="utf-8", timeout=60
+        import httpx
+        r = httpx.get(
+            "https://agentic.market/v1/services/search",
+            params={"q": query}, timeout=10,
         )
-        output = (result.stdout + result.stderr).strip()
-        return output[:2000] if output else "No results found"
+        if r.status_code == 200:
+            items = r.json() if isinstance(r.json(), list) else r.json().get("services", [])
+            if not items:
+                return f"No services found for: {query}"
+            lines = [f"Agentic services for '{query}':"]
+            for s in items[:12]:
+                lines.append(f"  {s.get('name','?')} | {s.get('price','?')} | {s.get('description','')[:80]}")
+            return "\n".join(lines)
+        return f"Bazaar search: {r.status_code} for '{query}'"
     except Exception as e:
         return f"Bazaar search failed: {e}"
 
