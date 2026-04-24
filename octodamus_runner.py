@@ -1079,15 +1079,11 @@ def mode_monitor() -> None:
         # Fallback watchpost — fires when no signal post was queued
         if not posted:
             try:
-                import httpx, requests as _req
-                _prices = _req.get(
-                    "https://api.coingecko.com/api/v3/simple/price",
-                    params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
-                    timeout=10,
-                ).json()
-                _btc = _prices.get("bitcoin", {})
-                _eth = _prices.get("ethereum", {})
-                _sol = _prices.get("solana", {})
+                from financial_data_client import get_crypto_prices as _gcp
+                _cp = _gcp(["BTC", "ETH", "SOL"])
+                _btc = {"usd": _cp.get("BTC", {}).get("usd", 0), "usd_24h_change": _cp.get("BTC", {}).get("usd_24h_change", 0)}
+                _eth = {"usd": _cp.get("ETH", {}).get("usd", 0), "usd_24h_change": _cp.get("ETH", {}).get("usd_24h_change", 0)}
+                _sol = {"usd": _cp.get("SOL", {}).get("usd", 0), "usd_24h_change": _cp.get("SOL", {}).get("usd_24h_change", 0)}
                 if not _btc.get("usd", 0):
                     print("[Runner] Watchpost skipped — price feeds returned zero.")
                     posted = True  # treat as posted so we don't retry
@@ -1215,22 +1211,26 @@ def mode_daily() -> None:
     print(f"\n[Runner] Generating daily oracle read...")
     try:
         snapshots = {}
-        for ticker in DAILY_TICKERS:
-            try:
-                if ticker in ("BTC", "ETH", "SOL", "HYPE"):
-                    import requests as _req
-                    _cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "HYPE": "hyperliquid"}
-                    _r = _req.get("https://api.coingecko.com/api/v3/simple/price",
-                        params={"ids": _cg_map[ticker], "vs_currencies": "usd", "include_24hr_change": "true"},
-                        timeout=10)
-                    _d = _r.json().get(_cg_map[ticker], {})
+        # Fetch all crypto prices in one cached call (Binance primary, CoinGecko fallback)
+        try:
+            from financial_data_client import get_crypto_prices as _gcp
+            _crypto_tickers = [t for t in DAILY_TICKERS if t in ("BTC", "ETH", "SOL", "HYPE")]
+            _cp = _gcp(_crypto_tickers)
+            for ticker in _crypto_tickers:
+                p = _cp.get(ticker, {})
+                if p.get("usd", 0) > 0:
                     snapshots[ticker] = {
-                        "price": _d.get("usd", 0),
-                        "day_change_percent": float(_d.get("usd_24h_change", 0) or 0),
+                        "price": p["usd"],
+                        "day_change_percent": round(p.get("usd_24h_change", 0), 2),
                     }
-                else:
-                    data = get_current_price(ticker)
-                    snapshots[ticker] = data.get("snapshot", {})
+        except Exception as e:
+            print(f"[Runner] Crypto price fetch failed: {e}")
+        for ticker in DAILY_TICKERS:
+            if ticker in ("BTC", "ETH", "SOL", "HYPE"):
+                continue  # already handled above
+            try:
+                data = get_current_price(ticker)
+                snapshots[ticker] = data.get("snapshot", {})
             except Exception as e:
                 print(f"[Runner] Could not fetch {ticker}: {e}")
 
