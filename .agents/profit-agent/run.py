@@ -99,7 +99,7 @@ def _get_wallet_balance() -> float:
     return -1.0
 
 
-def run_session(dry_run: bool = False):
+def run_session(dry_run: bool = False, session_type: str = ""):
     state = _load_state()
 
     if state.get("dead"):
@@ -135,10 +135,15 @@ def run_session(dry_run: bool = False):
         print(f"\nMission preview:\n{mission[:300]}...")
         return
 
-    print(f"[ProfitAgent] Running autonomous agent loop...")
+    session_label = session_type or "auto"
+    print(f"[ProfitAgent] Running autonomous agent loop ({session_label})...")
+
+    cmd = [sys.executable, str(Path(__file__).parent / "agent.py")]
+    if session_type:
+        cmd += ["--session", session_type]
 
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / "agent.py")],
+        cmd,
         capture_output=True, text=True, encoding="utf-8",
         timeout=1800,
         cwd=str(ROOT),
@@ -237,4 +242,4 @@ if __name__ == "__main__":
     elif args.report:
         send_report(args.report)
     else:
-        run_session(dry_run=args.dry)
+        run_session(dry_run=args.dry, session_type=getattr(args, "session", ""))

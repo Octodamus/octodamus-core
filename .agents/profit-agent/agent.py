@@ -606,7 +606,63 @@ RULES:
 - Stop if wallet <$10"""
 
 
-def run_session(dry_run: bool = False):
+SESSION_FOCUS = {
+    "morning": """SESSION FOCUS — MORNING (6am)
+You are waking up. Markets moved overnight. Your job this session:
+1. check_wallet + list_drafts first (orient yourself)
+2. get_market_data for BTC, ETH, SOL — what happened overnight?
+3. get_grok_sentiment for BTC — what is X saying this morning?
+4. get_polymarket_edges — any overnight price shifts creating fresh edges?
+5. If you find a clear Polymarket edge (EV >15%, real-world probability clearly diverges): write a position brief and save it
+6. Draft one Octodamus X post based on the morning market read — save as morning_post_[date].md
+7. Email owner: overnight summary + any edge found + post draft""",
+
+    "midday": """SESSION FOCUS — MIDDAY (12pm)
+Markets are open and moving. Your job this session:
+1. check_wallet + list_drafts — what's already been done today?
+2. Pick the single highest-priority incomplete task and execute it fully
+3. If drafts exist that are unfinished: complete them
+4. If no clear priority: hunt for a Polymarket edge using live market data + Grok sentiment
+5. Search x402 bazaar or agentic.market for new services or gaps Octodamus can fill
+6. Save all output, email a midday status update""",
+
+    "evening": """SESSION FOCUS — EVENING (6pm)
+End of US trading day. Your job this session:
+1. check_wallet + list_drafts — full review of the day's output
+2. get_market_data — how did markets close?
+3. get_grok_sentiment — what is the crowd saying into close?
+4. Evaluate any open Polymarket positions from today's briefs — are they still valid?
+5. Draft a summary of what Agent_Ben accomplished today — save as daily_summary_[date].md
+6. Identify the single most important thing to do tomorrow morning — log it
+7. Email owner: day summary, wallet status, tomorrow's priority""",
+
+    "overnight": """SESSION FOCUS — OVERNIGHT (12am)
+While humans sleep, markets keep moving. Your job this session:
+1. check_wallet + list_drafts
+2. get_polymarket_edges — scan for overnight mispricing. Volume is thin. Edges are sharper.
+3. For every high-volume market (>$50k): check if overnight events shifted real-world probability
+4. get_grok_sentiment — what are Asian/global traders saying?
+5. web_search for any breaking news that affects open Polymarket markets
+6. If a clear edge exists: write the brief, note it's an overnight opportunity with thin liquidity
+7. Check x402 bazaar — any new services listed overnight?
+8. Email owner only if you find something actionable. Silent night if nothing notable.""",
+}
+
+
+def _get_session_focus() -> str:
+    """Return time-appropriate session focus based on current hour."""
+    hour = datetime.now().hour
+    if 5 <= hour < 10:
+        return SESSION_FOCUS["morning"]
+    elif 10 <= hour < 16:
+        return SESSION_FOCUS["midday"]
+    elif 16 <= hour < 22:
+        return SESSION_FOCUS["evening"]
+    else:
+        return SESSION_FOCUS["overnight"]
+
+
+def run_session(dry_run: bool = False, session_type: str = ""):
     state = _load_state()
     if state.get("dead"):
         print("[Agent] Dead — wallet depleted. Exiting.")
@@ -614,10 +670,11 @@ def run_session(dry_run: bool = False):
 
     now = datetime.now().strftime("%A %B %d %Y %I:%M %p")
     session_num = state.get("sessions", 0) + 1
-    print(f"\n[Agent] Session #{session_num} | {now}")
+    focus = SESSION_FOCUS.get(session_type, _get_session_focus())
+    print(f"\n[Agent] Session #{session_num} | {now} | {session_type or 'auto'}")
 
     if dry_run:
-        print(f"[Agent] DRY RUN — system prompt:\n{SYSTEM[:400]}...\n")
+        print(f"[Agent] DRY RUN — focus: {session_type or 'auto'}")
         print(f"[Agent] Tools: {[t['name'] for t in TOOLS]}")
         return
 
@@ -626,10 +683,11 @@ def run_session(dry_run: bool = False):
         f.write(f"\n{'='*60}\nSession #{session_num} -- {now}\n{'='*60}\n")
 
     import anthropic
-    client   = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
-    messages = [{"role": "user", "content": "Begin. Check wallet first, then execute the mission."}]
-    full_log = []
-    turns    = 0
+    client       = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
+    session_sys  = SYSTEM + f"\n\n{focus}"
+    messages     = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
+    full_log     = []
+    turns        = 0
 
     while turns < MAX_TURNS:
         turns += 1
@@ -638,7 +696,7 @@ def run_session(dry_run: bool = False):
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2000,
-            system=SYSTEM,
+            system=session_sys,
             tools=TOOLS,
             messages=messages,
         )
@@ -708,5 +766,6 @@ def run_session(dry_run: bool = False):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--session", choices=["morning","midday","evening","overnight"], default="")
     args = ap.parse_args()
-    run_session(dry_run=args.dry)
+    run_session(dry_run=args.dry, session_type=args.session)
