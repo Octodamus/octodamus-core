@@ -331,31 +331,30 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     if twitter and verbose:
         print(f"[Bitwarden] âœ“ AGENT - Octodamus - Social - Twitter API")
 
-    # Coinbase CDP API — tries custom fields first, then username/password fallback
+    # Coinbase CDP API — Key ID (UUID ~36 chars) + Private Key (PEM, long)
     try:
-        item = _get_item("AGENT - Octodamus - Coinbase CDP API")
+        import re as _re
+        item   = _get_item("AGENT - Octodamus - Coinbase CDP API")
         login  = item.get("login", {})
+        notes  = (item.get("notes") or "").strip()
         fields = {(f.get("name") or "").strip(): (f.get("value") or "").strip()
                   for f in (item.get("fields") or [])}
+        all_values = list(fields.values()) + [login.get("username",""), login.get("password",""), notes]
 
-        # Custom field names may vary — check several common patterns
-        cdp_id = (
-            fields.get("CDP_API_KEY_ID") or
-            fields.get("cdp_api_key_id") or
-            fields.get("Key ID") or
-            fields.get("key_id") or
-            fields.get("API Key ID") or
-            login.get("username") or ""
-        )
-        cdp_secret = (
-            fields.get("CDP_API_KEY_SECRET") or
-            fields.get("cdp_api_key_secret") or
-            fields.get("Private Key") or
-            fields.get("private_key") or
-            fields.get("API Key Secret") or
-            fields.get("Secret") or
-            login.get("password") or ""
-        )
+        # Key ID = UUID or short string (≤50 chars), Private Key = PEM or long string (>50 chars)
+        cdp_id     = ""
+        cdp_secret = ""
+        for v in all_values:
+            if not v:
+                continue
+            if len(v) <= 50 and not cdp_id:        # UUID / short key ID
+                cdp_id = v
+            elif len(v) > 50 and not cdp_secret:   # PEM private key or long secret
+                cdp_secret = v
+
+        # Also check notes for PEM key block
+        if not cdp_secret and "-----BEGIN" in notes:
+            cdp_secret = notes
 
         if cdp_id:
             os.environ["CDP_API_KEY_ID"] = cdp_id
@@ -363,10 +362,10 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
         if cdp_secret:
             os.environ["CDP_API_KEY_SECRET"] = cdp_secret
             loaded["CDP_API_KEY_SECRET"] = cdp_secret
-        if cdp_id and verbose:
-            print(f"[Bitwarden] Coinbase CDP API loaded (id={cdp_id[:8]}...)")
+        if cdp_id and cdp_secret and verbose:
+            print(f"[Bitwarden] Coinbase CDP API loaded (id={cdp_id[:8]}... secret={len(cdp_secret)}chars)")
         elif verbose:
-            print(f"[Bitwarden] CDP API: item found but no key extracted. Fields: {list(fields.keys())} | login username: {bool(login.get('username'))}")
+            print(f"[Bitwarden] CDP API: id={'found' if cdp_id else 'missing'} secret={'found' if cdp_secret else 'missing'} | fields={list(fields.keys())} | notes_len={len(notes)}")
     except Exception as _e:
         if verbose:
             print(f"[Bitwarden] CDP API (non-critical): {_e}")
