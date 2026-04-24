@@ -23,10 +23,10 @@ PORTAL_URL    = "http://portal.genlayer.foundation"
 SEARCH_TERMS  = ["genlayer mainnet", "genlayer mainnet launch", "genlayer production live"]
 
 MAINNET_KEYWORDS = [
-    "mainnet is live", "mainnet launch", "mainnet launched",
-    "production network", "mainnet is now live", "officially live",
-    "mainnet release", "out of testnet", "leaving testnet",
-    "mainnet announcement", "production ready",
+    "mainnet is live", "mainnet launched", "mainnet is now live",
+    "out of testnet", "leaving testnet",
+    "genlayer mainnet launch", "genlayer is live on mainnet",
+    "mainnet now open", "genlayer mainnet open",
 ]
 
 
