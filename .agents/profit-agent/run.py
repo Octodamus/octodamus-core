@@ -136,18 +136,14 @@ def run_session(dry_run: bool = False):
 
     print(f"[ProfitAgent] Running Franklin (max spend: ${MAX_SPEND_PER_SESSION})...")
 
-    # Write mission to temp file to avoid shell quoting issues
-    mission_tmp = Path(__file__).parent / "_mission_tmp.txt"
-    mission_tmp.write_text(mission, encoding="utf-8")
-
-    cmd = f'"{FRANKLIN_BIN}" start --trust --max-spend {MAX_SPEND_PER_SESSION} --prompt "{mission_tmp}"'
-
+    # Pass mission text directly as argument -- no shell, no quoting issues
     result = subprocess.run(
-        cmd,
+        [FRANKLIN_BIN, "start", "--trust",
+         "--max-spend", str(MAX_SPEND_PER_SESSION),
+         "--prompt", mission],
         capture_output=True, text=True, encoding="utf-8",
         timeout=1800,
         cwd=str(ROOT),
-        shell=True,
     )
 
     output = result.stdout + result.stderr
