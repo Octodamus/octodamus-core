@@ -382,6 +382,27 @@ def estimate(
     if smart_money_section:
         smart_money_section = f"\n\n{smart_money_section}"
 
+    # Grok X social sentiment for crypto-related markets (real-time X data)
+    grok_section = ""
+    try:
+        q_lower = question.lower()
+        grok_asset = None
+        if any(w in q_lower for w in ["bitcoin", "btc"]):   grok_asset = "BTC"
+        elif any(w in q_lower for w in ["ethereum", "eth"]): grok_asset = "ETH"
+        elif any(w in q_lower for w in ["solana", "sol"]):   grok_asset = "SOL"
+        if grok_asset:
+            from octo_grok_sentiment import get_grok_sentiment
+            gs = get_grok_sentiment(grok_asset)
+            if gs.get("confidence", 0) >= 0.5:
+                grok_section = (
+                    f"\n\nX SOCIAL SENTIMENT (Grok real-time):\n"
+                    f"  {grok_asset}: {gs['signal']} ({gs['confidence']:.0%} confidence)\n"
+                    f"  {gs.get('summary','')}\n"
+                    f"  Crowd positioning: {gs.get('crowd_pos','?')}"
+                )
+    except Exception:
+        pass
+
     # Volume confidence tier (Markov state reliability signal)
     from octo_boto_math import volume_confidence_tier
     vol_tier = volume_confidence_tier(volume24h) if volume24h > 0 else "UNKNOWN"
@@ -435,7 +456,7 @@ Context: {description[:300] if description else "None provided"}{date_hint}
 ━━━ SIGNAL DATA — form your raw probability estimate from THIS first ━━━
 (Institutional best practice: anchor on data, NOT on market price.
  Do not look at the crowd price yet. Build your independent view first.)
-{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{smart_money_section}{consensus_section}{cat_context}{serial_escalation_note}
+{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{smart_money_section}{grok_section}{consensus_section}{cat_context}{serial_escalation_note}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 TASK: Determine if the market is mispriced. Form your estimate from signals alone, then compare.

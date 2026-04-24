@@ -129,6 +129,25 @@ def tool_get_market_data(asset: str = "BTC") -> str:
         return f"Market data failed: {e}"
 
 
+def tool_get_grok_sentiment(asset: str = "BTC") -> str:
+    """Get real-time X/Twitter social sentiment via Grok's live data. Fast read of what traders are saying right now."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from octo_grok_sentiment import get_grok_sentiment
+        result = get_grok_sentiment(asset.upper(), force=True)
+        if result.get("confidence", 0) == 0:
+            return f"Grok sentiment unavailable for {asset}: {result.get('summary','')}"
+        return (
+            f"X Sentiment for {asset} (Grok real-time):\n"
+            f"  Signal:     {result['signal']} ({result['confidence']:.0%} confidence)\n"
+            f"  Summary:    {result.get('summary','')}\n"
+            f"  Crowd:      {result.get('crowd_pos','?')}\n"
+            f"  Themes:     {', '.join(result.get('key_themes',[]))}"
+        )
+    except Exception as e:
+        return f"Grok sentiment failed: {e}"
+
+
 def tool_get_octodamus_signal() -> str:
     """Get current Octodamus oracle signal and open calls from local data."""
     try:
@@ -421,6 +440,17 @@ TOOLS = [
         },
     },
     {
+        "name": "get_grok_sentiment",
+        "description": "Get real-time X/Twitter social sentiment via Grok's live data. Use to confirm or challenge a market view with what traders are actually saying right now.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "asset": {"type": "string", "description": "BTC, ETH, SOL, WTI, NVDA, or TSLA", "default": "BTC"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_octodamus_signal",
         "description": "Get the current Octodamus AI oracle signal — BUY/SELL/HOLD, track record, market brief.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -527,6 +557,7 @@ TOOL_FNS = {
     "web_search":           lambda i: tool_web_search(i["query"], i.get("num_results", 5)),
     "browse_url":           lambda i: tool_browse_url(i["url"]),
     "get_market_data":      lambda i: tool_get_market_data(i.get("asset", "BTC")),
+    "get_grok_sentiment":   lambda i: tool_get_grok_sentiment(i.get("asset", "BTC")),
     "get_octodamus_signal": lambda i: tool_get_octodamus_signal(),
     "get_polymarket_edges": lambda i: tool_get_polymarket_edges(),
     "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", ""), i.get("model", "haiku")),

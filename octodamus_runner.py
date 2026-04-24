@@ -272,6 +272,14 @@ try:
     _HYPE_ACTIVE = True
 except ImportError:
     _HYPE_ACTIVE = False
+
+try:
+    from octo_grok_sentiment import get_grok_sentiment, get_grok_sentiment_context
+    _GROK_ACTIVE = True
+except ImportError:
+    _GROK_ACTIVE = False
+    def get_grok_sentiment(asset="BTC", force=False): return {"signal": "NEUTRAL", "confidence": 0.0}
+    def get_grok_sentiment_context(assets=None): return ""
     def hype_context_str(): return ""
     def hip4_news_str(): return ""
 
@@ -628,6 +636,21 @@ def _check_smart_call():
                             continue
                 except Exception:
                     pass
+
+                # ── Grok X sentiment confirmation ─────────────────────────────
+                grok_ctx = ""
+                if _GROK_ACTIVE and asset in ("BTC", "ETH", "SOL"):
+                    try:
+                        gs = get_grok_sentiment(asset)
+                        if gs.get("confidence", 0) >= 0.6:
+                            gs_dir = "UP" if gs["signal"] == "BULLISH" else ("DOWN" if gs["signal"] == "BEARISH" else None)
+                            if gs_dir and gs_dir != direction and max(bull_count, bear_count) < 9:
+                                print(f"[SmartCall] {asset}: Grok X sentiment {gs['signal']} contradicts {direction} — skipping.")
+                                continue
+                            grok_ctx = f"\nX Social Sentiment (Grok): {gs['signal']} ({gs['confidence']:.0%}) — {gs.get('summary','')[:120]}"
+                            print(f"[SmartCall] {asset}: Grok sentiment {gs['signal']} ({gs['confidence']:.0%})")
+                    except Exception as _ge:
+                        print(f"[SmartCall] Grok sentiment skipped: {_ge}")
 
                 # ── #5: Stablecoin flow signal ────────────────────────────────
                 stable_ctx = ""
@@ -1292,6 +1315,15 @@ def mode_daily() -> None:
                 fc_news_section += f"\n\n{_daily_x}"
         except Exception:
             pass
+
+        # Grok real-time X sentiment for BTC/ETH
+        if _GROK_ACTIVE:
+            try:
+                _grok_ctx = get_grok_sentiment_context(["BTC", "ETH"])
+                if _grok_ctx:
+                    fc_news_section += f"\n\n{_grok_ctx}"
+            except Exception:
+                pass
 
         response = claude.messages.create(
             model="claude-sonnet-4-6",
