@@ -191,9 +191,9 @@ Voice rules (non-negotiable):
 
 
 def tool_draft_content(task: str, context: str = "") -> str:
-    """Draft content in Octodamus voice using Claude Haiku. Always call save_draft after."""
+    """Draft content in Octodamus voice using Claude Haiku. Auto-saves draft to disk."""
     try:
-        import anthropic
+        import anthropic, re as _re
         client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY",""))
         prompt = f"{task}"
         if context:
@@ -204,7 +204,15 @@ def tool_draft_content(task: str, context: str = "") -> str:
             system=_DRAFT_VOICE,
             messages=[{"role": "user", "content": prompt}],
         )
-        return r.content[0].text.strip()
+        content = r.content[0].text.strip()
+        # Auto-save -- derive filename from task
+        drafts_dir = Path(__file__).parent / "drafts"
+        drafts_dir.mkdir(exist_ok=True)
+        slug = _re.sub(r"[^a-z0-9]+", "_", task[:40].lower()).strip("_")
+        ts   = datetime.now().strftime("%H%M")
+        fname = drafts_dir / f"{slug}_{ts}.md"
+        fname.write_text(content, encoding="utf-8")
+        return f"{content}\n\n[Auto-saved to drafts/{fname.name}]"
     except Exception as e:
         return f"Content draft failed: {e}"
 
