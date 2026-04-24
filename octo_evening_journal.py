@@ -107,8 +107,54 @@ def _get_live_market_data() -> str:
     return "\nLive market data (real, verified):\n" + "\n".join(lines)
 
 
+def _get_kobeissi_posts(max_posts: int = 8) -> list[dict]:
+    """Fetch recent @KobeissiLetter posts from X for market news context."""
+    try:
+        import tweepy
+        bearer = _secrets().get("TWITTER_BEARER_TOKEN", "")
+        if not bearer:
+            return []
+        client = tweepy.Client(bearer_token=bearer, wait_on_rate_limit=False)
+        user = client.get_user(username="KobeissiLetter", user_fields=["id"])
+        if not user.data:
+            return []
+        uid = user.data.id
+        tweets = client.get_users_tweets(
+            id=uid,
+            max_results=max_posts,
+            tweet_fields=["text", "created_at"],
+            exclude=["retweets", "replies"],
+        )
+        if not tweets.data:
+            return []
+        results = []
+        for t in tweets.data:
+            text = t.text.strip()
+            # Skip very short or link-only posts
+            if len(text) < 40:
+                continue
+            # Truncate long posts
+            results.append({"title": text[:200], "description": "", "source": "@KobeissiLetter"})
+        return results[:max_posts]
+    except Exception as e:
+        print(f"[Journal] KobeissiLetter fetch failed: {e}")
+        return []
+
+
 def _get_daily_news(date_str: str = "") -> list[dict]:
-    """Pull today's top world + market headlines via Firecrawl. Returns list of {title, description}."""
+    """Pull today's top world + market headlines via Firecrawl + @KobeissiLetter posts."""
+    results = []
+    seen = set()
+
+    # @KobeissiLetter posts — primary market news source
+    kobeissi = _get_kobeissi_posts(max_posts=6)
+    for r in kobeissi:
+        t = r.get("title", "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            results.append(r)
+
+    # Firecrawl general news as supplement
     try:
         from octo_firecrawl import search_web
         label = date_str or datetime.now().strftime("%B %d %Y")
@@ -116,17 +162,16 @@ def _get_daily_news(date_str: str = "") -> list[dict]:
             f"top world news headlines {label}",
             f"financial markets news {label}",
         ]
-        seen, results = set(), []
         for q in queries:
             for r in search_web(q, num_results=5, cache_hours=6.0):
                 t = r.get("title", "").strip()
                 if t and t not in seen:
                     seen.add(t)
                     results.append({"title": t, "description": r.get("description", "")[:180]})
-        return results[:10]
     except Exception as e:
-        print(f"[Journal] News fetch failed: {e}")
-        return []
+        print(f"[Journal] Firecrawl news fetch failed: {e}")
+
+    return results[:12]
 
 
 def _day_summary(calls: list, ref_date=None) -> dict:
@@ -168,10 +213,17 @@ def _context_block(s: dict, news: list = None, market_data: str = "") -> str:
         lines.append(market_data)
 
     if news:
-        lines.append("\nWorld & market headlines today:")
-        for n in news[:8]:
-            desc = f" -- {n['description'][:120]}" if n.get("description") else ""
-            lines.append(f"  - {n['title']}{desc}")
+        kobeissi = [n for n in news if n.get("source") == "@KobeissiLetter"]
+        general  = [n for n in news if n.get("source") != "@KobeissiLetter"]
+        if kobeissi:
+            lines.append("\n@KobeissiLetter posts today (primary market news source):")
+            for n in kobeissi[:6]:
+                lines.append(f"  - {n['title']}")
+        if general:
+            lines.append("\nWorld & market headlines today:")
+            for n in general[:6]:
+                desc = f" -- {n['description'][:120]}" if n.get("description") else ""
+                lines.append(f"  - {n['title']}{desc}")
 
 
     if s["wins"]:
@@ -533,11 +585,18 @@ def _context_block_from_raw(raw_ctx: str, news: list) -> str:
     """Inject news headlines into a raw test context string."""
     if not news:
         return raw_ctx
-    news_lines = "\nWorld & market headlines today:"
-    for n in news[:8]:
-        desc = f" -- {n['description'][:120]}" if n.get("description") else ""
-        news_lines += f"\n  - {n['title']}{desc}"
-    # Insert after the Date line
+    kobeissi = [n for n in news if n.get("source") == "@KobeissiLetter"]
+    general  = [n for n in news if n.get("source") != "@KobeissiLetter"]
+    news_lines = ""
+    if kobeissi:
+        news_lines += "\n@KobeissiLetter posts today (primary market news source):"
+        for n in kobeissi[:6]:
+            news_lines += f"\n  - {n['title']}"
+    if general:
+        news_lines += "\nWorld & market headlines today:"
+        for n in general[:6]:
+            desc = f" -- {n['description'][:120]}" if n.get("description") else ""
+            news_lines += f"\n  - {n['title']}{desc}"
     lines = raw_ctx.splitlines()
     return lines[0] + "\n" + news_lines + "\n" + "\n".join(lines[1:])
 
