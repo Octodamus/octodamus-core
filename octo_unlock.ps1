@@ -99,9 +99,15 @@ Status "Calls data sync" $true
 # STEP 3.5: Launch TradingView with CDP
 Write-Host ""
 Write-Host "  [3.5/6] Starting TradingView (CDP)..." -ForegroundColor Yellow
-$TV_EXE = "C:\Program Files\WindowsApps\TradingView.Desktop_3.0.0.7652_x64__n534cwy3pjxzj\TradingView.exe"
 $TV_PORT = 9222
+# Find TradingView dynamically so version updates don't break this
+$tvDir = Get-ChildItem "C:\Program Files\WindowsApps" -Filter "TradingView.Desktop_*" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+$TV_EXE = if ($tvDir) { Join-Path $tvDir.FullName "TradingView.exe" } else { "" }
 try {
+    if (-not $TV_EXE -or -not (Test-Path $TV_EXE)) {
+        Status "TradingView CDP" $false "TradingView not installed"
+        throw "skip"
+    }
     # Kill any existing TradingView instance
     Get-Process -Name TradingView -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
