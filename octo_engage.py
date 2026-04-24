@@ -358,20 +358,20 @@ def brand_image(image_url: str) -> str | None:
       img = img.crop((0, top, w, top + target_h))
       h = target_h
 
-    # Add thin brand strip at bottom (3% height, dark with cyan text)
-    strip_h = max(28, int(h * 0.04))
+    # Thin brand strip at bottom — small, caption-sized, not a banner
+    font_size = 11
+    strip_h   = font_size + 10  # just enough padding around the text
     new_img = Image.new("RGB", (w, h + strip_h), (0, 8, 16))
     new_img.paste(img, (0, 0))
 
     draw = ImageDraw.Draw(new_img)
-    # Dark strip background already set; add text
     try:
-      font = ImageFont.truetype("C:/Windows/Fonts/Arial.ttf", size=max(12, strip_h - 8))
+      font = ImageFont.truetype("C:/Windows/Fonts/Arial.ttf", size=font_size)
     except Exception:
       font = ImageFont.load_default()
 
     label = "OCTODAMUS  ·  api.octodamus.com  ·  @octodamusai"
-    draw.text((12, h + 4), label, fill=(0, 200, 255), font=font)
+    draw.text((12, h + 5), label, fill=(0, 180, 230), font=font)
 
     # Save and upload
     suffix = ".jpg"
