@@ -1088,6 +1088,10 @@ def mode_monitor() -> None:
                 _btc = _prices.get("bitcoin", {})
                 _eth = _prices.get("ethereum", {})
                 _sol = _prices.get("solana", {})
+                if not _btc.get("usd", 0):
+                    print("[Runner] Watchpost skipped — price feeds returned zero.")
+                    posted = True  # treat as posted so we don't retry
+                    continue
                 _fng_val = 50
                 try:
                     _fng_val = int(_req.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()["data"][0]["value"])
@@ -1232,6 +1236,9 @@ def mode_daily() -> None:
 
         if not snapshots:
             print("[Runner] No market data — skipping daily post.")
+            return
+        if not any(v.get("price", 0) > 0 for v in snapshots.values()):
+            print("[Runner] Daily post skipped — all price feeds returned zero.")
             return
 
         headlines = get_top_headlines(DAILY_TICKERS, max_per_symbol=3)
