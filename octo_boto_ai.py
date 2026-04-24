@@ -382,12 +382,14 @@ def estimate(
     if smart_money_section:
         smart_money_section = f"\n\n{smart_money_section}"
 
-    # Grok X social sentiment for crypto-related markets (real-time X data)
+    # Grok X social sentiment — contrarian context, not a confirmation signal.
+    # X crypto sentiment is heavily gamed. High bullishness often = local top.
+    # Use this to understand the crowd narrative, then consider the opposite.
     grok_section = ""
     try:
         q_lower = question.lower()
         grok_asset = None
-        if any(w in q_lower for w in ["bitcoin", "btc"]):   grok_asset = "BTC"
+        if any(w in q_lower for w in ["bitcoin", "btc"]):    grok_asset = "BTC"
         elif any(w in q_lower for w in ["ethereum", "eth"]): grok_asset = "ETH"
         elif any(w in q_lower for w in ["solana", "sol"]):   grok_asset = "SOL"
         if grok_asset:
@@ -395,10 +397,11 @@ def estimate(
             gs = get_grok_sentiment(grok_asset)
             if gs.get("confidence", 0) >= 0.5:
                 grok_section = (
-                    f"\n\nX SOCIAL SENTIMENT (Grok real-time):\n"
+                    f"\n\nX SOCIAL SENTIMENT (Grok real-time — treat as contrarian input):\n"
                     f"  {grok_asset}: {gs['signal']} ({gs['confidence']:.0%} confidence)\n"
                     f"  {gs.get('summary','')}\n"
-                    f"  Crowd positioning: {gs.get('crowd_pos','?')}"
+                    f"  Crowd: {gs.get('crowd_pos','?')} — NOTE: X crypto sentiment is heavily gamed. "
+                    f"Extreme crowd bullishness often precedes corrections. Weight accordingly."
                 )
     except Exception:
         pass

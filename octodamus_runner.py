@@ -637,18 +637,25 @@ def _check_smart_call():
                 except Exception:
                     pass
 
-                # ── Grok X sentiment confirmation ─────────────────────────────
+                # ── Grok X sentiment — context only, not a gate ───────────────
+                # X crypto sentiment is heavily gamed (bots, paid KOLs, whale misdirection).
+                # High X bullishness often precedes corrections — contrarian, not confirmatory.
+                # Used here as narrative context for the oracle post, not to block calls.
                 grok_ctx = ""
                 if _GROK_ACTIVE and asset in ("BTC", "ETH", "SOL"):
                     try:
                         gs = get_grok_sentiment(asset)
-                        if gs.get("confidence", 0) >= 0.6:
+                        if gs.get("confidence", 0) >= 0.5:
+                            # Flag if crowd is extremely aligned WITH the call — potential contrarian warning
                             gs_dir = "UP" if gs["signal"] == "BULLISH" else ("DOWN" if gs["signal"] == "BEARISH" else None)
-                            if gs_dir and gs_dir != direction and max(bull_count, bear_count) < 9:
-                                print(f"[SmartCall] {asset}: Grok X sentiment {gs['signal']} contradicts {direction} — skipping.")
-                                continue
-                            grok_ctx = f"\nX Social Sentiment (Grok): {gs['signal']} ({gs['confidence']:.0%}) — {gs.get('summary','')[:120]}"
-                            print(f"[SmartCall] {asset}: Grok sentiment {gs['signal']} ({gs['confidence']:.0%})")
+                            crowd_agrees = gs_dir == direction
+                            grok_ctx = (
+                                f"\nX Social Sentiment (Grok, use as contrarian context): "
+                                f"{gs['signal']} ({gs['confidence']:.0%})"
+                                + (" — crowd agrees with this call, watch for squeeze risk" if crowd_agrees and gs["confidence"] > 0.7 else "")
+                                + f"\n{gs.get('summary','')[:120]}"
+                            )
+                            print(f"[SmartCall] {asset}: Grok X sentiment {gs['signal']} ({gs['confidence']:.0%}) — context only")
                     except Exception as _ge:
                         print(f"[SmartCall] Grok sentiment skipped: {_ge}")
 
