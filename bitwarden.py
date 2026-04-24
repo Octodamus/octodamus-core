@@ -90,6 +90,10 @@ OCTODAMUS_OPTIONAL_SECRETS = {
     "AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",  # wins if both exist — user keeps this one updated
 }
 
+FRANKLIN_BW_ITEM   = "Franklin Agent_Ben"
+FRANKLIN_KEY_FILE  = Path.home() / ".blockrun" / ".session"
+FRANKLIN_CHAIN_FILE = Path.home() / ".blockrun" / "payment-chain"
+
 OCTODAMUS_CRITICAL_KEYS = {
     "ANTHROPIC_API_KEY",
     "TELEGRAM_BOT_TOKEN",
@@ -195,6 +199,32 @@ def _load_twitter_from_bw() -> dict:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # -- Gmail multi-field loader --------------------------------------------------
+
+def _load_franklin_from_bw() -> dict:
+    """
+    Franklin Agent wallet — custom fields in Bitwarden item.
+    Writes private key to ~/.blockrun/.session so Franklin can use it after reboot.
+    Fields expected: 'wallet address', 'private key' (case-insensitive).
+    """
+    secrets = {}
+    try:
+        fields = _get_custom_fields(FRANKLIN_BW_ITEM)
+        # Normalise field names to lowercase for matching
+        normalised = {k.lower().replace(" ", "_"): v for k, v in fields.items()}
+        address = normalised.get("wallet_address") or normalised.get("address") or ""
+        pk      = normalised.get("private_key")    or normalised.get("privatekey") or ""
+        if address:
+            secrets["FRANKLIN_WALLET_ADDRESS"] = address
+        if pk:
+            secrets["FRANKLIN_PRIVATE_KEY"] = pk
+            # Restore wallet key file so Franklin works after reboot
+            FRANKLIN_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            FRANKLIN_KEY_FILE.write_text(pk + "\n", encoding="utf-8")
+            FRANKLIN_CHAIN_FILE.write_text("base\n", encoding="utf-8")
+    except Exception as e:
+        print(f"[Bitwarden] Franklin wallet (non-critical): {e}")
+    return secrets
+
 
 def _load_gmail_from_bw() -> dict:
     """
@@ -322,6 +352,15 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
             loaded[env_var] = value
     if gmail.get("GMAIL_USER") and verbose:
         print("[Bitwarden] Gmail loaded")
+
+    # Franklin agent wallet (custom fields — writes ~/.blockrun/.session on load)
+    franklin = _load_franklin_from_bw()
+    for env_var, value in franklin.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if franklin.get("FRANKLIN_WALLET_ADDRESS") and verbose:
+        print(f"[Bitwarden] Franklin wallet loaded ({franklin.get('FRANKLIN_WALLET_ADDRESS','')})")
 
     # Fallback: try existing cache for any critical keys that BW failed to load
     if missing_critical:

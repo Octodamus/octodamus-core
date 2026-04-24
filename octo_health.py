@@ -59,6 +59,8 @@ EXPECTED_TASKS = [
   "Octodamus-WorkerCleanup",
   "Octodamus-GDrive-Backup",
   "Octodamus-FlightSample",
+  "Octodamus-ProfitAgent",
+  "Octodamus-GenLayerMonitor",
 ]
 
 # ── State — reset at start of each run ───────────────────────────────────────
@@ -406,6 +408,33 @@ def _check_scheduled_tasks():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _check_franklin():
+    """Check Franklin profit agent wallet is configured and agent is alive."""
+    key_file   = Path.home() / ".blockrun" / ".session"
+    state_file = PROJECT_DIR / ".agents" / "profit-agent" / "state.json"
+
+    if not key_file.exists():
+        _warn("Franklin wallet key missing (~/.blockrun/.session) — reboot may not have restored it")
+        return
+
+    pk = key_file.read_text(encoding="utf-8").strip()
+    if not pk or len(pk) < 60:
+        _fail("Franklin wallet key file exists but is invalid")
+        return
+
+    # Check agent state
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        if state.get("dead"):
+            _warn(f"Franklin agent DEAD — wallet depleted. Final balance: ${state.get('final_balance','?')}")
+        else:
+            sessions = state.get("sessions", 0)
+            last_run = state.get("last_run", "never")
+            _ok(f"Franklin agent alive ({sessions} sessions, last: {last_run})")
+    except Exception:
+        _ok("Franklin wallet key present (agent not yet activated)")
+
+
 def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   # Reset state — critical so repeated calls don't accumulate
   global _passed, _warned, _failed
@@ -437,6 +466,7 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   _check_secrets_cache()
   _check_post_queue()
   _check_scheduled_tasks()
+  _check_franklin()
 
   print(f"\n{'='*52}")
   print(f" PASSED: {len(_passed)} WARNED: {len(_warned)} FAILED: {len(_failed)}")
