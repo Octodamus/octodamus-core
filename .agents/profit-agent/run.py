@@ -83,11 +83,15 @@ def _get_wallet_balance() -> float:
         )
         output = (r.stdout + r.stderr).strip()
         import re
-        match = re.search(r"(\d+\.?\d*)\s*USDC", output, re.IGNORECASE)
+        # Format: "USDC Balance: $201.00"
+        match = re.search(r"USDC Balance:\s*\$?([\d,]+\.?\d*)", output, re.IGNORECASE)
         if match:
-            return float(match.group(1))
-        # Empty output = unfunded wallet (0 balance)
-        if not output or r.returncode == 0:
+            return float(match.group(1).replace(",", ""))
+        # Fallback: any number followed by USDC
+        match = re.search(r"(\d[\d,]*\.?\d*)\s*USDC", output, re.IGNORECASE)
+        if match:
+            return float(match.group(1).replace(",", ""))
+        if r.returncode == 0:
             return 0.0
     except Exception as e:
         print(f"[ProfitAgent] Balance check failed: {e}")
