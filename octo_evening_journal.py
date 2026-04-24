@@ -788,9 +788,10 @@ def run_daily(dry_run: bool = False):
     formatted = _format_email(date_str, entry)
     _save(datetime.now().strftime("%Y-%m-%d"), formatted)
 
-    # Send to octodamusai@gmail.com only — no Evernote, no X
     _send_gmail(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
     print(f"[Journal] Sent to octodamusai@gmail.com")
+    _send(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
+    print(f"[Journal] Sent to Evernote")
 
 
 if __name__ == "__main__":
