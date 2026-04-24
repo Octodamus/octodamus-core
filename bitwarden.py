@@ -331,15 +331,42 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     if twitter and verbose:
         print(f"[Bitwarden] âœ“ AGENT - Octodamus - Social - Twitter API")
 
-    # Coinbase CDP API (multi-field: CDP_API_KEY_ID, CDP_API_KEY_SECRET)
+    # Coinbase CDP API — tries custom fields first, then username/password fallback
     try:
-        cdp = _get_custom_fields("AGENT - Octodamus - Coinbase CDP API")
-        for field_name in ("CDP_API_KEY_ID", "CDP_API_KEY_SECRET"):
-            if cdp.get(field_name):
-                os.environ[field_name] = cdp[field_name]
-                loaded[field_name] = cdp[field_name]
-        if cdp.get("CDP_API_KEY_ID") and verbose:
-            print("[Bitwarden] Coinbase CDP API loaded")
+        item = _get_item("AGENT - Octodamus - Coinbase CDP API")
+        login  = item.get("login", {})
+        fields = {(f.get("name") or "").strip(): (f.get("value") or "").strip()
+                  for f in (item.get("fields") or [])}
+
+        # Custom field names may vary — check several common patterns
+        cdp_id = (
+            fields.get("CDP_API_KEY_ID") or
+            fields.get("cdp_api_key_id") or
+            fields.get("Key ID") or
+            fields.get("key_id") or
+            fields.get("API Key ID") or
+            login.get("username") or ""
+        )
+        cdp_secret = (
+            fields.get("CDP_API_KEY_SECRET") or
+            fields.get("cdp_api_key_secret") or
+            fields.get("Private Key") or
+            fields.get("private_key") or
+            fields.get("API Key Secret") or
+            fields.get("Secret") or
+            login.get("password") or ""
+        )
+
+        if cdp_id:
+            os.environ["CDP_API_KEY_ID"] = cdp_id
+            loaded["CDP_API_KEY_ID"] = cdp_id
+        if cdp_secret:
+            os.environ["CDP_API_KEY_SECRET"] = cdp_secret
+            loaded["CDP_API_KEY_SECRET"] = cdp_secret
+        if cdp_id and verbose:
+            print(f"[Bitwarden] Coinbase CDP API loaded (id={cdp_id[:8]}...)")
+        elif verbose:
+            print(f"[Bitwarden] CDP API: item found but no key extracted. Fields: {list(fields.keys())} | login username: {bool(login.get('username'))}")
     except Exception as _e:
         if verbose:
             print(f"[Bitwarden] CDP API (non-critical): {_e}")
