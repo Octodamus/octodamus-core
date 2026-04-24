@@ -91,9 +91,15 @@ def tool_browse_url(url: str) -> str:
         sys.path.insert(0, str(ROOT))
         from octo_firecrawl import scrape_url
         result = scrape_url(url)
-        if result and result.get("markdown"):
-            content = result["markdown"][:4000]
-            return f"URL: {url}\n\n{content}"
+        if not result:
+            return f"Could not scrape {url}"
+        # scrape_url returns a string directly
+        if isinstance(result, str):
+            return f"URL: {url}\n\n{result[:4000]}"
+        # or a dict with markdown key
+        if isinstance(result, dict):
+            content = result.get("markdown") or result.get("content") or str(result)
+            return f"URL: {url}\n\n{content[:4000]}"
         return f"Could not scrape {url}"
     except Exception as e:
         return f"Browse failed: {e}"
@@ -200,6 +206,22 @@ def tool_send_email(subject: str, body: str) -> str:
         return f"Email failed: {e}"
 
 
+def tool_save_draft(filename: str, content: str) -> str:
+    """Save a drafted asset (tweet thread, email, guide) to a file for the owner to review and deploy."""
+    try:
+        drafts_dir = Path(__file__).parent / "drafts"
+        drafts_dir.mkdir(exist_ok=True)
+        safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in filename)
+        if not safe_name.endswith(".md"):
+            safe_name += ".md"
+        out = drafts_dir / safe_name
+        out.write_text(content, encoding="utf-8")
+        return f"Saved to .agents/profit-agent/drafts/{safe_name} ({len(content)} chars)"
+    except Exception as e:
+        return f"Save failed: {e}"
+
+
+
 def tool_log_action(action: str, result: str, cost_usd: float = 0.0) -> str:
     """Log an action to the session log for transparency."""
     entry = f"[{datetime.now().strftime('%H:%M:%S')}] {action} | cost=${cost_usd:.4f} | {result[:200]}"
@@ -285,6 +307,18 @@ TOOLS = [
         },
     },
     {
+        "name": "save_draft",
+        "description": "Save a drafted asset (tweet thread, email, guide, playbook) to a file. Always save important drafts so the owner can deploy them.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Filename e.g. 'twitter_thread_earlybird.md'"},
+                "content":  {"type": "string", "description": "Full content to save"},
+            },
+            "required": ["filename", "content"],
+        },
+    },
+    {
         "name": "log_action",
         "description": "Log a significant action or decision to the session log.",
         "input_schema": {
@@ -308,6 +342,7 @@ TOOL_FNS = {
     "get_polymarket_edges": lambda i: tool_get_polymarket_edges(),
     "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", "")),
     "send_email":           lambda i: tool_send_email(i["subject"], i["body"]),
+    "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "log_action":           lambda i: tool_log_action(i["action"], i["result"], i.get("cost_usd", 0.0)),
 }
 
