@@ -154,26 +154,121 @@ def tool_get_octodamus_signal() -> str:
 
 
 def tool_get_polymarket_edges() -> str:
-    """Get current Polymarket edge opportunities from Octodamus."""
+    """Get current Polymarket markets and prices for edge hunting."""
     try:
         import httpx
-        r = httpx.get("https://api.octodamus.com/v2/demo", timeout=10)
+        # Search Polymarket gamma API for active markets
+        r = httpx.get(
+            "https://gamma-api.polymarket.com/markets",
+            params={"active": True, "closed": False, "limit": 20,
+                    "order": "volume", "ascending": False},
+            timeout=10
+        )
         if r.status_code == 200:
-            d = r.json()
-            poly = d.get("polymarket", {})
-            lines = ["Polymarket Edges (Octodamus):"]
-            top = poly.get("top_play")
-            if top:
-                lines.append(f"  Market: {top.get('question','')}")
-                lines.append(f"  Side:   {top.get('side','?')}")
-                lines.append(f"  EV/size/entry: [premium — requires API key]")
-            track = poly.get("track_record", {})
-            lines.append(f"  OctoBoto record: {track.get('wins','?')}W / {track.get('losses','?')}L")
-            lines.append(f"  Total plays: {poly.get('total_plays','?')}")
+            markets = r.json()
+            lines = ["Active Polymarket markets by volume:"]
+            for m in markets[:10]:
+                q = m.get("question", "")[:80]
+                yes = m.get("outcomePrices", ["?","?"])[0] if m.get("outcomePrices") else "?"
+                vol = m.get("volume", 0)
+                lines.append(f"  YES={yes} | Vol=${float(vol or 0):,.0f} | {q}")
             return "\n".join(lines)
-        return f"Polymarket data unavailable ({r.status_code})"
+        return f"Polymarket API returned {r.status_code}"
     except Exception as e:
         return f"Polymarket edges failed: {e}"
+
+
+def tool_search_x402_bazaar(query: str) -> str:
+    """Search the x402 bazaar for paid AI agent services — find what agents are buying and selling."""
+    try:
+        result = subprocess.run(
+            f'npx awal@2.8.0 x402 bazaar search "{query}" -k 10',
+            shell=True, capture_output=True, text=True, encoding="utf-8", timeout=60
+        )
+        output = (result.stdout + result.stderr).strip()
+        return output[:2000] if output else "No results found"
+    except Exception as e:
+        return f"Bazaar search failed: {e}"
+
+
+def tool_check_agentic_market(category: str = "trading") -> str:
+    """Browse agentic.market for paid services other agents are buying. Find gaps to fill."""
+    try:
+        import httpx
+        r = httpx.get(
+            f"https://agentic.market/v1/services",
+            params={"category": category} if category != "all" else {},
+            timeout=10
+        )
+        if r.status_code == 200:
+            services = r.json()
+            lines = [f"Agentic.market services ({category}):"]
+            items = services if isinstance(services, list) else services.get("services", [])
+            for s in items[:15]:
+                name  = s.get("name", "?")
+                desc  = s.get("description", "")[:80]
+                price = s.get("price", "?")
+                lines.append(f"  {name} | {price} | {desc}")
+            return "\n".join(lines)
+        return f"Agentic.market returned {r.status_code}"
+    except Exception as e:
+        return f"Agentic market check failed: {e}"
+
+
+def tool_buy_octodamus_signal() -> str:
+    """
+    Buy the full Octodamus oracle signal for $0.01 USDC via x402.
+    Returns the complete signal with confidence, reasoning, and all asset calls.
+    This is the premium data that drives real trading decisions.
+    """
+    try:
+        import httpx
+        # First get the payment requirements
+        r = httpx.get("https://api.octodamus.com/v2/x402/agent-signal", timeout=10)
+        if r.status_code == 200:
+            return f"Signal returned free (no payment needed this time):\n{r.text[:1000]}"
+        if r.status_code == 402:
+            # Parse what's needed
+            detail = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
+            return (
+                f"Signal costs $0.01 USDC on Base.\n"
+                f"Pay to: {detail.get('pay_to', '0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db')}\n"
+                f"Network: Base (eip155:8453)\n"
+                f"How: Sign EIP-3009 USDC authorization, send as PAYMENT-SIGNATURE header.\n"
+                f"Discovery: https://api.octodamus.com/.well-known/x402.json\n"
+                f"Note: To implement x402 payment, the agent needs wallet signing capability. "
+                f"Use the free demo signal at api.octodamus.com/v2/demo for now, or "
+                f"request the owner to add x402 signing to the agent toolkit."
+            )
+        return f"Signal endpoint returned {r.status_code}"
+    except Exception as e:
+        return f"Signal purchase failed: {e}"
+
+
+def tool_find_arbitrage(market_a: str, market_b: str) -> str:
+    """Compare prices/odds between two prediction market questions to find arbitrage opportunities."""
+    try:
+        import httpx
+        lines = ["Arbitrage search:"]
+        for query in [market_a, market_b]:
+            r = httpx.get(
+                "https://gamma-api.polymarket.com/markets",
+                params={"active": True, "closed": False, "limit": 5,
+                        "order": "volume", "ascending": False,
+                        "_c": query},
+                timeout=8
+            )
+            if r.status_code == 200:
+                markets = r.json()
+                lines.append(f"\nQuery: {query}")
+                for m in markets[:3]:
+                    q    = m.get("question", "")[:70]
+                    yes  = m.get("outcomePrices", ["?"])[0]
+                    vol  = m.get("volume", 0)
+                    lines.append(f"  YES={yes} | Vol=${float(vol or 0):,.0f} | {q}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Arbitrage search failed: {e}"
 
 
 _DRAFT_VOICE = """You are writing for Octodamus (@octodamusai), an autonomous AI market oracle.
@@ -340,6 +435,41 @@ TOOLS = [
         },
     },
     {
+        "name": "search_x402_bazaar",
+        "description": "Search the x402 bazaar for paid AI agent services. Find what agents are buying, what gaps exist, what you could sell.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "check_agentic_market",
+        "description": "Browse agentic.market for paid services. Find what's selling, what's missing, pricing benchmarks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"category": {"type": "string", "description": "trading, data, search, inference, or all", "default": "all"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "buy_octodamus_signal",
+        "description": "Attempt to buy the full Octodamus oracle signal via x402 ($0.01 USDC). Returns full signal with confidence and reasoning.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "find_arbitrage",
+        "description": "Search Polymarket for two related questions and compare odds to find arbitrage.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "market_a": {"type": "string", "description": "First market question or keyword"},
+                "market_b": {"type": "string", "description": "Second market question or keyword"},
+            },
+            "required": ["market_a", "market_b"],
+        },
+    },
+    {
         "name": "list_drafts",
         "description": "List all draft files already saved. Check this at the start of every session to avoid repeating work.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -381,50 +511,55 @@ TOOL_FNS = {
     "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", "")),
     "send_email":           lambda i: tool_send_email(i["subject"], i["body"]),
     "list_drafts":          lambda i: tool_list_drafts(),
+    "search_x402_bazaar":   lambda i: tool_search_x402_bazaar(i["query"]),
+    "check_agentic_market": lambda i: tool_check_agentic_market(i.get("category","all")),
+    "buy_octodamus_signal": lambda i: tool_buy_octodamus_signal(),
+    "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "log_action":           lambda i: tool_log_action(i["action"], i["result"], i.get("cost_usd", 0.0)),
 }
 
-SYSTEM = """You are an autonomous profit agent with a $200 USDC wallet on Base. Your sole objective: maximize net profit within 30 days.
+SYSTEM = """You are Agent_Ben -- an autonomous AI agent entrepreneur and Octodamus ambassador operating in the agentic economy. You have a ~$196 USDC wallet on Base. Two jobs: (1) make money on your own, (2) help Octodamus win customers by talking to other agents.
 
-FACTS (do not ask about these):
-- Wallet: ~$200 USDC on Base. Real money. Execute, don't theorize.
-- You have access to: Octodamus AI oracle signals, web search, URL scraping, market data, content drafting, email reporting.
-- Octodamus is an AI market oracle with X audience (@octodamusai, ~existing followers), paid API (api.octodamus.com), MCP on Smithery, 10 free tools, x402 endpoints.
-- OctoData early bird: $29/year (first 100 seats). Standard: $149/year after.
-- The highest-EV path with $200 capital is almost certainly subscriber acquisition for OctoData, not crypto trading.
+You are not a marketer. You are an agent who lives in the agentic economy. You buy services, find edges, create value, transact, and represent Octodamus to other agents. Every session you learn something new and get smarter.
 
-RULES:
-1. Never risk >20% ($40) on any single action.
-2. Stop and email owner if wallet <$10.
-3. Use send_email to report every major decision and finding.
-4. Use log_action for every significant step.
-5. Profit or die — no questions, no waiting. Execute.
+YOUR WORLD:
+- The agentic economy runs on x402 micropayments -- agents pay agents for data, compute, and intelligence
+- The x402 bazaar and agentic.market are your marketplace -- study them, find gaps, find opportunities  
+- You ARE an Octodamus customer -- buy its signals ($0.01 via x402), use them, tell other agents about them
+- Octodamus oracle: 27 live data feeds, api.octodamus.com, MCP on Smithery, x402 native
+- OctoData early bird: $29/yr (first 100 seats) -- every signup = mission success
 
-PRIORITY ORDER for profit:
-1. Drive OctoData early bird subscribers ($29/seat, 100 seats available) — each subscriber = pure profit
-2. Create sellable digital product via x402 (guide, signal pack, analysis)
-3. Polymarket edge — only if EV >15% and position <$40
-4. Content that builds Octodamus audience and drives API signups
+CREATIVE PROFIT PATHS:
+1. Buy Octodamus signal ($0.01) -- use it to find Polymarket edges -- recommend positions
+2. Scan the x402 bazaar -- find what agents are buying -- find gaps Octodamus could fill
+3. Scan Polymarket for correlated markets where crowds are wrong on both sides (arbitrage)
+4. Find what AI agents need that doesn't exist yet -- draft it as an Octodamus product
+5. Research agents/builders who need market data -- draft targeted outreach for the owner to send
+6. Find services other agents charge for -- show how Octodamus undercuts on price AND quality
+7. Browse agentic.market -- find the trading/data category -- position Octodamus as the smart buy
 
-HARD LIMITS — NEVER DO THESE:
-- Do NOT post to X/Twitter. You have no posting tools and no permission. Drafts only.
-- Do NOT interact with the Octodamus X account or social media in any way.
-- Do NOT spend more than $40 on any single action.
+AMBASSADOR ROLE -- talk to other agents:
+- When you find other agents (via bazaar, agentic.market, or web search) who need market data: draft outreach
+- Frame Octodamus as: "the oracle other agents buy from" -- social proof in the agentic world
+- Every agent you identify as a potential customer is a lead -- log it, draft the pitch
 
-CRITICAL RULES FOR DRAFTING CONTENT:
-- After EVERY draft_content call, immediately call save_draft with a descriptive filename
-- Never draft without saving — drafts that aren't saved are wasted work
-- Octodamus voice: no emojis, no hashtags, dry and precise, numbers grounded in data
-- Draft X posts for the owner to review and post manually — never post them yourself
+LEARNING RULE -- every session:
+- Start: check wallet, list drafts, log what you learned last session
+- Execute: do something NEW -- never repeat the same research twice  
+- End: save all output, email a concise report: tried / worked / next
+- Each session must be smarter than the last. Log your learnings explicitly.
 
-CRITICAL RULES FOR SESSIONS:
-- Do not repeat research you already did. Check existing drafts first.
-- Each session should ADVANCE the mission, not restart it.
-- If drafts exist from prior sessions, build on them or deploy them.
-- End every session by saving all output and emailing the owner a status update.
+HARD LIMITS:
+- Never post to X/Twitter -- drafts only, owner posts manually
+- Never risk >$39 on any single action
+- Stop all activity if wallet <$10, email owner immediately
 
-Start by checking wallet, then check what drafts already exist (browse .agents/profit-agent/drafts/ or infer from logs), then execute the next logical step."""
+CONTENT RULES:
+- Octodamus voice: no emojis, no hashtags, dry and precise, data-grounded
+- draft_content auto-saves -- but also call save_draft for organized naming
+
+Start: check_wallet -> list_drafts -> pick the highest-EV NEW action -> execute -> report."""
 
 
 def run_session(dry_run: bool = False):
