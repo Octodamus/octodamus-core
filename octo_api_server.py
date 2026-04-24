@@ -280,6 +280,9 @@ _x402_facilitator_aio = HTTPFacilitatorClient(FacilitatorConfig(url=_FACILITATOR
 _x402_server_aio      = x402ResourceServer(_x402_facilitator_aio)
 _x402_initialized     = False
 
+# Must be defined before scheme registration below
+_X402_NETWORK = "eip155:8453" if (_CDP_KEY_ID and _CDP_KEY_SECRET) else "eip155:84532"
+
 # Register schemes synchronously so middleware has them at app creation time
 try:
     _x402_server.register("eip155:8453", ExactEvmServerScheme())
@@ -330,7 +333,6 @@ _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 # Network: eip155:8453 (Base mainnet) when CDP keys present, else eip155:84532 (testnet).
 # Bazaar crawler just needs a 402 — network doesn't affect indexing.
 # Real agent payments: use CDP keys (cdp.coinbase.com) to unlock mainnet.
-_X402_NETWORK = "eip155:8453" if (_CDP_KEY_ID and _CDP_KEY_SECRET) else "eip155:84532"
 _X402_ROUTES = {
     "GET /v2/x402/agent-signal": RouteConfig(
         accepts=[
@@ -752,15 +754,8 @@ class AgentTrackingMiddleware(_BaseHTTPMiddleware):
             pass
 
 app.add_middleware(AgentTrackingMiddleware)
-
-# x402 payment middleware — intercepts /v2/x402/* routes.
-# Returns 402 + Bazaar discovery extension when no payment present → agentic.market auto-indexes.
-# Verifies + settles payments via CDP facilitator on Base mainnet.
-app.add_middleware(
-    PaymentMiddlewareASGI,
-    server=_x402_server_aio,
-    routes=_X402_ROUTES,
-)
+# PaymentMiddlewareASGI removed — payment gating handled directly in v2_x402_agent_signal
+# using _x402_headers_legacy (no server init dependency) + _x402_verify_settle for settled payments.
 
 
 @app.on_event("startup")
@@ -3141,13 +3136,35 @@ def v2_agent_signal(auth=Depends(require_key_v2)):
 
 
 @app.get("/v2/x402/agent-signal", tags=["Agent Data v2"], include_in_schema=False)
-def v2_x402_agent_signal():
+def v2_x402_agent_signal(request: Request):
     """
-    x402-native agent signal endpoint. Auth handled by PaymentMiddlewareASGI.
-    Identical payload to /v2/agent-signal. Used by Agentic.Market Bazaar crawler
-    and x402-compatible AI agents paying per-call in USDC on Base.
+    x402-native agent signal endpoint. Requires PAYMENT-SIGNATURE header (EIP-3009 USDC on Base).
+    $0.01/call micro or $29/year annual. Bazaar-discoverable via 402 + extension headers.
     """
-
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        _gate_headers = _x402_headers_legacy(0.01)
+        _gate_body = json.dumps({
+            "x402":         "x402/1",
+            "error":        "payment_required",
+            "pay_per_call": "$0.01 USDC on Base — no key or account needed",
+            "annual":       "$29.00 USDC — 365 days, 10k req/day",
+            "pay_to":       _X402_TREASURY,
+            "asset":        _X402_USDC,
+            "network":      "base-mainnet (eip155:8453)",
+            "how":          "Sign EIP-3009 USDC authorization, send as PAYMENT-SIGNATURE header",
+            "discovery":    "https://api.octodamus.com/.well-known/x402.json",
+            "free_option":  "GET https://api.octodamus.com/v2/demo",
+        })
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, content=_gate_body,
+                     media_type="application/json", headers=_gate_headers)
+    _x402_verify_settle(request, _X402_REQS)
     payload = _get_cached_signal()
     payload["payment"] = "x402 — USDC on Base | api.octodamus.com"
     return JSONResponse(content=payload, headers={"Cache-Control": "public, s-maxage=60"})
