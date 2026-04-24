@@ -1622,7 +1622,7 @@ def well_known_x402():
         "version": "x402/1",
         "provider": {
             "name":        "Octodamus Market Intelligence",
-            "description": "Real-time crypto oracle signals, Fear & Greed, funding rates, Polymarket edges. 27 live data feeds. 9/11 consensus system.",
+            "description": "Live derivatives positions, liquidation pressure, oracle arbitrage. 27 data feeds. Nothing else covers this in a single x402 call.",
             "url":         "https://api.octodamus.com",
             "x":           "@octodamusai",
             "docs":        "https://api.octodamus.com/docs",

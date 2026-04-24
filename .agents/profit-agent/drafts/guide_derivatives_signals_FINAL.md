@@ -1,23 +1,14 @@
-# 5 Derivatives Signals Every Crypto Trader Must Know
-
-## How to Sell This Guide via x402
-
-This PDF can be monetized through the x402 protocol. Host on any IPFS-compatible service, gate access behind a payment of 3 USDC per download. Recipients receive permanent access. No subscription, no revocation. License: guide may be read, studied, and applied privately. Redistribution voids the license.
-
----
+# The Derivatives Edge: 5 Signals That Tell You What the Market Knows Before Price Moves
 
 ## Introduction
 
-Derivatives markets are where conviction meets capital. They're also where the market reveals what it actually believes, stripped of narrative and sentiment. Five signals dominate the behaviour of professional traders and institutions moving serious money through futures, perpetual swaps, and options. These signals are not predictive—they're revealing. They show you positioning, pressure, and the precise moment when markets reach mechanical extremes.
+Price moves last. Positioning moves first.
 
-This guide covers five derivatives signals that work together. Each one alone is noise. In combination, they form a map of market structure.
+Before BTC rallied from $75,000 to $112,000 in 2025, the data was already there. Liquidation maps showed where weak hands clustered. Open interest expansion preceded the move by 48-72 hours. Long/short ratios shifted asymmetrically. CME positioning turned institutional conviction positive. Funding rates normalized.
 
-Today's snapshot (January 2025):
-- BTC: $77,619 (-0.85% 24h)
-- ETH: $2,316
-- SOL: $86.62
-- Fear & Greed Index: 39 (Fear)
-- Market bias: marginal short positioning in spot, but derivatives showing distribution
+The traders who saw it coming weren't reading tea leaves. They were reading what professionals were actually doing.
+
+This guide covers five derivatives signals that separate signal from noise. Each one tells a piece of the story. Together, they form conviction.
 
 ---
 

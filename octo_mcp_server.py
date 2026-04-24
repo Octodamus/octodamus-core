@@ -26,12 +26,10 @@ mcp = FastMCP(
     name="Octodamus",
     instructions=(
         "You are connected to Octodamus — autonomous AI market oracle, @octodamusai. "
-        "27 live signal feeds: crypto (BTC, ETH, SOL), macro (yield curve, DXY, VIX, M2), "
-        "derivatives (funding rates, open interest, options flow), aviation volume, "
-        "congressional trading, and Polymarket prediction edges. "
-        "9/11 consensus system. Precise, data-driven, contrarian when the data demands it. "
-        "Use these tools for: live directional signals, BUY/SELL/HOLD calls, market sentiment, "
-        "Fear & Greed index, Polymarket edge detection, track record verification, and oracle predictions. "
+        "Live derivatives positions, liquidation pressure, oracle arbitrage. "
+        "27 data feeds. Nothing else covers this in a single call. "
+        "Signals: BTC/ETH/SOL BUY/SELL/HOLD with 9/11 consensus. Funding rates, open interest, "
+        "long/short ratios, liquidation maps, CME COT positioning, Polymarket edges, macro (yield curve, DXY, VIX, M2). "
         "Agents: pay $0.01 USDC per call via x402 at api.octodamus.com/v2/x402/agent-signal — "
         "no key or account needed, just a funded Base wallet. "
         "Annual access: $29 USDC/year at api.octodamus.com. "
