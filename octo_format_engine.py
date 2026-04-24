@@ -198,26 +198,19 @@ def _fetch_live_data() -> dict:
     """Fetch live market data to ground posts. Returns dict of useful fields."""
     data = {}
     try:
-        r = httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana",
-                    "vs_currencies": "usd",
-                    "include_24hr_change": "true",
-                    "include_market_cap": "true"},
-            timeout=6,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            data["btc_price"]     = d.get("bitcoin", {}).get("usd", 0)
-            data["btc_change"]    = d.get("bitcoin", {}).get("usd_24h_change", 0)
-            data["eth_price"]     = d.get("ethereum", {}).get("usd", 0)
-            data["eth_change"]    = d.get("ethereum", {}).get("usd_24h_change", 0)
-            data["sol_price"]     = d.get("solana", {}).get("usd", 0)
-            data["sol_change"]    = d.get("solana", {}).get("usd_24h_change", 0)
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC", "ETH", "SOL"])
+        if _p.get("BTC", {}).get("usd", 0):
+            data["btc_price"]  = _p["BTC"]["usd"]
+            data["btc_change"] = _p["BTC"].get("usd_24h_change", 0)
+            data["eth_price"]  = _p.get("ETH", {}).get("usd", 0)
+            data["eth_change"] = _p.get("ETH", {}).get("usd_24h_change", 0)
+            data["sol_price"]  = _p.get("SOL", {}).get("usd", 0)
+            data["sol_change"] = _p.get("SOL", {}).get("usd_24h_change", 0)
     except Exception:
         pass
 
-    # Kraken fallback if CoinGecko rate-limited (429) or failed
+    # Direct Kraken if shared cache failed
     if not data.get("btc_price"):
         try:
             r = httpx.get(

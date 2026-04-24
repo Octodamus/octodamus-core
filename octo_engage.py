@@ -300,24 +300,16 @@ Reply only with the tweet text. No quotes, no labels."""
 
 
 def fetch_live_prices() -> str:
-  """Fetch live prices for tracked assets via CoinGecko (free) and inject into prompt."""
+  """Fetch live prices via Kraken (primary) with CoinGecko fallback and 5-min cache."""
   try:
-    r = httpx.get(
-      "https://api.coingecko.com/api/v3/simple/price",
-      params={
-        "ids": "bitcoin,ethereum,solana",
-        "vs_currencies": "usd",
-        "include_24hr_change": "true",
-      },
-      timeout=8,
-    )
-    r.raise_for_status()
-    d = r.json()
-    lines = [
-      f"BTC: ${d['bitcoin']['usd']:,.0f} ({d['bitcoin']['usd_24h_change']:+.1f}% 24h)",
-      f"ETH: ${d['ethereum']['usd']:,.0f} ({d['ethereum']['usd_24h_change']:+.1f}% 24h)",
-      f"SOL: ${d['solana']['usd']:,.2f} ({d['solana']['usd_24h_change']:+.1f}% 24h)",
-    ]
+    from financial_data_client import get_crypto_prices
+    p = get_crypto_prices(["BTC", "ETH", "SOL"])
+    lines = []
+    for t in ["BTC", "ETH", "SOL"]:
+      d = p.get(t, {})
+      if d.get("usd", 0):
+        fmt = f"{d['usd']:,.0f}" if t == "BTC" else f"{d['usd']:,.2f}"
+        lines.append(f"{t}: ${fmt} ({d.get('usd_24h_change', 0):+.1f}% 24h)")
     return "\n".join(lines)
   except Exception as e:
     print(f"[Engage] Price fetch failed: {e}")

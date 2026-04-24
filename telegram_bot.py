@@ -383,14 +383,11 @@ def _get_live_btc_price() -> float | None:
     except Exception:
         pass
     try:
-        import httpx as _hx3
-        r = _hx3.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin", "vs_currencies": "usd"},
-            timeout=5,
-        )
-        if r.status_code == 200:
-            return float(r.json()["bitcoin"]["usd"])
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC"])
+        price = _p.get("BTC", {}).get("usd", 0)
+        if price:
+            return float(price)
     except Exception:
         pass
     return None
@@ -516,27 +513,20 @@ def _get_live_prices() -> str:
     except Exception:
         pass
 
-    # CoinGecko fallback
+    # Kraken/CoinGecko via shared cache
     try:
         import httpx as _hx
-        r = _hx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
-            timeout=6,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            btc = d.get("bitcoin", {})
-            eth = d.get("ethereum", {})
-            sol = d.get("solana", {})
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC", "ETH", "SOL"])
+        if _p.get("BTC", {}).get("usd", 0):
             fng_r = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=4)
             fng = fng_r.json()["data"][0] if fng_r.status_code == 200 else {}
             return (
                 f"LIVE PRICES (real-time):\n"
-                f"- BTC: ${btc.get('usd',0):,.0f} ({btc.get('usd_24h_change',0):+.1f}% 24h)\n"
-                f"- ETH: ${eth.get('usd',0):,.0f} ({eth.get('usd_24h_change',0):+.1f}% 24h)\n"
-                f"- SOL: ${sol.get('usd',0):,.2f} ({sol.get('usd_24h_change',0):+.1f}% 24h)\n"
-                f"- Fear & Greed: {fng.get('value','?')} — {fng.get('value_classification','?')}\n"
+                f"- BTC: ${_p['BTC']['usd']:,.0f} ({_p['BTC'].get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"- ETH: ${_p['ETH']['usd']:,.0f} ({_p['ETH'].get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"- SOL: ${_p['SOL']['usd']:,.2f} ({_p['SOL'].get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"- Fear & Greed: {fng.get('value','?')} -- {fng.get('value_classification','?')}\n"
                 f"IMPORTANT: Use ONLY these prices when discussing crypto. Never use prices from training data."
             )
     except Exception:

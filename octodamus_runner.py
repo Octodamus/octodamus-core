@@ -484,24 +484,17 @@ def _check_smart_call():
                 deriv = fetch_derivatives(asset)
                 cg    = _fetch_coinglass_compact(asset)
 
-                # Price from Coinglass or CoinGecko fallback
+                # Price from Coinglass or cached Kraken/CoinGecko fallback
                 price, chg_24h = 0.0, 0.0
                 cg_prices = cg.get("prices", {})
                 if cg_prices.get(asset):
                     price   = cg_prices[asset]["price"]
                     chg_24h = cg_prices[asset].get("chg_24h", 0)
-                else:
-                    cg_id = _COINGECKO_IDS.get(asset, asset.lower())
-                    r = httpx.get(
-                        "https://api.coingecko.com/api/v3/simple/price",
-                        params={"ids": cg_id, "vs_currencies": "usd",
-                                "include_24hr_change": "true"},
-                        timeout=10,
-                    )
-                    if r.status_code == 200:
-                        d = r.json().get(cg_id, {})
-                        price   = d.get("usd", 0)
-                        chg_24h = float(d.get("usd_24h_change", 0) or 0)
+                elif asset in ("BTC", "ETH", "SOL"):
+                    from financial_data_client import get_crypto_prices as _gcp
+                    _cp = _gcp([asset])
+                    price   = _cp.get(asset, {}).get("usd", 0)
+                    chg_24h = _cp.get(asset, {}).get("usd_24h_change", 0)
 
                 if not price:
                     print(f"[SmartCall] {asset}: no price data — skipping.")
@@ -2109,23 +2102,17 @@ def mode_morning_flow() -> None:
     """
     print(f"\n[Runner] Generating morning flow post...")
     try:
-        # Pull live crypto prices
-        import requests as _req
+        # Pull live crypto prices via cached Kraken/CoinGecko
         prices = {}
         try:
-            _r = _req.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
-                        "include_24hr_change": "true", "include_market_cap": "true"},
-                timeout=10,
-            )
-            _d = _r.json()
-            for name, sym in [("bitcoin","BTC"),("ethereum","ETH"),("solana","SOL")]:
-                if name in _d:
+            from financial_data_client import get_crypto_prices as _gcp
+            _cp = _gcp(["BTC", "ETH", "SOL"])
+            for sym in ["BTC", "ETH", "SOL"]:
+                if _cp.get(sym, {}).get("usd", 0):
                     prices[sym] = {
-                        "price": _d[name].get("usd", 0),
-                        "change_24h": round(float(_d[name].get("usd_24h_change", 0) or 0), 2),
-                        "mcap": _d[name].get("usd_market_cap", 0),
+                        "price":     _cp[sym]["usd"],
+                        "change_24h": round(_cp[sym].get("usd_24h_change", 0), 2),
+                        "mcap":      0,  # Kraken doesn't provide mcap
                     }
         except Exception as e:
             print(f"[Runner] Price fetch failed: {e}")
@@ -2252,21 +2239,20 @@ def mode_thread(topic: str = "") -> None:
         # Build live data context
         context_parts = []
         try:
-            import requests as _r
-            _px = _r.get("https://api.coingecko.com/api/v3/simple/price",
-                         params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd", "include_24hr_change": "true"},
-                         timeout=10).json()
+            from financial_data_client import get_crypto_prices as _gcp
+            _cp = _gcp(["BTC", "ETH", "SOL"])
             _fng_v = 50
             try:
+                import requests as _r
                 _fng_v = int(_r.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()["data"][0]["value"])
             except Exception:
                 pass
             _fng_lbl = "Extreme Fear" if _fng_v < 25 else ("Fear" if _fng_v < 45 else ("Neutral" if _fng_v < 55 else ("Greed" if _fng_v < 75 else "Extreme Greed")))
             context_parts.append(
                 f"Live prices:\n"
-                f"  BTC: ${_px.get('bitcoin',{}).get('usd',0):,.0f} ({_px.get('bitcoin',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
-                f"  ETH: ${_px.get('ethereum',{}).get('usd',0):,.0f} ({_px.get('ethereum',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
-                f"  SOL: ${_px.get('solana',{}).get('usd',0):,.2f} ({_px.get('solana',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  BTC: ${_cp.get('BTC',{}).get('usd',0):,.0f} ({_cp.get('BTC',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  ETH: ${_cp.get('ETH',{}).get('usd',0):,.0f} ({_cp.get('ETH',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
+                f"  SOL: ${_cp.get('SOL',{}).get('usd',0):,.2f} ({_cp.get('SOL',{}).get('usd_24h_change',0):+.1f}% 24h)\n"
                 f"  Fear & Greed: {_fng_v}/100 ({_fng_lbl})"
             )
         except Exception:

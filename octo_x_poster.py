@@ -295,17 +295,11 @@ def _fetch_market_signals() -> dict:
 
     signals = {"btc_change_24h": 0.0, "fear_greed": 50, "news_spike": False}
 
-    # BTC 24h price change (CoinGecko, no key needed)
+    # BTC 24h price change via cached Kraken/CoinGecko
     try:
-        r = httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true"},
-            timeout=6,
-        )
-        if r.status_code == 200:
-            signals["btc_change_24h"] = abs(
-                r.json().get("bitcoin", {}).get("usd_24h_change", 0.0)
-            )
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC"])
+        signals["btc_change_24h"] = abs(_p.get("BTC", {}).get("usd_24h_change", 0.0))
     except Exception:
         pass
 

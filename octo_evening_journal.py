@@ -50,24 +50,14 @@ def _get_live_market_data() -> str:
     """Fetch real live market data. Returns a formatted string for context injection."""
     lines = []
     try:
-        import httpx
-        r = httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
-                    "include_24hr_change": "true"},
-            timeout=8,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            btc_p = round(d["bitcoin"]["usd"])
-            btc_c = round(d["bitcoin"].get("usd_24h_change", 0), 2)
-            eth_p = round(d["ethereum"]["usd"], 2)
-            eth_c = round(d["ethereum"].get("usd_24h_change", 0), 2)
-            sol_p = round(d["solana"]["usd"], 2)
-            sol_c = round(d["solana"].get("usd_24h_change", 0), 2)
-            lines.append(f"  BTC: ${btc_p:,} ({btc_c:+.2f}% 24h)")
-            lines.append(f"  ETH: ${eth_p:,} ({eth_c:+.2f}% 24h)")
-            lines.append(f"  SOL: ${sol_p:,} ({sol_c:+.2f}% 24h)")
+        from financial_data_client import get_crypto_prices
+        p = get_crypto_prices(["BTC", "ETH", "SOL"])
+        if p.get("BTC", {}).get("usd", 0):
+            lines.append(f"  BTC: ${round(p['BTC']['usd']):,} ({p['BTC'].get('usd_24h_change', 0):+.2f}% 24h)")
+            lines.append(f"  ETH: ${round(p['ETH']['usd'], 2):,} ({p['ETH'].get('usd_24h_change', 0):+.2f}% 24h)")
+            lines.append(f"  SOL: ${round(p['SOL']['usd'], 2):,} ({p['SOL'].get('usd_24h_change', 0):+.2f}% 24h)")
+        else:
+            lines.append("  Prices unavailable")
     except Exception as e:
         lines.append(f"  Prices unavailable ({e})")
 
