@@ -304,6 +304,30 @@ def _fetch_coinglass_compact(ticker: str) -> dict:
     except Exception:
         pass
 
+    # ── OKX fallback — fills funding + OI when Coinglass is 401 ─────
+    _okx_map = {"BTC": "BTC-USD-SWAP", "ETH": "ETH-USD-SWAP", "SOL": "SOL-USD-SWAP"}
+    if ticker in _okx_map and not result.get("funding_avg"):
+        try:
+            import httpx as _hx
+            inst = _okx_map[ticker]
+            # Funding rate
+            fr = _hx.get(f"https://www.okx.com/api/v5/public/funding-rate?instId={inst}", timeout=6).json()
+            fr_data = fr.get("data", [{}])
+            if fr_data:
+                rate = float(fr_data[0].get("fundingRate", 0) or 0)
+                result["funding_avg"] = round(rate * 100, 4)
+                result["funding_dir"] = "LONGS PAY" if rate > 0 else "SHORTS PAY"
+                result["funding_source"] = "OKX"
+            # Open interest
+            oi = _hx.get(f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId={inst}", timeout=6).json()
+            oi_data = oi.get("data", [{}])
+            if oi_data:
+                oi_usd = float(oi_data[0].get("oiUsd", 0) or 0)
+                result["oi_usd"] = round(oi_usd / 1e9, 2)
+                result["oi_source"] = "OKX"
+        except Exception as _okxe:
+            pass
+
     return result
 
 
