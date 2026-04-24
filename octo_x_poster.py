@@ -182,6 +182,61 @@ def post_reply(reply_text: str, tweet_id: str) -> dict:
 
 
 
+_TWEET_LIMIT = 265  # leave 15 chars buffer below X's 280
+
+
+def split_for_thread(text: str) -> list[str]:
+    """
+    Split text into tweet-sized chunks for threading.
+    Tries to break at paragraph → sentence → word boundaries.
+    Each chunk ≤ _TWEET_LIMIT chars.
+    Returns a list (length 1 if no split needed).
+    """
+    text = text.strip()
+    if len(text) <= _TWEET_LIMIT:
+        return [text]
+
+    tweets = []
+
+    def _split_chunk(chunk: str) -> list[str]:
+        chunk = chunk.strip()
+        if not chunk:
+            return []
+        if len(chunk) <= _TWEET_LIMIT:
+            return [chunk]
+        # Try sentence boundary
+        for sep in (". ", "! ", "? ", "; ", " — ", ", "):
+            idx = chunk.rfind(sep, 0, _TWEET_LIMIT)
+            if idx > _TWEET_LIMIT // 2:
+                end = idx + len(sep)
+                return [chunk[:end].strip()] + _split_chunk(chunk[end:])
+        # Hard word boundary
+        idx = chunk.rfind(" ", 0, _TWEET_LIMIT)
+        if idx > 0:
+            return [chunk[:idx].strip()] + _split_chunk(chunk[idx:])
+        # Force split
+        return [chunk[:_TWEET_LIMIT]] + _split_chunk(chunk[_TWEET_LIMIT:])
+
+    # Try paragraph splits first
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(paras) > 1:
+        current = ""
+        for para in paras:
+            candidate = (current + "\n\n" + para).strip() if current else para
+            if len(candidate) <= _TWEET_LIMIT:
+                current = candidate
+            else:
+                if current:
+                    tweets.extend(_split_chunk(current))
+                current = para
+        if current:
+            tweets.extend(_split_chunk(current))
+    else:
+        tweets = _split_chunk(text)
+
+    return [t for t in tweets if t.strip()]
+
+
 def read_mentions(max_results: int = 20) -> list:
     """
     Read recent @octodamusai mentions.
@@ -625,9 +680,17 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
             else:
                 media_id  = entry.get("metadata", {}).get("media_id") if entry.get("metadata") else None
                 media_ids = [media_id] if media_id else None
-                result    = _post_single(entry["text"], media_ids=media_ids)
-                tweet_url = result.get("url", "")
-                print(f"[OctoPoster] [OK] Posted [{entry['type']}]: {entry['text'][:60]}...")
+                text      = entry["text"]
+                chunks    = split_for_thread(text)
+                if len(chunks) > 1:
+                    print(f"[OctoPoster] Auto-threading ({len(chunks)} tweets): {text[:60]}...")
+                    result    = _post_thread(chunks)
+                    tweet_url = result.get("url", "")
+                    print(f"[OctoPoster] [OK] Auto-thread posted: {tweet_url}")
+                else:
+                    result    = _post_single(text, media_ids=media_ids)
+                    tweet_url = result.get("url", "")
+                    print(f"[OctoPoster] [OK] Posted [{entry['type']}]: {text[:60]}...")
 
             log[entry["id"]] = {
                 "text": entry["text"], "type": entry["type"],
