@@ -25,10 +25,39 @@ log = logging.getLogger("OctoBotoOracle")
 
 
 def on_position_opened(pos: dict) -> Optional[dict]:
-    """No-op. OctoBoto trades are tracked by PaperTracker, not the oracle record."""
+    """Email alert when OctoBoto opens a position."""
+    try:
+        from octo_notify import notify_trade_opened
+        notify_trade_opened(
+            question   = pos.get("question", ""),
+            side       = pos.get("side", ""),
+            entry_price= float(pos.get("entry_price", 0)),
+            ev         = float(pos.get("ev", 0)),
+            size_usd   = float(pos.get("size", 0)),
+            url        = pos.get("url", ""),
+        )
+    except Exception as e:
+        log.warning(f"notify_trade_opened failed: {e}")
     return None
 
 
 def on_position_closed(closed: dict, balance: float) -> Optional[dict]:
-    """No-op. OctoBoto trade outcomes are tracked by PaperTracker, not the oracle record."""
+    """Email alert when OctoBoto closes a position."""
+    try:
+        from octo_notify import notify_trade_closed
+        entry = float(closed.get("entry_price", 0))
+        exit_ = float(closed.get("exit_price", entry))
+        size  = float(closed.get("size", 0))
+        won   = bool(closed.get("won", False))
+        pnl   = (exit_ - entry) * size if closed.get("side") == "YES" else (entry - exit_) * size
+        notify_trade_closed(
+            question   = closed.get("question", ""),
+            side       = closed.get("side", ""),
+            won        = won,
+            entry_price= entry,
+            exit_price = exit_,
+            pnl_usd    = pnl,
+        )
+    except Exception as e:
+        log.warning(f"notify_trade_closed failed: {e}")
     return None

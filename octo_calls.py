@@ -297,6 +297,12 @@ def record_call(
     calls.append(call)
     _save(calls)
     print(f"[OctoCalls] #{call['id']} recorded: {asset.upper()} {direction.upper()} @ ${entry_price:,.2f} edge={edge_score:.2f}")
+    try:
+        from octo_notify import notify_call_placed
+        notify_call_placed(asset.upper(), direction.upper(), entry_price,
+                           target_price or 0, timeframe, edge_score, note)
+    except Exception:
+        pass
     return call
 
 
@@ -327,6 +333,13 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
                 pass
             _save(calls)
             print(f"[OctoCalls] #{call_id} resolved: {c['outcome']} (${c['entry_price']:,.2f} -> ${exit_price:,.2f})")
+            try:
+                from octo_notify import notify_call_resolved
+                notify_call_resolved(c["asset"], c["direction"], c["outcome"],
+                                     c["entry_price"], exit_price,
+                                     c.get("note", ""))
+            except Exception:
+                pass
             return c
     print(f"[OctoCalls] Call #{call_id} not found or already resolved.")
     return None

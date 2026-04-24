@@ -126,6 +126,15 @@ from octo_x_poster import (
     queue_post, queue_thread, process_queue, queue_status, discord_alert
 )
 from octo_signal_card import build_signal_card
+
+def _mode_error(module: str, error: Exception):
+    """Central handler for mode failures: Discord + email alert."""
+    discord_alert(f"{module} failed: {error}")
+    try:
+        from octo_notify import notify_system_error
+        notify_system_error(module, str(error))
+    except Exception:
+        pass
 from octo_skill_log import log_post
 from octo_personality import (
     build_x_system_prompt as _build_x_sys,
@@ -498,6 +507,11 @@ def _check_smart_call():
 
                 if not price:
                     print(f"[SmartCall] {asset}: no price data — skipping.")
+                    try:
+                        from octo_notify import notify_smartcall_skipped
+                        notify_smartcall_skipped(asset, "Price feeds returned zero (Kraken + CoinGecko both failed)")
+                    except Exception:
+                        pass
                     continue
 
                 call_str = directional_call(asset, price, chg_24h, ta, deriv, fng, cg)
@@ -1079,7 +1093,12 @@ def mode_monitor() -> None:
                 _sol = {"usd": _cp.get("SOL", {}).get("usd", 0), "usd_24h_change": _cp.get("SOL", {}).get("usd_24h_change", 0)}
                 if not _btc.get("usd", 0):
                     print("[Runner] Watchpost skipped — price feeds returned zero.")
-                    posted = True  # treat as posted so we don't retry
+                    try:
+                        from octo_notify import notify_data_failure
+                        notify_data_failure("price_feed_watchpost", "Watchpost skipped — BTC price returned zero from all sources.")
+                    except Exception:
+                        pass
+                    posted = True
                     continue
                 _fng_val = 50
                 try:
@@ -1189,7 +1208,7 @@ Rules:
             print(f"[OctoBrain] Post-mortem failed: {be}")
     except Exception as e:
         print(f"[Runner] mode_monitor failed: {e}")
-        discord_alert(f"monitor mode failed: {e}")
+        _mode_error("mode_monitor", e)
         sys.exit(1)
 
 
@@ -1232,6 +1251,11 @@ def mode_daily() -> None:
             return
         if not any(v.get("price", 0) > 0 for v in snapshots.values()):
             print("[Runner] Daily post skipped — all price feeds returned zero.")
+            try:
+                from octo_notify import notify_data_failure
+                notify_data_failure("price_feed_daily", "Daily read skipped — all price feeds returned zero.")
+            except Exception:
+                pass
             return
 
         headlines = get_top_headlines(DAILY_TICKERS, max_per_symbol=3)
@@ -1377,7 +1401,7 @@ def mode_daily() -> None:
 
     except Exception as e:
         print(f"[Runner] mode_daily failed: {e}")
-        discord_alert(f"daily mode failed: {e}")
+        _mode_error("mode_daily", e)
         sys.exit(1)
 
 

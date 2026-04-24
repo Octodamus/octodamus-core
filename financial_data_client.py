@@ -125,10 +125,19 @@ def get_crypto_prices(tickers: list = None) -> dict:
     # Cache if we got real prices
     valid = {t: p for t, p in prices.items() if p.get("usd", 0) > 0}
     if valid:
-        # Merge with any existing cache entries for other tickers
         merged = dict(cached)
         merged.update(valid)
         _save_cache(merged)
+    else:
+        # All sources failed — fire alert
+        try:
+            from octo_notify import notify_data_failure
+            notify_data_failure(
+                "price_feed",
+                f"Kraken + CoinGecko both returned zero for {tickers}. Posts will be paused."
+            )
+        except Exception:
+            pass
 
     return prices
 
