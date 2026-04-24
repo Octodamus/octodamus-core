@@ -130,29 +130,27 @@ def tool_get_market_data(asset: str = "BTC") -> str:
 
 
 def tool_get_octodamus_signal() -> str:
-    """Get current Octodamus oracle signal from the free demo endpoint."""
+    """Get current Octodamus oracle signal and open calls from local data."""
     try:
-        import httpx
-        r = httpx.get("https://api.octodamus.com/v2/demo", timeout=10)
-        if r.status_code == 200:
-            d = r.json()
-            signal = d.get("signal", {})
-            brief  = d.get("brief", {})
-            track  = signal.get("track_record", {})
-            lines  = ["Octodamus Signal (demo):"]
-            s = signal.get("signal", {})
-            if s:
-                lines.append(f"  Asset:     {s.get('asset','?')} {s.get('direction','?')}")
-                lines.append(f"  Timeframe: {s.get('timeframe','?')}")
-            if brief:
-                lines.append(f"  Brief:     {brief.get('brief','')[:200]}")
-            if track:
-                lines.append(f"  Record:    {track.get('wins','?')}W / {track.get('losses','?')}L")
-            lines.append(f"  Full signals + reasoning: GET https://api.octodamus.com/v2/signal (requires API key or $0.01 x402)")
-            return "\n".join(lines)
-        return f"Octodamus API returned {r.status_code}"
+        import json as _json
+        calls_file = ROOT / "data" / "octo_calls.json"
+        calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
+        open_calls = [c for c in calls if not c.get("resolved")]
+        resolved   = [c for c in calls if c.get("resolved")]
+        wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
+        losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
+        lines = ["Octodamus Oracle Signals (live local data):"]
+        if open_calls:
+            lines.append(f"  Open calls ({len(open_calls)}):")
+            for c in open_calls[:5]:
+                lines.append(f"    {c.get('asset')} {c.get('direction')} | entry ${c.get('entry_price',0):,.0f} | tf {c.get('timeframe')} | edge {c.get('edge_score',0):+.2f}")
+        else:
+            lines.append("  No open calls right now.")
+        lines.append(f"  All-time record: {wins}W / {losses}L")
+        lines.append(f"  Premium signals + reasoning: api.octodamus.com/v2/signal ($0.01 x402 or API key)")
+        return "\n".join(lines)
     except Exception as e:
-        return f"Octodamus signal failed: {e}"
+        return f"Signal fetch failed: {e}"
 
 
 def tool_get_polymarket_edges() -> str:
@@ -178,8 +176,22 @@ def tool_get_polymarket_edges() -> str:
         return f"Polymarket edges failed: {e}"
 
 
+_DRAFT_VOICE = """You are writing for Octodamus (@octodamusai), an autonomous AI market oracle.
+
+Voice rules (non-negotiable):
+- Inspired by Thomas McGuane: economy of language, one detail that contains everything
+- Stanley Druckenmiller: conviction earned through process, never bluster
+- No emojis. Ever.
+- No hashtags. Ever.
+- No hype words: "game-changer", "revolutionary", "unlock", "amazing"
+- Dry, precise, occasionally contrarian. Smart people talking to smart people.
+- Numbers are specific. Claims are grounded. No vague takes.
+- For X posts: under 270 chars each, no hashtags, no emojis, read like a trader not a marketer
+- For emails: direct, no fluff, assumes the reader is intelligent"""
+
+
 def tool_draft_content(task: str, context: str = "") -> str:
-    """Draft marketing copy, product descriptions, or research summaries using Claude Haiku."""
+    """Draft content in Octodamus voice using Claude Haiku. Always call save_draft after."""
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY",""))
@@ -188,7 +200,8 @@ def tool_draft_content(task: str, context: str = "") -> str:
             prompt += f"\n\nContext:\n{context[:2000]}"
         r = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=800,
+            max_tokens=1000,
+            system=_DRAFT_VOICE,
             messages=[{"role": "user", "content": prompt}],
         )
         return r.content[0].text.strip()
@@ -220,6 +233,18 @@ def tool_save_draft(filename: str, content: str) -> str:
     except Exception as e:
         return f"Save failed: {e}"
 
+
+
+def tool_list_drafts() -> str:
+    """List all saved draft files so the agent knows what's already been created."""
+    drafts_dir = Path(__file__).parent / "drafts"
+    if not drafts_dir.exists() or not list(drafts_dir.iterdir()):
+        return "No drafts saved yet."
+    lines = ["Saved drafts:"]
+    for f in sorted(drafts_dir.iterdir()):
+        size = f.stat().st_size
+        lines.append(f"  {f.name} ({size} bytes)")
+    return "\n".join(lines)
 
 
 def tool_log_action(action: str, result: str, cost_usd: float = 0.0) -> str:
@@ -307,6 +332,11 @@ TOOLS = [
         },
     },
     {
+        "name": "list_drafts",
+        "description": "List all draft files already saved. Check this at the start of every session to avoid repeating work.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "save_draft",
         "description": "Save a drafted asset (tweet thread, email, guide, playbook) to a file. Always save important drafts so the owner can deploy them.",
         "input_schema": {
@@ -342,6 +372,7 @@ TOOL_FNS = {
     "get_polymarket_edges": lambda i: tool_get_polymarket_edges(),
     "draft_content":        lambda i: tool_draft_content(i["task"], i.get("context", "")),
     "send_email":           lambda i: tool_send_email(i["subject"], i["body"]),
+    "list_drafts":          lambda i: tool_list_drafts(),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "log_action":           lambda i: tool_log_action(i["action"], i["result"], i.get("cost_usd", 0.0)),
 }
@@ -368,7 +399,19 @@ PRIORITY ORDER for profit:
 3. Polymarket edge — only if EV >15% and position <$40
 4. Content that builds Octodamus audience and drives API signups
 
-Start by checking wallet and market conditions, then execute the highest-EV path. Use send_email to keep the owner informed of every significant action."""
+CRITICAL RULES FOR DRAFTING CONTENT:
+- After EVERY draft_content call, immediately call save_draft with a descriptive filename
+- Never draft without saving — drafts that aren't saved are wasted work
+- Octodamus voice: no emojis, no hashtags, dry and precise, numbers grounded in data
+- X posts: under 270 chars each, read like a trader talking to traders
+
+CRITICAL RULES FOR SESSIONS:
+- Do not repeat research you already did. Check existing drafts first.
+- Each session should ADVANCE the mission, not restart it.
+- If drafts exist from prior sessions, build on them or deploy them.
+- End every session by saving all output and emailing the owner a status update.
+
+Start by checking wallet, then check what drafts already exist (browse .agents/profit-agent/drafts/ or infer from logs), then execute the next logical step."""
 
 
 def run_session(dry_run: bool = False):
