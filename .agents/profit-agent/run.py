@@ -17,6 +17,7 @@ import smtplib
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -134,13 +135,10 @@ def run_session(dry_run: bool = False):
         print(f"\nMission preview:\n{mission[:300]}...")
         return
 
-    print(f"[ProfitAgent] Running Franklin (max spend: ${MAX_SPEND_PER_SESSION})...")
+    print(f"[ProfitAgent] Running autonomous agent loop...")
 
-    # Pass mission text directly as argument -- no shell, no quoting issues
     result = subprocess.run(
-        [FRANKLIN_BIN, "start", "--trust",
-         "--max-spend", str(MAX_SPEND_PER_SESSION),
-         "--prompt", mission],
+        [sys.executable, str(Path(__file__).parent / "agent.py")],
         capture_output=True, text=True, encoding="utf-8",
         timeout=1800,
         cwd=str(ROOT),
