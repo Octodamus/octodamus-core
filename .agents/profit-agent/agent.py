@@ -1127,9 +1127,14 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         f.write(f"\n{'='*60}\nSession #{session_num} -- {now}\n{'='*60}\n")
 
     import anthropic
-    client       = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
-    session_sys  = SYSTEM + f"\n\n{focus}"
-    messages     = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
+    client      = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
+    date_inject = (
+        f"\nCURRENT DATE/TIME: {datetime.now().strftime('%A, %B %d %Y %I:%M %p')}\n"
+        f"IMPORTANT: Use only this date. Never invent dates or prices. "
+        f"If get_market_data returns a price, that IS the current price — do not override it with training data."
+    )
+    session_sys = SYSTEM + date_inject + f"\n\n{focus}"
+    messages    = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
     full_log     = []
     turns        = 0
 
