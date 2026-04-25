@@ -1135,8 +1135,7 @@ def mode_monitor() -> None:
                         notify_data_failure("price_feed_watchpost", "Watchpost skipped — BTC price returned zero from all sources.")
                     except Exception:
                         pass
-                    posted = True
-                    continue
+                    raise Exception("zero_price_skip")
                 _fng_val = 50
                 try:
                     _fng_val = int(_req.get("https://api.alternative.me/fng/?limit=1", timeout=8).json()["data"][0]["value"])
