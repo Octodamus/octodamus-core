@@ -298,6 +298,24 @@ def _load_limitless_from_bw() -> dict:
     return secrets
 
 
+def _load_telegram_owner_from_bw() -> dict:
+    """
+    Telegram control item — password=bot token, username=owner chat ID.
+    TELEGRAM_BOT_TOKEN already loaded via standard secrets map.
+    This adds TELEGRAM_CHAT_ID from the username field.
+    """
+    secrets = {}
+    try:
+        item  = _get_item("AGENT - Octodamus - Control - Telegram")
+        login = item.get("login", {})
+        chat_id = login.get("username", "").strip()
+        if chat_id and chat_id.lstrip("-").isdigit():
+            secrets["TELEGRAM_CHAT_ID"] = chat_id
+    except Exception:
+        pass
+    return secrets
+
+
 def _load_gmail_from_bw() -> dict:
     """
     Octodamus Gmail item layout:
@@ -468,6 +486,15 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
             loaded[env_var] = value
     if limitless.get("LIMITLESS_API_KEY") and verbose:
         print("[Bitwarden] Limitless API loaded")
+
+    # Telegram owner chat ID (username field of control item)
+    tg_owner = _load_telegram_owner_from_bw()
+    for env_var, value in tg_owner.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if tg_owner.get("TELEGRAM_CHAT_ID") and verbose:
+        print(f"[Bitwarden] Telegram owner chat_id loaded")
 
     # Gmail multi-field item
     gmail = _load_gmail_from_bw()
