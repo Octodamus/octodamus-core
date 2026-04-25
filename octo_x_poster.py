@@ -185,6 +185,65 @@ def post_reply(reply_text: str, tweet_id: str) -> dict:
 _TWEET_LIMIT = 265  # leave 15 chars buffer below X's 280
 
 
+_CASHTAG_MAP = {
+    # Stocks
+    "nvidia": "$NVDA",  "nvda": "$NVDA",
+    "tesla": "$TSLA",   "tsla": "$TSLA",
+    "apple": "$AAPL",   "aapl": "$AAPL",
+    "microsoft": "$MSFT", "msft": "$MSFT",
+    "google": "$GOOGL", "alphabet": "$GOOGL", "googl": "$GOOGL",
+    "amazon": "$AMZN",  "amzn": "$AMZN",
+    "meta": "$META",
+    "coinbase": "$COIN", "coin": "$COIN",
+    "microstrategy": "$MSTR", "mstr": "$MSTR",
+    "ibit": "$IBIT",
+    "intel": "$INTC",   "intc": "$INTC",
+    "palantir": "$PLTR", "pltr": "$PLTR",
+    "msft": "$MSFT",
+    # Crypto
+    "bitcoin": "$BTC",  "btc": "$BTC",
+    "ethereum": "$ETH", "eth": "$ETH",
+    "solana": "$SOL",   "sol": "$SOL",
+    "xrp": "$XRP",      "ripple": "$XRP",
+    "cardano": "$ADA",  "ada": "$ADA",
+    "dogecoin": "$DOGE", "doge": "$DOGE",
+    "chainlink": "$LINK", "link": "$LINK",
+    "avalanche": "$AVAX", "avax": "$AVAX",
+    "polkadot": "$DOT",  "dot": "$DOT",
+    "hyperliquid": "$HYPE", "hype": "$HYPE",
+    # Oil/macro
+    "wti": "$WTI", "crude oil": "$WTI", "oil": "$WTI",
+    "gold": "$GOLD",
+    "spy": "$SPY", "nasdaq": "$QQQ", "qqq": "$QQQ",
+}
+
+
+def ensure_cashtag(text: str) -> str:
+    """
+    Check if a post mentions a known stock/crypto by name without its cashtag.
+    If so, append the cashtag at the end (max one cashtag per post — X rule).
+    Respects the 280-char limit.
+    """
+    import re
+    text_lower = text.lower()
+
+    # Already has a cashtag — X rejects 2+, so don't add another
+    if re.search(r'\$[A-Z]{2,6}\b', text):
+        return text
+
+    # Check for known names without their cashtag
+    for name, cashtag in _CASHTAG_MAP.items():
+        # Match whole word only
+        pattern = r'\b' + re.escape(name) + r'\b'
+        if re.search(pattern, text_lower):
+            candidate = text.rstrip() + f" {cashtag}"
+            if len(candidate) <= 280:
+                return candidate
+            break  # can't fit, leave as-is
+
+    return text
+
+
 def split_for_thread(text: str) -> list[str]:
     """
     Split text into tweet-sized chunks for threading.
@@ -674,13 +733,16 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
     for entry in pending[:max_posts]:
         try:
             if entry.get("is_thread"):
-                result    = _post_thread(entry["thread_posts"])
+                posts = entry["thread_posts"]
+                if posts:
+                    posts[0] = ensure_cashtag(posts[0])
+                result    = _post_thread(posts)
                 tweet_url = result.get("url", "")
                 print(f"[OctoPoster] [OK] Thread ({len(entry['thread_posts'])} posts): {entry['text'][:60]}...")
             else:
                 media_id  = entry.get("metadata", {}).get("media_id") if entry.get("metadata") else None
                 media_ids = [media_id] if media_id else None
-                text      = entry["text"]
+                text      = ensure_cashtag(entry["text"])
                 chunks    = split_for_thread(text)
                 if len(chunks) > 1:
                     print(f"[OctoPoster] Auto-threading ({len(chunks)} tweets): {text[:60]}...")

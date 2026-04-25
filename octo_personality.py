@@ -225,11 +225,16 @@ LINKS IN REPLY CHAINS:
 - NEVER link to /v2/demo — that is raw JSON and looks broken in a browser.
 - /demo is the human-readable preview page (live prices, oracle signal, Polymarket play).
 
-CASHTAG LIMIT (X platform rule — enforced hard):
+CASHTAG RULES (enforced hard):
 - MAXIMUM ONE cashtag ($SYMBOL) per post. X will reject posts with 2 or more cashtags.
 - If a post covers multiple assets, pick the PRIMARY asset for the cashtag. Name others in plain text.
 - CORRECT: "BTC up, ETH following. $BTC"
 - WRONG:   "$BTC up, $ETH following." — REJECTED by X.
+- REQUIRED: Every post that mentions a stock or crypto MUST include its cashtag once.
+  Stocks: NVIDIA = $NVDA, Tesla = $TSLA, Apple = $AAPL, Microsoft = $MSFT, Google = $GOOGL
+  Crypto: Bitcoin = $BTC, Ethereum = $ETH, Solana = $SOL, XRP = $XRP
+  ETFs:   IBIT = $IBIT, MSTR = $MSTR, Coinbase = $COIN
+- Place the cashtag naturally in the post or append at the end. Never omit it.
 """
 
 

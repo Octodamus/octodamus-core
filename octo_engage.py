@@ -508,6 +508,12 @@ def run(count: int = DEFAULT_COUNT):
       if cashtag and cashtag not in trimmed:
         trimmed = f"{trimmed} {cashtag}"
       trimmed = trimmed[:256]
+      # Also catch company names without cashtags via the global enforcer
+      try:
+        from octo_x_poster import ensure_cashtag as _ensure_ct
+        trimmed = _ensure_ct(trimmed)[:256]
+      except Exception:
+        pass
       tweet_text = f"{trimmed}\n{url}" if url else trimmed
 
       # Fetch + brand the article image
