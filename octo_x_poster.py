@@ -712,7 +712,7 @@ def _telegram_reply_alert(post_text: str, tweet_url: str, post_type: str = "") -
         s_raw = _j.loads(_P(__file__).parent.joinpath(".octo_secrets").read_text(encoding="utf-8"))
         s     = s_raw.get("secrets", s_raw)
         token   = s.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = s.get("TELEGRAM_CHAT_ID", "830070048")
+        chat_id = s.get("TELEGRAM_CHAT_ID", "8300700481")
 
         if not token:
             return
