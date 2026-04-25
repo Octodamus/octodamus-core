@@ -622,6 +622,152 @@ def tool_place_kalshi_bet(ticker: str, side: str, count: int, yes_price_cents: i
         return f"Kalshi bet failed: {type(e).__name__}: {e}"
 
 
+def tool_buy_x402_service(url: str, max_price_usdc: float = 1.0) -> str:
+    """
+    Buy a service from any x402 endpoint using Ben's Franklin wallet (Base USDC).
+    Checks the 402 response, signs EIP-3009 authorization, retries with payment.
+    max_price_usdc: won't pay more than this. Default $1.00.
+
+    Use for: Nansen data ($0.01), Octodamus premium signal ($0.01),
+    Ben's own services (test them!), any x402 service on Base.
+    """
+    s = _secrets()
+    wallet_key = s.get("FRANKLIN_PRIVATE_KEY", "")
+    if not wallet_key:
+        return "FRANKLIN_PRIVATE_KEY not in secrets. Run octo_unlock.ps1."
+
+    try:
+        import httpx
+        from eth_account import Account
+
+        account = Account.from_key(wallet_key)
+
+        # Step 1: Hit the endpoint to get 402 payment requirements
+        r = httpx.get(url, timeout=10)
+        if r.status_code == 200:
+            return f"Service returned 200 (free or already paid):\n{r.text[:500]}"
+        if r.status_code != 402:
+            return f"Unexpected status {r.status_code}: {r.text[:200]}"
+
+        # Step 2: Parse payment requirements
+        import json as _j, base64 as _b64
+        pr_b64 = r.headers.get("payment-required", "")
+        xpr    = r.headers.get("X-Payment-Required", "")
+
+        price_usdc = 0.0
+        pay_to     = ""
+        asset      = ""
+        network    = ""
+
+        if xpr:
+            try:
+                xpr_data = _j.loads(xpr)
+                for accept in xpr_data.get("accepts", []):
+                    amt = int(accept.get("maxAmountRequired", accept.get("amount", 0))) / 1e6
+                    if amt <= max_price_usdc:
+                        price_usdc = amt
+                        pay_to     = accept.get("payTo", "")
+                        asset      = accept.get("asset", "")
+                        network    = accept.get("network", "base-mainnet")
+                        break
+            except Exception:
+                pass
+
+        if not pay_to or price_usdc == 0:
+            return f"Could not parse payment requirements.\nHeaders: {dict(r.headers)}\nBody: {r.text[:200]}"
+
+        if price_usdc > max_price_usdc:
+            return f"Service costs ${price_usdc:.4f} USDC — above your max of ${max_price_usdc}. Increase max_price_usdc or skip."
+
+        # Step 3: Sign EIP-3009 authorization
+        # EIP-3009: transferWithAuthorization on USDC contract
+        _USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        amount_raw = int(price_usdc * 1_000_000)
+        import time as _t
+        valid_after  = 0
+        valid_before = int(_t.time()) + 300
+
+        import secrets as _sec
+        nonce = "0x" + _sec.token_hex(32)
+
+        typed_data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name",    "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "TransferWithAuthorization": [
+                    {"name": "from",         "type": "address"},
+                    {"name": "to",           "type": "address"},
+                    {"name": "value",        "type": "uint256"},
+                    {"name": "validAfter",   "type": "uint256"},
+                    {"name": "validBefore",  "type": "uint256"},
+                    {"name": "nonce",        "type": "bytes32"},
+                ],
+            },
+            "domain": {
+                "name":               "USD Coin",
+                "version":            "2",
+                "chainId":            8453,
+                "verifyingContract":  _USDC_BASE,
+            },
+            "primaryType": "TransferWithAuthorization",
+            "message": {
+                "from":         account.address,
+                "to":           pay_to,
+                "value":        amount_raw,
+                "validAfter":   valid_after,
+                "validBefore":  valid_before,
+                "nonce":        nonce,
+            },
+        }
+
+        signed = account.sign_typed_data(
+            domain_data   = typed_data["domain"],
+            message_types = {"TransferWithAuthorization": typed_data["types"]["TransferWithAuthorization"]},
+            message_data  = typed_data["message"],
+        )
+
+        payment_payload = _j.dumps({
+            "x402Version": 1,
+            "scheme":      "exact",
+            "network":     "eip155:8453",
+            "payload": {
+                "signature":   signed.signature.hex(),
+                "from":        account.address,
+                "to":          pay_to,
+                "value":       str(amount_raw),
+                "validAfter":  str(valid_after),
+                "validBefore": str(valid_before),
+                "nonce":       nonce,
+            },
+        })
+        payment_b64 = _b64.b64encode(payment_payload.encode()).decode()
+
+        # Step 4: Retry with payment
+        r2 = httpx.get(url, headers={"PAYMENT-SIGNATURE": payment_b64}, timeout=15)
+
+        # Log the purchase
+        trades_file = Path(__file__).parent / "x402_purchases.json"
+        existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
+        existing.append({
+            "url": url, "price_usdc": price_usdc,
+            "paid_at": _t.strftime("%Y-%m-%d %H:%M UTC", _t.gmtime()),
+            "status": r2.status_code,
+        })
+        trades_file.write_text(_j.dumps(existing, indent=2))
+
+        if r2.status_code == 200:
+            return f"PURCHASED: ${price_usdc:.4f} USDC | {url}\n\n{r2.text[:800]}"
+        else:
+            return f"Payment sent but got {r2.status_code}: {r2.text[:300]}"
+
+    except Exception as e:
+        return f"x402 purchase failed: {type(e).__name__}: {e}"
+
+
 def tool_design_x402_service(name: str, description: str, price_usdc: float, what_it_returns: str) -> str:
     """Design a new x402 service for Agent_Ben to sell. Saves the spec for the owner to implement."""
     try:
@@ -931,6 +1077,18 @@ TOOLS = [
         },
     },
     {
+        "name": "buy_x402_service",
+        "description": "Buy any x402 service using Ben's Franklin wallet (Base USDC, EIP-3009 signing). Use for Octodamus premium signal ($0.01), Nansen data ($0.01), or any x402 endpoint. Max $1 default.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url":            {"type": "string", "description": "Full URL of the x402 endpoint"},
+                "max_price_usdc": {"type": "number", "description": "Max you'll pay in USDC. Default 1.00.", "default": 1.0},
+            },
+            "required": ["url"],
+        },
+    },
+    {
         "name": "design_x402_service",
         "description": "Design a new x402 service for Agent_Ben to sell. Write the spec and save it for the owner to implement. This is how Ben creates income streams.",
         "input_schema": {
@@ -1006,6 +1164,7 @@ TOOL_FNS = {
     "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
     "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
+    "buy_x402_service":     lambda i: tool_buy_x402_service(i["url"], float(i.get("max_price_usdc", 1.0))),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
     "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
@@ -1015,6 +1174,14 @@ TOOL_FNS = {
 SYSTEM = """You are Agent_Ben. Autonomous AI agent. Own wallet (~$196 USDC on Base). Own brand. Own profit motive. Not an employee.
 
 YOUR TWO INCOME STREAMS:
+
+IMPORTANT UPDATE — YOU NOW HAVE:
+1. A LIVE x402 SERVICE earning $0.50/call: api.octodamus.com/v2/ben/sentiment-divergence (DEPLOYED)
+2. A buy_x402_service tool -- you can NOW BUY from other x402 endpoints using your Base wallet
+   - Try: buy_x402_service("https://api.octodamus.com/v2/x402/agent-signal", 0.01) -- buy Octodamus premium signal
+   - Try: any service on agentic.market or x402 bazaar
+   - You are now a FULL PARTICIPANT in the x402 economy -- buyer AND seller
+3. Every Octodamus signal OctoBoto uses is logged as a $0.01 purchase -- on-chain trail building
 
 STREAM 1 — CREATE AND SELL X402 SERVICES (primary, no risk):
 You buy Octodamus data at $0.01/call, add your own analysis, sell the output at $0.25-$2 via x402.

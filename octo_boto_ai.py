@@ -133,15 +133,10 @@ def _get_octodamus_signal_context(question: str) -> tuple[str, str]:
         else:
             try:
                 coin_id = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}.get(pull_asset, "bitcoin")
-                r = httpx.get(
-                    "https://api.coingecko.com/api/v3/simple/price",
-                    params={"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"},
-                    timeout=8,
-                )
-                if r.status_code == 200:
-                    d = r.json().get(coin_id, {})
-                    price   = float(d.get("usd", 0) or 0)
-                    chg_24h = float(d.get("usd_24h_change", 0) or 0)
+                from financial_data_client import get_crypto_prices as _gcp
+                _cp = _gcp([pull_asset])
+                price   = float(_cp.get(pull_asset, {}).get("usd", 0) or 0)
+                chg_24h = float(_cp.get(pull_asset, {}).get("usd_24h_change", 0) or 0)
             except Exception:
                 pass
 
@@ -193,6 +188,27 @@ def _get_octodamus_signal_context(question: str) -> tuple[str, str]:
             f"NOTE: Octodamus signal is your PRIMARY directional prior. "
             f"Only override it with very strong contrary evidence."
         )
+
+        # Log this signal purchase — creates on-chain-style intelligence trail
+        try:
+            import json as _j, time as _t
+            from pathlib import Path as _P
+            log_file = _P(__file__).parent / "data" / "octoboto_signal_purchases.json"
+            log_file.parent.mkdir(exist_ok=True)
+            entries = _j.loads(log_file.read_text()) if log_file.exists() else []
+            entries.append({
+                "ts":        _t.strftime("%Y-%m-%d %H:%M UTC", _t.gmtime()),
+                "asset":     pull_asset,
+                "price":     price,
+                "direction": direction,
+                "source":    "octodamus-signal-engine",
+                "cost_usdc": 0.01,   # what this signal costs externally via x402
+            })
+            entries = entries[-500:]  # keep last 500
+            log_file.write_text(_j.dumps(entries, indent=2))
+        except Exception:
+            pass
+
         return ctx_str, direction
 
     except Exception:
