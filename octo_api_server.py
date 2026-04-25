@@ -237,6 +237,33 @@ from x402 import parse_payment_payload as _parse_x402_payload
 _X402_TREASURY = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
 _X402_USDC     = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC on Base
 
+# ── Ed25519 signal signing (Mycelia-style on-chain verifiable responses) ──────
+_SIGNING_KEY    = os.environ.get("OCTODAMUS_SIGNING_KEY", "")
+_SIGNING_PUBKEY = os.environ.get("OCTODAMUS_SIGNING_PUBKEY", "")
+
+def _sign_payload(payload: dict) -> dict:
+    """
+    Sign a signal response with Octodamus Ed25519 key.
+    Agents can verify with the public key at /.well-known/x402.json.
+    Adds: signature (base64), signer_pubkey (base64), signed_at (ISO timestamp).
+    """
+    if not _SIGNING_KEY:
+        return payload
+    try:
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization as _ser
+        priv_bytes = _b64.b64decode(_SIGNING_KEY)
+        private_key = Ed25519PrivateKey.from_private_bytes(priv_bytes)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        signature  = private_key.sign(canonical)
+        payload["signature"]    = _b64.b64encode(signature).decode()
+        payload["signer_pubkey"] = _SIGNING_PUBKEY
+        payload["signed_at"]    = datetime.utcnow().isoformat() + "Z"
+    except Exception as _se:
+        payload["signature_error"] = str(_se)
+    return payload
+
 # CDP production facilitator — requires CDP_API_KEY_ID + CDP_API_KEY_SECRET env vars
 # Falls back to x402.org testnet if keys absent (useful for local dev)
 _CDP_KEY_ID     = os.environ.get("CDP_API_KEY_ID", "")
@@ -1637,6 +1664,12 @@ def well_known_x402():
         "chain":     "eip155:8453",
         "asset":     _X402_USDC,
         "currency":  "USDC",
+        "signing": {
+            "algorithm":  "Ed25519",
+            "public_key": _SIGNING_PUBKEY,
+            "format":     "base64",
+            "verify":     "Sign canonical JSON (sort_keys=True, no spaces) with Ed25519 public key. Signature in response body at .signature field.",
+        },
         "endpoints": [
             {
                 "path":        "/v2/agent-signal",
@@ -3199,6 +3232,7 @@ def v2_x402_agent_signal(request: Request):
     _x402_verify_settle(request, _X402_REQS)
     payload = _get_cached_signal()
     payload["payment"] = "x402 — USDC on Base | api.octodamus.com"
+    payload = _sign_payload(payload)
     return JSONResponse(content=payload, headers={"Cache-Control": "public, s-maxage=60"})
 
 

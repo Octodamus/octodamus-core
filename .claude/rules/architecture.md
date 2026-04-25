@@ -21,6 +21,14 @@ This ensures: new knowledge added once -> flows to Telegram, X, MCP, runner auto
     Takes % of transaction profits. The go-to copytrading bot on the internet.
 - Never conflate them in prompts, posts, or code comments.
 
+## Signal Signing (Ed25519 — on-chain verifiable responses)
+Octodamus signs signal responses with Ed25519 for on-chain verification (Mycelia-parity).
+- Private key: `OCTODAMUS_SIGNING_KEY` in `.octo_secrets` (also store in Bitwarden: "AGENT - Octodamus - Signal Signing Key")
+- Public key:  `OCTODAMUS_SIGNING_PUBKEY` — published in `/.well-known/x402.json` under "signing"
+- Signing:     `_sign_payload(payload)` in `octo_api_server.py` — Ed25519, canonical JSON, base64 signature
+- Agents verify: `signature` field in response body + `signer_pubkey` field
+- Competitor: Mycelia Signal uses same approach. Octodamus differentiated by AI consensus + Polymarket edges.
+
 ## LLM Routing (octodamus_runner.py)
 Three tiers — never collapse them back into a single model:
 - **Sonnet 4.6** (`claude.messages.create`) — core oracle: Daily Read, Moonshot, Flow Signal

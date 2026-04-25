@@ -84,6 +84,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
     "AGENT - Octodamus - LunarCrush - API":            "LUNARCRUSH_API_KEY",
     "AGENT - Octodamus - xAI Grok API":               "GROK_API_KEY",
+    # Signal Signing Key loaded separately (username=pubkey, password=privkey)
     # Limitless loaded separately below (needs both username + password)
 }
 
@@ -225,6 +226,27 @@ def _load_franklin_from_bw() -> dict:
             FRANKLIN_CHAIN_FILE.write_text("base\n", encoding="utf-8")
     except Exception as e:
         print(f"[Bitwarden] Franklin wallet (non-critical): {e}")
+    return secrets
+
+
+def _load_signing_key_from_bw() -> dict:
+    """
+    Octodamus Ed25519 signal signing key:
+      username -> public key (base64)   (OCTODAMUS_SIGNING_PUBKEY)
+      password -> private key (base64)  (OCTODAMUS_SIGNING_KEY)
+    """
+    secrets = {}
+    try:
+        item  = _get_item("AGENT - Octodamus - Signal Signing Key")
+        login = item.get("login", {})
+        pub   = login.get("username", "").strip()
+        priv  = login.get("password", "").strip()
+        if pub:
+            secrets["OCTODAMUS_SIGNING_PUBKEY"] = pub
+        if priv:
+            secrets["OCTODAMUS_SIGNING_KEY"] = priv
+    except Exception:
+        pass
     return secrets
 
 
@@ -416,6 +438,15 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     except Exception as _e:
         if verbose:
             print(f"[Bitwarden] CDP API (non-critical): {_e}")
+
+    # Ed25519 signal signing key (username=pubkey, password=privkey)
+    signing = _load_signing_key_from_bw()
+    for env_var, value in signing.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if signing.get("OCTODAMUS_SIGNING_KEY") and verbose:
+        print("[Bitwarden] Signal signing key loaded")
 
     # Kalshi API (username=key_id, notes=RSA private key PEM)
     kalshi = _load_kalshi_from_bw()
