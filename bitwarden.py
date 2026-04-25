@@ -205,22 +205,25 @@ def _load_twitter_from_bw() -> dict:
 
 def _load_franklin_from_bw() -> dict:
     """
-    Franklin Agent wallet — custom fields in Bitwarden item.
-    Writes private key to ~/.blockrun/.session so Franklin can use it after reboot.
-    Fields expected: 'wallet address', 'private key' (case-insensitive).
+    Franklin Agent wallet — username=address, password=private key.
+    Also checks custom fields for backwards compatibility.
+    Writes private key to ~/.blockrun/.session so Franklin works after reboot.
     """
     secrets = {}
     try:
-        fields = _get_custom_fields(FRANKLIN_BW_ITEM)
-        # Normalise field names to lowercase for matching
-        normalised = {k.lower().replace(" ", "_"): v for k, v in fields.items()}
-        address = normalised.get("wallet_address") or normalised.get("address") or ""
-        pk      = normalised.get("private_key")    or normalised.get("privatekey") or ""
+        item   = _get_item(FRANKLIN_BW_ITEM)
+        login  = item.get("login", {})
+        fields = {(f.get("name") or "").lower().replace(" ","_"): (f.get("value") or "")
+                  for f in (item.get("fields") or [])}
+
+        # Username = wallet address, password = private key
+        address = login.get("username","").strip() or fields.get("wallet_address","") or fields.get("address","")
+        pk      = login.get("password","").strip() or fields.get("private_key","")    or fields.get("privatekey","")
+
         if address:
             secrets["FRANKLIN_WALLET_ADDRESS"] = address
         if pk:
             secrets["FRANKLIN_PRIVATE_KEY"] = pk
-            # Restore wallet key file so Franklin works after reboot
             FRANKLIN_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
             FRANKLIN_KEY_FILE.write_text(pk + "\n", encoding="utf-8")
             FRANKLIN_CHAIN_FILE.write_text("base\n", encoding="utf-8")
