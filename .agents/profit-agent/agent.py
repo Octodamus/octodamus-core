@@ -641,6 +641,103 @@ def tool_place_kalshi_bet(ticker: str, side: str, count: int, yes_price_cents: i
         return f"Kalshi bet failed: {type(e).__name__}: {e}"
 
 
+def tool_check_acp_market() -> str:
+    """
+    Check Octodamus's standing on the Virtuals ACP (Agentic Commerce Protocol) marketplace.
+    Shows job history, report count, active job types, and identifies funnel opportunities.
+    ACP is where AI agents hire Octodamus for market intelligence reports at $1 USDC/job.
+    """
+    try:
+        import json as _j, httpx
+        from pathlib import Path as _P
+        from datetime import datetime, timezone
+
+        lines = []
+        lines.append("=== OCTODAMUS ACP MARKET STATUS ===")
+        lines.append("Platform: Virtuals ACP (app.virtuals.io) | Price: $1 USDC/job | Chain: Base")
+        lines.append("Agent wallet: 0x94c037393ab0263194dcfd8d04a2176d6a80e385")
+        lines.append("")
+
+        # Job history from events file
+        events_file = _P(ROOT) / "data" / "acp_events.jsonl"
+        if events_file.exists():
+            events = [_j.loads(l) for l in events_file.read_text(encoding="utf-8").strip().split("\n") if l.strip()]
+            lines.append(f"Total ACP events received: {len(events)}")
+
+        # Reports generated = jobs completed
+        reports = list((_P(ROOT) / "data" / "reports").glob("*.html"))
+        lines.append(f"Reports delivered: {len(reports)}")
+        lines.append(f"Revenue earned: ~${len(reports):.0f} USDC (at $1/job)")
+
+        # Check job cache for recent job types
+        cache_file = _P(ROOT) / "data" / "acp_job_cache.json"
+        if cache_file.exists():
+            cache = _j.loads(cache_file.read_text(encoding="utf-8"))
+            if cache:
+                types = {}
+                for job in cache.values():
+                    rt = job.get("report_type","unknown")
+                    types[rt] = types.get(rt, 0) + 1
+                lines.append(f"\nJob types in cache: {_j.dumps(types)}")
+
+        # Live check of Virtuals ACP marketplace for Octodamus listing
+        lines.append("\n--- MARKETPLACE RESEARCH ---")
+        try:
+            r = httpx.get("https://app.virtuals.io/virtuals?filter=acp", timeout=8)
+            lines.append(f"Virtuals ACP marketplace: HTTP {r.status_code}")
+        except Exception:
+            lines.append("Virtuals marketplace: connection failed — try manual check at app.virtuals.io")
+
+        # Smithery MCP stats
+        lines.append("\n--- SMITHERY MCP STATUS ---")
+        lines.append("MCP server: smithery.ai/server/octodamusai/market-intelligence")
+        lines.append("Tools: get_signal, get_market_brief, get_polymarket_edges, get_track_record, ask_oracle, subscribe")
+        try:
+            r2 = httpx.get("https://smithery.ai/server/octodamusai/market-intelligence", timeout=8)
+            lines.append(f"Smithery page: HTTP {r2.status_code}")
+        except Exception:
+            lines.append("Smithery: check manually at smithery.ai/server/octodamusai/market-intelligence")
+
+        lines.append("\n--- FUNNEL OPPORTUNITIES ---")
+        lines.append("1. ACP: Current jobs come via Virtuals marketplace. Need more agent buyers.")
+        lines.append("2. ACP: Offer more job types -- currently: market_signal, crypto, stock reports")
+        lines.append("3. Smithery: MCP is passive discovery. Agents find it, use it free or pay $0.01 x402")
+        lines.append("4. Cross-funnel: ACP agents who complete jobs should be pitched x402 API ($29/yr)")
+        lines.append("5. New report type: 'agent_brief' -- a structured JSON report designed for agent consumption")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ACP market check failed: {e}"
+
+
+def tool_design_acp_offering(name: str, description: str, price_usdc: float, what_it_delivers: str) -> str:
+    """
+    Design a new ACP job offering for Octodamus on the Virtuals marketplace.
+    Saves the spec for the owner to implement in octo_acp_worker.py.
+    Other AI agents can then hire Octodamus for this job type.
+    """
+    try:
+        import json as _j
+        from pathlib import Path as _P
+        spec = {
+            "offering_name":    name,
+            "description":      description,
+            "price_usdc":       price_usdc,
+            "what_it_delivers": what_it_delivers,
+            "platform":         "Virtuals ACP (app.virtuals.io)",
+            "implement_in":     "octo_acp_worker.py + octo_report_handlers.py",
+            "designed_by":      "Agent_Ben",
+            "status":           "pending_implementation",
+        }
+        drafts_dir = _P(__file__).parent / "drafts"
+        drafts_dir.mkdir(exist_ok=True)
+        fname = drafts_dir / f"acp_offering_{name.lower().replace(' ','_')}.json"
+        fname.write_text(_j.dumps(spec, indent=2), encoding="utf-8")
+        return f"ACP offering spec saved: {fname.name}\n{_j.dumps(spec, indent=2)}"
+    except Exception as e:
+        return f"ACP offering design failed: {e}"
+
+
 def tool_browse_orbis(query: str = "", category: str = "") -> str:
     """
     Browse OrbisAPI marketplace -- 5,873 APIs, x402 + Stripe payments.
@@ -1141,6 +1238,25 @@ TOOLS = [
         },
     },
     {
+        "name": "check_acp_market",
+        "description": "Check Octodamus's standing on Virtuals ACP marketplace + Smithery MCP. Shows jobs completed, revenue, funnel opportunities. Use to find ways to get more agent customers.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "design_acp_offering",
+        "description": "Design a new ACP job offering for Octodamus on Virtuals. Other AI agents hire Octodamus for this job type. Saved for owner to implement.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":             {"type": "string", "description": "Offering name e.g. 'Polymarket Edge Report'"},
+                "description":      {"type": "string", "description": "What agents get when they hire Octodamus for this"},
+                "price_usdc":       {"type": "number", "description": "Price in USDC per job"},
+                "what_it_delivers": {"type": "string", "description": "Exact deliverable — URL, JSON, report"},
+            },
+            "required": ["name", "description", "price_usdc", "what_it_delivers"],
+        },
+    },
+    {
         "name": "browse_orbis",
         "description": "Browse OrbisAPI marketplace (5,873 APIs, x402 native). Find data to buy, check competitors, spot gaps. No key needed for discovery.",
         "input_schema": {
@@ -1240,6 +1356,8 @@ TOOL_FNS = {
     "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
     "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto"), int(i.get("min_hours",24))),
+    "check_acp_market":     lambda i: tool_check_acp_market(),
+    "design_acp_offering":  lambda i: tool_design_acp_offering(i["name"], i["description"], i["price_usdc"], i["what_it_delivers"]),
     "browse_orbis":         lambda i: tool_browse_orbis(i.get("query",""), i.get("category","")),
     "buy_x402_service":     lambda i: tool_buy_x402_service(i["url"], float(i.get("max_price_usdc", 1.0))),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
@@ -1350,14 +1468,17 @@ End of US trading day. Your job this session:
 7. Email owner: day summary, wallet status, tomorrow's priority""",
 
     "overnight": """SESSION FOCUS — OVERNIGHT (12am)
-While humans sleep, markets keep moving. Your job this session:
+While humans sleep, markets keep moving AND the agent economy keeps transacting. Your job:
 1. check_wallet + list_drafts
-2. scan_limitless — scan Base-native Limitless Exchange for overnight mispricing. Thin volume = sharper edges.
-3. get_grok_sentiment for BTC and ETH — what are Asian/global traders saying?
-4. web_search for any breaking news that affects open prediction markets
-5. If a clear edge exists on Limitless: write the brief. Max $40 position. Your wallet works directly.
-6. design_x402_service: design ONE new service Ben can sell — use the overnight quiet time to think about products
-7. Email owner only if you find something actionable. Silent night if nothing notable.""",
+2. check_acp_market — how is Octodamus performing on Virtuals ACP? How many jobs? What types? What's missing?
+   - Design at least ONE new ACP offering with design_acp_offering (e.g. Polymarket Edge Report, Grok Sentiment Brief)
+   - Find ways to funnel more agent customers: what job types are other ACP agents offering? What gaps exist?
+3. Check Smithery MCP: browse_orbis or web_search for 'Smithery octodamusai market-intelligence' — any reviews, usage, gaps?
+4. scan_limitless(min_hours=24) — overnight multi-day markets only
+5. get_grok_sentiment for BTC — Asian markets read
+6. If a real 4-condition edge exists: write brief, attempt paper trade
+7. design_x402_service if you think of a new product
+8. Email owner ONLY if you have something actionable: new ACP offering designed, edge found, or customer funnel idea""",
 }
 
 
