@@ -84,7 +84,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
     "AGENT - Octodamus - LunarCrush - API":            "LUNARCRUSH_API_KEY",
     "AGENT - Octodamus - xAI Grok API":               "GROK_API_KEY",
-    "AGENT - Octodamus - Limitless API":              "LIMITLESS_API_KEY",
+    # Limitless loaded separately below (needs both username + password)
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
@@ -225,6 +225,27 @@ def _load_franklin_from_bw() -> dict:
             FRANKLIN_CHAIN_FILE.write_text("base\n", encoding="utf-8")
     except Exception as e:
         print(f"[Bitwarden] Franklin wallet (non-critical): {e}")
+    return secrets
+
+
+def _load_limitless_from_bw() -> dict:
+    """
+    Limitless Exchange API item layout:
+      username -> API token ID   (LIMITLESS_API_KEY)
+      password -> HMAC secret    (LIMITLESS_API_SECRET, base64)
+    """
+    secrets = {}
+    try:
+        item  = _get_item("AGENT - Octodamus - Limitless API")
+        login = item.get("login", {})
+        token_id = login.get("username", "")
+        secret   = login.get("password", "")
+        if token_id:
+            secrets["LIMITLESS_API_KEY"]    = token_id
+        if secret:
+            secrets["LIMITLESS_API_SECRET"] = secret
+    except Exception as e:
+        pass  # non-critical, agent tells Ben how to set it up if missing
     return secrets
 
 
@@ -371,6 +392,15 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     except Exception as _e:
         if verbose:
             print(f"[Bitwarden] CDP API (non-critical): {_e}")
+
+    # Limitless Exchange API (username=token_id, password=secret)
+    limitless = _load_limitless_from_bw()
+    for env_var, value in limitless.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if limitless.get("LIMITLESS_API_KEY") and verbose:
+        print("[Bitwarden] Limitless API loaded")
 
     # Gmail multi-field item
     gmail = _load_gmail_from_bw()

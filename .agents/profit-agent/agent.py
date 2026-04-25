@@ -304,107 +304,171 @@ def tool_scan_limitless(category: str = "crypto") -> str:
         return f"Limitless scan failed: {e}"
 
 
-def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float) -> str:
-    """
-    Place a real bet on Limitless Exchange (Base-native, Ben's wallet works directly).
-    Requires LIMITLESS_API_KEY in secrets. Side: 'YES' or 'NO'. Max $40 USDC.
+def _limitless_headers(token_id: str, secret_b64: str, method: str, path: str, body: str = "") -> dict:
+    """Build HMAC-SHA256 signed headers for Limitless API."""
+    import hmac as _hmac, hashlib, base64
+    from datetime import datetime, timezone
+    timestamp = datetime.now(timezone.utc).isoformat()
+    message   = f"{timestamp}\n{method}\n{path}\n{body}"
+    signature = base64.b64encode(
+        _hmac.new(base64.b64decode(secret_b64), message.encode("utf-8"), hashlib.sha256).digest()
+    ).decode("utf-8")
+    return {
+        "lmts-api-key":    token_id,
+        "lmts-timestamp":  timestamp,
+        "lmts-signature":  signature,
+        "Content-Type":    "application/json",
+    }
 
-    Before calling this: verify the edge is >15% EV using get_octodamus_signal + get_grok_sentiment.
+
+def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, price: float = 0.5) -> str:
+    """
+    Place a real bet on Limitless Exchange (Base, Ben's wallet).
+    Requires LIMITLESS_API_KEY + LIMITLESS_API_SECRET in secrets.
+    side: 'YES' or 'NO'. Max $40 USDC. price: 0.01-0.99 (current YES price).
+
+    Needs TWO keys in Bitwarden 'AGENT - Octodamus - Limitless API':
+      username = API token ID   (lmts-api-key)
+      password = API secret     (base64, for HMAC signing)
+    Plus Ben's wallet private key (FRANKLIN_PRIVATE_KEY, already loaded).
     """
     if size_usdc > 40:
-        return "BLOCKED: Max position size is $40 USDC. Reduce size_usdc."
+        return "BLOCKED: Max $40 USDC per position."
     if side.upper() not in ("YES", "NO"):
-        return "BLOCKED: side must be 'YES' or 'NO'."
+        return "BLOCKED: side must be YES or NO."
+    if not (0.01 <= price <= 0.99):
+        return "BLOCKED: price must be between 0.01 and 0.99."
 
     s = _secrets()
-    api_key    = s.get("LIMITLESS_API_KEY", "")
+    token_id   = s.get("LIMITLESS_API_KEY", "")
+    secret_b64 = s.get("LIMITLESS_API_SECRET", "")
     wallet_key = s.get("FRANKLIN_PRIVATE_KEY", "")
 
-    if not api_key:
+    if not token_id or not secret_b64:
         return (
-            "LIMITLESS_API_KEY not configured. To activate:\n"
-            "1. Go to limitless.exchange and create an account\n"
-            "2. Generate an API key from your profile settings\n"
-            "3. Add to Bitwarden: item 'AGENT - Octodamus - Limitless API', password = key\n"
-            "4. Run octo_unlock.ps1 to load it\n"
-            "Cannot place bet until key is configured."
+            "LIMITLESS_API_KEY / LIMITLESS_API_SECRET not configured.\n\n"
+            "Setup steps:\n"
+            "1. Go to limitless.exchange → create account\n"
+            "2. Profile → API Keys → generate key pair (token ID + secret)\n"
+            "3. In Bitwarden, open 'AGENT - Octodamus - Limitless API':\n"
+            "   username = token ID\n"
+            "   password = secret (base64)\n"
+            "4. Run octo_unlock.ps1 to reload secrets\n"
+            "Cannot place bet until both keys are configured."
         )
     if not wallet_key:
-        return "FRANKLIN_PRIVATE_KEY not in secrets. Cannot sign order."
+        return "FRANKLIN_PRIVATE_KEY not in secrets. Run octo_unlock.ps1."
 
     try:
-        import httpx
+        import httpx, json as _j, random, time
         from eth_account import Account
-        from eth_account.structured_data import encode_structured_data
-        import time, json as _j
+        from eth_account.messages import encode_typed_data
 
         account = Account.from_key(wallet_key)
-        headers = {"lmts-api-key": api_key, "Content-Type": "application/json"}
 
-        # Step 1: Fetch market details
-        r = httpx.get(
-            f"https://api.limitless.exchange/markets/{market_slug}",
-            headers=headers, timeout=10
-        )
+        # Step 1: Fetch market to get positionIds and exchange address
+        path = f"/markets/{market_slug}"
+        hdrs = _limitless_headers(token_id, secret_b64, "GET", path)
+        r = httpx.get(f"https://api.limitless.exchange{path}", headers=hdrs, timeout=10)
         if r.status_code != 200:
-            return f"Market fetch failed: {r.status_code} {r.text[:200]}"
-
+            return f"Market fetch failed ({r.status_code}): {r.text[:200]}"
         market = r.json()
-        exchange_addr = market.get("exchange") or market.get("conditionId")
+
         position_ids  = market.get("positionIds", [])
+        exchange_addr = market.get("venue", {}).get("exchange") or market.get("exchange", "")
+        owner_id      = market.get("ownerId") or market.get("owner", {}).get("id")
 
-        if not position_ids:
-            return f"Market {market_slug} has no positionIds — may not be tradeable via API."
+        if len(position_ids) < 2:
+            return f"Market has no tradeable positions: {_j.dumps(market)[:300]}"
 
-        token_id = position_ids[0] if side.upper() == "YES" else position_ids[1]
-        amount   = int(size_usdc * 1_000_000)  # USDC 6 decimals
-        timestamp = int(time.time())
+        token_id_order = str(position_ids[0] if side.upper() == "YES" else position_ids[1])
+        maker_amount   = int(price * size_usdc * 1_000_000)       # price × size × 1e6
+        taker_amount   = int(size_usdc * 1_000_000)               # size × 1e6
+        salt           = random.randint(1, 2**32)
 
-        # Step 2: Build EIP-712 order
-        order = {
-            "tokenId":  str(token_id),
-            "amount":   str(amount),
-            "side":     side.upper(),
-            "orderType": "FOK",  # Fill or Kill — immediate or cancel
+        # Step 2: EIP-712 order signing
+        order_data = {
+            "salt":         salt,
+            "maker":        account.address,
+            "signer":       account.address,
+            "tokenId":      token_id_order,
+            "makerAmount":  maker_amount,
+            "takerAmount":  taker_amount,
+            "feeRateBps":   0,
+            "side":         0,   # 0 = BUY
+            "signatureType": 2,
         }
 
-        # Step 3: Sign with wallet key
-        msg_hash = Account._hash_eip191_message(
-            (_j.dumps(order, separators=(",",":")) + str(timestamp)).encode()
-        )
-        signed = account.sign_message(msg_hash)
-
-        # Step 4: Submit order
-        payload = {
-            **order,
-            "timestamp": timestamp,
-            "signature": signed.signature.hex(),
-            "signer":    account.address,
+        typed_data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name",    "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Order": [
+                    {"name": "salt",         "type": "uint256"},
+                    {"name": "maker",        "type": "address"},
+                    {"name": "signer",       "type": "address"},
+                    {"name": "tokenId",      "type": "uint256"},
+                    {"name": "makerAmount",  "type": "uint256"},
+                    {"name": "takerAmount",  "type": "uint256"},
+                    {"name": "feeRateBps",   "type": "uint256"},
+                    {"name": "side",         "type": "uint256"},
+                    {"name": "signatureType","type": "uint256"},
+                ],
+            },
+            "domain": {
+                "name":               "Limitless Exchange",
+                "version":            "1",
+                "chainId":            8453,  # Base mainnet
+                "verifyingContract":  exchange_addr,
+            },
+            "primaryType": "Order",
+            "message": {
+                **order_data,
+                "tokenId": int(token_id_order),
+            },
         }
 
-        r2 = httpx.post(
-            "https://api.limitless.exchange/orders",
-            headers=headers, json=payload, timeout=15
+        signed   = account.sign_typed_data(
+            domain_data   = typed_data["domain"],
+            message_types = {"Order": typed_data["types"]["Order"]},
+            message_data  = typed_data["message"],
         )
+        signature = signed.signature.hex()
+
+        # Step 3: Submit order
+        payload = _j.dumps({
+            "order": {**order_data, "signature": signature},
+            "ownerId":    owner_id,
+            "orderType":  "FOK",
+            "marketSlug": market_slug,
+        }, separators=(",", ":"))
+
+        path2 = "/orders"
+        hdrs2 = _limitless_headers(token_id, secret_b64, "POST", path2, payload)
+        r2 = httpx.post(f"https://api.limitless.exchange{path2}", headers=hdrs2, content=payload.encode(), timeout=15)
+
+        # Log trade regardless of outcome
+        log_entry = {
+            "market": market_slug, "side": side, "size_usdc": size_usdc, "price": price,
+            "placed_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+            "status": r2.status_code, "response": r2.text[:300],
+        }
+        trades_file = Path(__file__).parent / "limitless_trades.json"
+        existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
+        existing.append(log_entry)
+        trades_file.write_text(_j.dumps(existing, indent=2))
 
         if r2.status_code in (200, 201):
-            result = r2.json()
-            # Log the trade
-            log_entry = {
-                "market": market_slug, "side": side, "size_usdc": size_usdc,
-                "placed_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
-                "response": result,
-            }
-            trades_file = Path(__file__).parent / "limitless_trades.json"
-            existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
-            existing.append(log_entry)
-            trades_file.write_text(_j.dumps(existing, indent=2))
-            return f"Order placed: {side} ${size_usdc:.2f} on {market_slug}\nResponse: {_j.dumps(result, indent=2)[:300]}"
+            return f"BET PLACED: {side} ${size_usdc:.2f} @ {price} on {market_slug}\n{r2.text[:300]}"
         else:
-            return f"Order failed: {r2.status_code} {r2.text[:300]}"
+            return f"Order rejected ({r2.status_code}): {r2.text[:300]}"
 
     except Exception as e:
-        return f"Bet placement failed: {e}"
+        return f"Bet placement failed: {type(e).__name__}: {e}"
 
 
 def tool_design_x402_service(name: str, description: str, price_usdc: float, what_it_returns: str) -> str:
@@ -667,13 +731,14 @@ TOOLS = [
     },
     {
         "name": "place_limitless_bet",
-        "description": "Place a real bet on Limitless Exchange using Ben's Base wallet. Only call after confirming >15% EV edge with Octodamus signal + Grok sentiment. Max $40 USDC.",
+        "description": "Place a real bet on Limitless Exchange (Base, Ben's wallet). Only call after confirming >15% EV with Octodamus + Grok. Max $40 USDC.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "market_slug": {"type": "string", "description": "Limitless market slug from scan_limitless"},
                 "side":        {"type": "string", "description": "YES or NO"},
                 "size_usdc":   {"type": "number", "description": "Size in USDC, max 40"},
+                "price":       {"type": "number", "description": "Current YES price 0.01-0.99 (from scan_limitless)", "default": 0.5},
             },
             "required": ["market_slug", "side", "size_usdc"],
         },
