@@ -294,10 +294,11 @@ def tool_scan_limitless(category: str = "crypto") -> str:
                 for m in markets[:15]:
                     title  = (m.get("title") or m.get("slug",""))[:75]
                     slug   = m.get("slug","")
-                    prices = m.get("prices", {})
-                    yes    = prices.get("yes") or prices.get("bestAsk","?")
+                    prices = m.get("prices", [])
+                    yes    = prices[0] if isinstance(prices, list) and prices else "?"
                     vol    = m.get("volume") or m.get("collateralVolume") or 0
-                    lines.append(f"  slug={slug} | YES={yes} | Vol=${float(vol or 0):,.0f} | {title}")
+                    exp    = m.get("expirationDate","")[:10] if m.get("expirationDate") else ""
+                    lines.append(f"  slug={slug} | YES={yes} | Vol=${float(vol or 0):,.0f} | exp={exp} | {title}")
                 return "\n".join(lines)
             return f"No active {category} markets. All markets: {len(r.json().get('data',[]))}"
         return f"Limitless API returned {r.status_code}: {r.text[:200]}"
