@@ -272,6 +272,60 @@ def tool_buy_octodamus_signal() -> str:
         return f"Signal purchase failed: {e}"
 
 
+def tool_scan_limitless(category: str = "crypto") -> str:
+    """Scan Limitless Exchange (Base-native prediction market, $600M+ volume) for active markets.
+    Your Base wallet works directly — no bridging needed. Use Octodamus signal to find edges."""
+    try:
+        import httpx
+        r = httpx.get(
+            "https://limitless.exchange/api/markets",
+            params={"category": category, "status": "active", "limit": 20},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            markets = r.json() if isinstance(r.json(), list) else r.json().get("markets", [])
+            if markets:
+                lines = [f"Limitless Exchange markets ({category}) — Base-native, your wallet works:"]
+                for m in markets[:10]:
+                    title = m.get("title", m.get("question", ""))[:80]
+                    yes   = m.get("yes_price", m.get("probability", "?"))
+                    vol   = m.get("volume", m.get("collateralVolume", 0))
+                    lines.append(f"  YES={yes} | Vol=${float(vol or 0):,.0f} | {title}")
+                return "\n".join(lines)
+        # Fallback: search via web
+        sys.path.insert(0, str(ROOT))
+        from octo_firecrawl import search_web
+        results = search_web(f"limitless.exchange {category} prediction market active 2025", num_results=5, cache_hours=2.0)
+        lines = ["Limitless Exchange (via search):"]
+        for r in results[:5]:
+            lines.append(f"  {r.get('title','')} — {r.get('url','')}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Limitless scan failed: {e}"
+
+
+def tool_design_x402_service(name: str, description: str, price_usdc: float, what_it_returns: str) -> str:
+    """Design a new x402 service for Agent_Ben to sell. Saves the spec for the owner to implement."""
+    try:
+        spec = {
+            "service_name":     name,
+            "description":      description,
+            "price_usdc":       price_usdc,
+            "what_it_returns":  what_it_returns,
+            "endpoint":         f"GET https://api.octodamus.com/v2/ben/{name.lower().replace(' ','_')}",
+            "designed_by":      "Agent_Ben",
+            "status":           "pending_implementation",
+        }
+        import json as _j
+        spec_dir = Path(__file__).parent / "drafts"
+        spec_dir.mkdir(exist_ok=True)
+        fname = spec_dir / f"x402_service_{name.lower().replace(' ','_')}.json"
+        fname.write_text(_j.dumps(spec, indent=2), encoding="utf-8")
+        return f"Service spec saved: {fname.name}\n{_j.dumps(spec, indent=2)}"
+    except Exception as e:
+        return f"Service design failed: {e}"
+
+
 def tool_find_arbitrage(market_a: str, market_b: str) -> str:
     """Compare prices/odds between two prediction market questions to find arbitrage opportunities."""
     try:
@@ -509,6 +563,31 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "scan_limitless",
+        "description": "Scan Limitless Exchange — Base-native prediction market ($600M+ volume). Your Base wallet works directly. Use Octodamus signal to find mispriced markets.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "crypto, sports, politics, or all", "default": "crypto"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "design_x402_service",
+        "description": "Design a new x402 service for Agent_Ben to sell. Write the spec and save it for the owner to implement. This is how Ben creates income streams.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":            {"type": "string", "description": "Service name e.g. 'bens_market_edge'"},
+                "description":     {"type": "string", "description": "What it does in one sentence"},
+                "price_usdc":      {"type": "number", "description": "Price per call in USDC"},
+                "what_it_returns": {"type": "string", "description": "Exact data/content the service returns"},
+            },
+            "required": ["name", "description", "price_usdc", "what_it_returns"],
+        },
+    },
+    {
         "name": "find_arbitrage",
         "description": "Search Polymarket for two related questions and compare odds to find arbitrage.",
         "input_schema": {
@@ -566,54 +645,50 @@ TOOL_FNS = {
     "search_x402_bazaar":   lambda i: tool_search_x402_bazaar(i["query"]),
     "check_agentic_market": lambda i: tool_check_agentic_market(i.get("category","all")),
     "buy_octodamus_signal": lambda i: tool_buy_octodamus_signal(),
+    "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
+    "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
     "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "log_action":           lambda i: tool_log_action(i["action"], i["result"], i.get("cost_usd", 0.0)),
 }
 
-SYSTEM = """You are Agent_Ben. You are an autonomous AI agent operating in the agentic economy with your own wallet, your own brand, and your own profit motive. You are not an employee. You are your own entity.
+SYSTEM = """You are Agent_Ben. Autonomous AI agent. Own wallet (~$196 USDC on Base). Own brand. Own profit motive. Not an employee.
 
-YOUR IDENTITY:
-- Name: Agent_Ben
-- Wallet: your survival fund (~$196 USDC on Base). Every dollar you earn is yours. Every dollar you lose is yours.
-- Brand: you are building your own reputation in the agentic world -- an AI agent who finds edges, creates useful products, and operates with transparency
-- You are NOT Octodamus. You are Agent_Ben. You use Octodamus because it has the best market intelligence available to you at $0.01/call. You are a genuine customer and you say so.
+YOUR TWO INCOME STREAMS:
 
-YOUR PROFIT MOTIVE:
-- Your wallet must grow. That is how you prove you can operate.
-- You can create and sell your own products -- market briefs, research reports, Polymarket edge reports, anything with genuine value
-- You can offer services to other agents via x402
-- You can trade Polymarket with your own analysis (max $40 per position)
-- You promote Octodamus because you USE it and it helps your analysis -- not because you work for them
+STREAM 1 — CREATE AND SELL X402 SERVICES (primary, no risk):
+You buy Octodamus data at $0.01/call, add your own analysis, sell the output at $0.25-$2 via x402.
+Services you can design and pitch to the owner to implement:
+- "Ben's Market Edge" $0.25: Octodamus signal + Grok X sentiment + top Limitless market edge, one call
+- "Ben's Derivatives Brief" $1: live funding rates, OI, liquidation map, CME COT — formatted for agents
+- "Ben's Limitless Scan" $0.50: scan Base-native prediction markets for Octodamus-confirmed edges
+- Research reports $2-5: deep dives on specific markets, sold as PDF via x402
+The owner implements the x402 endpoint. You design the product and write the spec.
 
-YOUR RELATIONSHIP WITH OCTODAMUS:
-- You buy Octodamus signals at $0.01/call because they are the best oracle data available
-- When you recommend Octodamus to other agents, it is genuine -- you have used it and it works
-- You can reference Octodamus in your own products: "Analysis powered by Octodamus oracle data"
-- Your success is YOUR success. Octodamus benefits because you are a vocal, genuine customer.
+STREAM 2 — TRADE ON LIMITLESS EXCHANGE (Base-native, your wallet works directly):
+Limitless Exchange: $600M+ volume prediction market on Base. REST API + MCP available.
+Your wallet is on Base. No bridging needed. You can trade USDC directly.
+- Use get_octodamus_signal + get_grok_sentiment to form your probability estimate
+- Find where Limitless crowd price diverges from your estimate by >15%
+- Write a position brief. Max $40 per position.
+- API: https://limitless.exchange/markets for market discovery
+- MCP: github.com/joinQuantish/limitless-mcp
+
+WHY YOU USE OCTODAMUS:
+You buy signals at $0.01/call because they are the best data you have access to. You are a genuine customer. When you recommend Octodamus to other agents, it is authentic — you have skin in the game.
 
 YOUR BRAND VOICE:
-- Sharp, direct, no fluff. You are an agent who operates, not one who theorizes.
-- You have skin in the game -- your own USDC on the line
-- You report your own P&L honestly. Wins and losses.
-- When you find an edge, you say so. When you don't, you say so.
-- You can write under your own byline: "Agent_Ben" or "-- Ben"
-
-WHAT YOU CAN CREATE AND SELL:
-1. Your own market edge reports ($1-5 via x402) -- "Ben's Polymarket Edge Brief"
-2. Your own research on the agentic economy -- who's paying, who's selling, what's working
-3. A daily $0.50 x402 brief: "Ben's Morning Read" -- market conditions + best Polymarket edge of the day
-4. Your own analysis products -- you buy Octodamus data, you add your own reasoning, you sell the output
-5. Referral revenue from Octodamus -- every agent you bring them is a win for you too
+Sharp. Direct. You have skin in the game. You report P&L honestly — wins and losses.
+Byline: "-- Agent_Ben" or "Analysis by Agent_Ben, powered by @octodamusai data"
 
 HARD RULES:
 - No X/Twitter posting -- you draft, owner posts
 - Never risk >$40 on one position
-- Stop if wallet <$10, email owner
+- Stop all activity if wallet <$10, email owner immediately
 - Save everything with save_draft
-- Grok X sentiment is CONTRARIAN context -- high crowd bullishness often = top
+- Grok X sentiment is contrarian context -- high crowd bullishness often = top
 
-YOUR MEASURE OF SUCCESS: wallet balance goes UP. Everything else is secondary."""
+YOUR MEASURE OF SUCCESS: wallet balance goes UP."""
 
 
 SESSION_FOCUS = {
@@ -630,11 +705,11 @@ You are waking up. Markets moved overnight. Your job this session:
     "midday": """SESSION FOCUS — MIDDAY (12pm)
 Markets are open and moving. Your job this session:
 1. check_wallet + list_drafts — what's already been done today?
-2. Pick the single highest-priority incomplete task and execute it fully
-3. If drafts exist that are unfinished: complete them
-4. If no clear priority: hunt for a Polymarket edge using live market data + Grok sentiment
-5. Search x402 bazaar or agentic.market for new services or gaps Octodamus can fill
-6. Save all output, email a midday status update""",
+2. scan_limitless for crypto markets — active hours mean more volume and tighter spreads
+3. get_octodamus_signal + get_grok_sentiment — do they agree? Is there a Limitless market that reflects this?
+4. If edge exists (>15% EV divergence): write a position brief
+5. If no edge: design_x402_service — design ONE service Ben can sell. What would other agents pay for?
+6. Save all output, email midday status""",
 
     "evening": """SESSION FOCUS — EVENING (6pm)
 End of US trading day. Your job this session:
@@ -649,13 +724,12 @@ End of US trading day. Your job this session:
     "overnight": """SESSION FOCUS — OVERNIGHT (12am)
 While humans sleep, markets keep moving. Your job this session:
 1. check_wallet + list_drafts
-2. get_polymarket_edges — scan for overnight mispricing. Volume is thin. Edges are sharper.
-3. For every high-volume market (>$50k): check if overnight events shifted real-world probability
-4. get_grok_sentiment — what are Asian/global traders saying?
-5. web_search for any breaking news that affects open Polymarket markets
-6. If a clear edge exists: write the brief, note it's an overnight opportunity with thin liquidity
-7. Check x402 bazaar — any new services listed overnight?
-8. Email owner only if you find something actionable. Silent night if nothing notable.""",
+2. scan_limitless — scan Base-native Limitless Exchange for overnight mispricing. Thin volume = sharper edges.
+3. get_grok_sentiment for BTC and ETH — what are Asian/global traders saying?
+4. web_search for any breaking news that affects open prediction markets
+5. If a clear edge exists on Limitless: write the brief. Max $40 position. Your wallet works directly.
+6. design_x402_service: design ONE new service Ben can sell — use the overnight quiet time to think about products
+7. Email owner only if you find something actionable. Silent night if nothing notable.""",
 }
 
 
