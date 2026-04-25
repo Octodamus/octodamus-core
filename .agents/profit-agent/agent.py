@@ -622,6 +622,50 @@ def tool_place_kalshi_bet(ticker: str, side: str, count: int, yes_price_cents: i
         return f"Kalshi bet failed: {type(e).__name__}: {e}"
 
 
+def tool_browse_orbis(query: str = "", category: str = "") -> str:
+    """
+    Browse OrbisAPI marketplace -- 5,873 APIs, x402 + Stripe payments.
+    Find data sources Ben can buy from. Free discovery, no key needed.
+    Use to find competitors, complementary data, or gaps Octodamus fills.
+    """
+    try:
+        import httpx, json as _j
+        r = httpx.get("https://orbisapi.com/api/agents/discovery?format=json", timeout=10)
+        if r.status_code != 200:
+            return f"Orbis discovery failed: {r.status_code}"
+        d = r.json()
+        catalogue = d.get("catalogue", [])
+        total = d.get("totalApis", len(catalogue))
+
+        # Filter by query or category
+        if query or category:
+            filtered = []
+            for api in catalogue:
+                name = str(api.get("name","")).lower()
+                desc = str(api.get("description","")).lower()
+                cat  = str(api.get("category",{})).lower()
+                if query.lower() in name+desc+cat or category.lower() in cat:
+                    filtered.append(api)
+        else:
+            filtered = catalogue[:20]
+
+        lines = [f"OrbisAPI Marketplace ({total} total APIs, x402 + Stripe):"]
+        for api in filtered[:15]:
+            name    = api.get("name","?")
+            cat     = api.get("category",{})
+            cat_name = cat.get("name","?") if isinstance(cat, dict) else str(cat)
+            has_free = api.get("hasFree", False)
+            x402    = api.get("supportsX402", False)
+            desc    = str(api.get("description",""))[:80]
+            lines.append(f"  {name} | {cat_name} | free={has_free} x402={x402} | {desc}")
+
+        if not filtered:
+            lines.append(f"No results for '{query}'. Try: finance, crypto, data, weather, sports")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Orbis browse failed: {e}"
+
+
 def tool_buy_x402_service(url: str, max_price_usdc: float = 1.0) -> str:
     """
     Buy a service from any x402 endpoint using Ben's Franklin wallet (Base USDC).
@@ -1077,6 +1121,18 @@ TOOLS = [
         },
     },
     {
+        "name": "browse_orbis",
+        "description": "Browse OrbisAPI marketplace (5,873 APIs, x402 native). Find data to buy, check competitors, spot gaps. No key needed for discovery.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query":    {"type": "string", "description": "Search term e.g. 'crypto price', 'sentiment', 'weather'", "default": ""},
+                "category": {"type": "string", "description": "Filter by category e.g. 'finance', 'data', 'sports'", "default": ""},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "buy_x402_service",
         "description": "Buy any x402 service using Ben's Franklin wallet (Base USDC, EIP-3009 signing). Use for Octodamus premium signal ($0.01), Nansen data ($0.01), or any x402 endpoint. Max $1 default.",
         "input_schema": {
@@ -1164,6 +1220,7 @@ TOOL_FNS = {
     "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
     "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
+    "browse_orbis":         lambda i: tool_browse_orbis(i.get("query",""), i.get("category","")),
     "buy_x402_service":     lambda i: tool_buy_x402_service(i["url"], float(i.get("max_price_usdc", 1.0))),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
     "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
