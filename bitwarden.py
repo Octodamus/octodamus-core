@@ -84,6 +84,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
     "AGENT - Octodamus - LunarCrush - API":            "LUNARCRUSH_API_KEY",
     "AGENT - Octodamus - xAI Grok API":               "GROK_API_KEY",
+    "AGENT - Octodamus - Limitless API":              "LIMITLESS_API_KEY",
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {

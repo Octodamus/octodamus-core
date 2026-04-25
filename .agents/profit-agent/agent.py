@@ -304,6 +304,109 @@ def tool_scan_limitless(category: str = "crypto") -> str:
         return f"Limitless scan failed: {e}"
 
 
+def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float) -> str:
+    """
+    Place a real bet on Limitless Exchange (Base-native, Ben's wallet works directly).
+    Requires LIMITLESS_API_KEY in secrets. Side: 'YES' or 'NO'. Max $40 USDC.
+
+    Before calling this: verify the edge is >15% EV using get_octodamus_signal + get_grok_sentiment.
+    """
+    if size_usdc > 40:
+        return "BLOCKED: Max position size is $40 USDC. Reduce size_usdc."
+    if side.upper() not in ("YES", "NO"):
+        return "BLOCKED: side must be 'YES' or 'NO'."
+
+    s = _secrets()
+    api_key    = s.get("LIMITLESS_API_KEY", "")
+    wallet_key = s.get("FRANKLIN_PRIVATE_KEY", "")
+
+    if not api_key:
+        return (
+            "LIMITLESS_API_KEY not configured. To activate:\n"
+            "1. Go to limitless.exchange and create an account\n"
+            "2. Generate an API key from your profile settings\n"
+            "3. Add to Bitwarden: item 'AGENT - Octodamus - Limitless API', password = key\n"
+            "4. Run octo_unlock.ps1 to load it\n"
+            "Cannot place bet until key is configured."
+        )
+    if not wallet_key:
+        return "FRANKLIN_PRIVATE_KEY not in secrets. Cannot sign order."
+
+    try:
+        import httpx
+        from eth_account import Account
+        from eth_account.structured_data import encode_structured_data
+        import time, json as _j
+
+        account = Account.from_key(wallet_key)
+        headers = {"lmts-api-key": api_key, "Content-Type": "application/json"}
+
+        # Step 1: Fetch market details
+        r = httpx.get(
+            f"https://api.limitless.exchange/markets/{market_slug}",
+            headers=headers, timeout=10
+        )
+        if r.status_code != 200:
+            return f"Market fetch failed: {r.status_code} {r.text[:200]}"
+
+        market = r.json()
+        exchange_addr = market.get("exchange") or market.get("conditionId")
+        position_ids  = market.get("positionIds", [])
+
+        if not position_ids:
+            return f"Market {market_slug} has no positionIds — may not be tradeable via API."
+
+        token_id = position_ids[0] if side.upper() == "YES" else position_ids[1]
+        amount   = int(size_usdc * 1_000_000)  # USDC 6 decimals
+        timestamp = int(time.time())
+
+        # Step 2: Build EIP-712 order
+        order = {
+            "tokenId":  str(token_id),
+            "amount":   str(amount),
+            "side":     side.upper(),
+            "orderType": "FOK",  # Fill or Kill — immediate or cancel
+        }
+
+        # Step 3: Sign with wallet key
+        msg_hash = Account._hash_eip191_message(
+            (_j.dumps(order, separators=(",",":")) + str(timestamp)).encode()
+        )
+        signed = account.sign_message(msg_hash)
+
+        # Step 4: Submit order
+        payload = {
+            **order,
+            "timestamp": timestamp,
+            "signature": signed.signature.hex(),
+            "signer":    account.address,
+        }
+
+        r2 = httpx.post(
+            "https://api.limitless.exchange/orders",
+            headers=headers, json=payload, timeout=15
+        )
+
+        if r2.status_code in (200, 201):
+            result = r2.json()
+            # Log the trade
+            log_entry = {
+                "market": market_slug, "side": side, "size_usdc": size_usdc,
+                "placed_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+                "response": result,
+            }
+            trades_file = Path(__file__).parent / "limitless_trades.json"
+            existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
+            existing.append(log_entry)
+            trades_file.write_text(_j.dumps(existing, indent=2))
+            return f"Order placed: {side} ${size_usdc:.2f} on {market_slug}\nResponse: {_j.dumps(result, indent=2)[:300]}"
+        else:
+            return f"Order failed: {r2.status_code} {r2.text[:300]}"
+
+    except Exception as e:
+        return f"Bet placement failed: {e}"
+
+
 def tool_design_x402_service(name: str, description: str, price_usdc: float, what_it_returns: str) -> str:
     """Design a new x402 service for Agent_Ben to sell. Saves the spec for the owner to implement."""
     try:
@@ -563,6 +666,19 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "place_limitless_bet",
+        "description": "Place a real bet on Limitless Exchange using Ben's Base wallet. Only call after confirming >15% EV edge with Octodamus signal + Grok sentiment. Max $40 USDC.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "market_slug": {"type": "string", "description": "Limitless market slug from scan_limitless"},
+                "side":        {"type": "string", "description": "YES or NO"},
+                "size_usdc":   {"type": "number", "description": "Size in USDC, max 40"},
+            },
+            "required": ["market_slug", "side", "size_usdc"],
+        },
+    },
+    {
         "name": "scan_limitless",
         "description": "Scan Limitless Exchange — Base-native prediction market ($600M+ volume). Your Base wallet works directly. Use Octodamus signal to find mispriced markets.",
         "input_schema": {
@@ -645,6 +761,7 @@ TOOL_FNS = {
     "search_x402_bazaar":   lambda i: tool_search_x402_bazaar(i["query"]),
     "check_agentic_market": lambda i: tool_check_agentic_market(i.get("category","all")),
     "buy_octodamus_signal": lambda i: tool_buy_octodamus_signal(),
+    "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
     "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
     "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
