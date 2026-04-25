@@ -321,21 +321,23 @@ def _limitless_headers(token_id: str, secret_b64: str, method: str, path: str, b
     }
 
 
+_PAPER_MODE = True   # Set False only after paper trades confirm integration works
+
+
 def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, price: float = 0.5) -> str:
     """
-    Place a real bet on Limitless Exchange (Base, Ben's wallet).
-    Requires LIMITLESS_API_KEY + LIMITLESS_API_SECRET in secrets.
-    side: 'YES' or 'NO'. Max $40 USDC. price: 0.01-0.99 (current YES price).
+    Place a bet on Limitless Exchange. PAPER MODE is ON by default.
+    In paper mode: validates everything, logs the trade, but sends NO real order.
+    Real mode activates when _PAPER_MODE = False (owner sets this after verifying paper trades).
 
-    Needs TWO keys in Bitwarden 'AGENT - Octodamus - Limitless API':
-      username = API token ID   (lmts-api-key)
-      password = API secret     (base64, for HMAC signing)
-    Plus Ben's wallet private key (FRANKLIN_PRIVATE_KEY, already loaded).
+    side: 'YES' or 'NO'. Max $40 USDC. price: 0.01-0.99 (current YES price).
     """
     if size_usdc > 40:
         return "BLOCKED: Max $40 USDC per position."
     if side.upper() not in ("YES", "NO"):
         return "BLOCKED: side must be YES or NO."
+    if not (0.01 <= price <= 0.99):
+        return "BLOCKED: price must be 0.01-0.99."
     if not (0.01 <= price <= 0.99):
         return "BLOCKED: price must be between 0.01 and 0.99."
 
@@ -439,7 +441,7 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
         )
         signature = signed.signature.hex()
 
-        # Step 3: Submit order
+        # Build payload (same whether paper or live)
         payload = _j.dumps({
             "order": {**order_data, "signature": signature},
             "ownerId":    owner_id,
@@ -447,12 +449,35 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
             "marketSlug": market_slug,
         }, separators=(",", ":"))
 
+        # ── PAPER MODE ────────────────────────────────────────────────
+        if _PAPER_MODE:
+            log_entry = {
+                "paper":      True,
+                "market":     market_slug, "side": side,
+                "size_usdc":  size_usdc,   "price": price,
+                "ev_implied": round((1 / price - 1) * 100, 1),
+                "placed_at":  time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+                "wallet":     account.address,
+                "payload_preview": payload[:200],
+            }
+            trades_file = Path(__file__).parent / "limitless_trades.json"
+            existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
+            existing.append(log_entry)
+            trades_file.write_text(_j.dumps(existing, indent=2))
+            return (
+                f"[PAPER TRADE] {side} ${size_usdc:.2f} @ {price} on {market_slug}\n"
+                f"Implied EV: +{log_entry['ev_implied']}% if correct\n"
+                f"Signing worked. Payload built. Order NOT submitted (paper mode).\n"
+                f"Review limitless_trades.json. When satisfied, set _PAPER_MODE = False."
+            )
+
+        # ── LIVE MODE ─────────────────────────────────────────────────
         path2 = "/orders"
         hdrs2 = _limitless_headers(token_id, secret_b64, "POST", path2, payload)
         r2 = httpx.post(f"https://api.limitless.exchange{path2}", headers=hdrs2, content=payload.encode(), timeout=15)
 
-        # Log trade regardless of outcome
         log_entry = {
+            "paper": False,
             "market": market_slug, "side": side, "size_usdc": size_usdc, "price": price,
             "placed_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
             "status": r2.status_code, "response": r2.text[:300],
@@ -463,7 +488,7 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
         trades_file.write_text(_j.dumps(existing, indent=2))
 
         if r2.status_code in (200, 201):
-            return f"BET PLACED: {side} ${size_usdc:.2f} @ {price} on {market_slug}\n{r2.text[:300]}"
+            return f"BET PLACED (LIVE): {side} ${size_usdc:.2f} @ {price} on {market_slug}\n{r2.text[:300]}"
         else:
             return f"Order rejected ({r2.status_code}): {r2.text[:300]}"
 
@@ -881,7 +906,7 @@ TOOLS = [
     },
     {
         "name": "place_limitless_bet",
-        "description": "Place a real bet on Limitless Exchange (Base, Ben's wallet). Only call after confirming >15% EV with Octodamus + Grok. Max $40 USDC.",
+        "description": "Place a bet on Limitless Exchange. PAPER MODE is ON -- validates and logs but sends no real order. Use freely to test edges. Owner flips to live when ready.",
         "input_schema": {
             "type": "object",
             "properties": {
