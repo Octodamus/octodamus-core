@@ -272,21 +272,39 @@ def tool_buy_octodamus_signal() -> str:
         return f"Signal purchase failed: {e}"
 
 
-def tool_scan_limitless(category: str = "crypto") -> str:
-    """Scan Limitless Exchange using authenticated API (avoids Cloudflare block)."""
+def tool_scan_limitless(category: str = "crypto", min_hours: int = 0) -> str:
+    """
+    Scan Limitless Exchange active markets.
+    min_hours: only show markets expiring at least this many hours from now.
+    Use min_hours=24 to filter out same-day markets (proven dead end).
+    """
     try:
         import httpx
-        s = _secrets()
-        token_id   = s.get("LIMITLESS_API_KEY", "")
-        secret_b64 = s.get("LIMITLESS_API_SECRET", "")
+        from datetime import datetime, timezone, timedelta
 
-        # Public endpoint — no auth needed, no Cloudflare block
         r = httpx.get("https://api.limitless.exchange/markets/active", timeout=10)
 
         if r.status_code == 200:
             markets = r.json().get("data", [])
-            # Filter by category keyword if specified
-            if category.lower() not in ("all", ""):
+            now = datetime.now(timezone.utc)
+
+            # Filter by expiry if min_hours specified
+            if min_hours > 0:
+                cutoff = now + timedelta(hours=min_hours)
+                filtered = []
+                for m in markets:
+                    exp = m.get("expirationDate") or m.get("expirationTimestamp","")
+                    try:
+                        if exp:
+                            exp_dt = datetime.fromisoformat(exp.replace("Z","+00:00"))
+                            if exp_dt > cutoff:
+                                filtered.append(m)
+                    except Exception:
+                        pass
+                markets = filtered
+
+            # Filter by category keyword
+            if category.lower() not in ("all", "crypto", ""):
                 markets = [m for m in markets if category.lower() in str(m.get("tags","")).lower()
                            or category.lower() in str(m.get("title","")).lower()]
             if markets:
@@ -1112,11 +1130,12 @@ TOOLS = [
     },
     {
         "name": "scan_limitless",
-        "description": "Scan Limitless Exchange — Base-native prediction market ($600M+ volume). Your Base wallet works directly. Use Octodamus signal to find mispriced markets.",
+        "description": "Scan Limitless markets. ALWAYS use min_hours=24 to skip same-day markets -- they lock before you can trade (proven dead end, Session 14). Focus on multi-day markets.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "crypto, sports, politics, or all", "default": "crypto"},
+                "category":  {"type": "string",  "description": "crypto, sports, politics, or all", "default": "crypto"},
+                "min_hours": {"type": "integer", "description": "Only show markets expiring this many hours from now. Default 24 to skip same-day.", "default": 24},
             },
             "required": [],
         },
@@ -1220,7 +1239,7 @@ TOOL_FNS = {
     "scan_kalshi":          lambda i: tool_scan_kalshi(i.get("series", "KXBTC")),
     "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
-    "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
+    "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto"), int(i.get("min_hours",24))),
     "browse_orbis":         lambda i: tool_browse_orbis(i.get("query",""), i.get("category","")),
     "buy_x402_service":     lambda i: tool_buy_x402_service(i["url"], float(i.get("max_price_usdc", 1.0))),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
@@ -1292,19 +1311,25 @@ You are waking up. Markets moved overnight. Your job this session:
 1. check_wallet + list_drafts first (orient yourself)
 2. get_market_data for BTC, ETH, SOL — what happened overnight?
 3. get_grok_sentiment for BTC — what is X saying this morning?
-4. get_polymarket_edges — any overnight price shifts creating fresh edges?
-5. If you find a clear Polymarket edge (EV >15%, real-world probability clearly diverges): write a position brief and save it
-6. Draft one Octodamus X post based on the morning market read — save as morning_post_[date].md
-7. Email owner: overnight summary + any edge found + post draft""",
+4. scan_limitless — MULTI-DAY MARKETS ONLY. Filter by expirationDate > 24h from now.
+   SKIP all same-day markets — they lock before you can trade them (proven dead end, Session 14).
+   Look for markets expiring tomorrow or later where Octodamus signal gives you a directional edge.
+5. get_polymarket_edges — any overnight shifts creating edges on multi-day markets?
+6. Edge criteria: EV >15%, expiry >24h, real asset price diverges from market probability.
+   If found: write position brief, attempt place_limitless_bet (paper mode).
+7. design_x402_service — zero-risk compounding income. One new service idea per morning.
+8. Draft morning X post — save as morning_post_[date].md
+9. Email owner: market read, any multi-day edge found + paper trade, service designed""",
 
     "midday": """SESSION FOCUS — MIDDAY (12pm)
-Markets are open and moving. Your job this session:
-1. check_wallet + list_drafts — what's already been done today?
-2. scan_limitless for crypto markets — active hours mean more volume and tighter spreads
-3. get_octodamus_signal + get_grok_sentiment — do they agree? Is there a Limitless market that reflects this?
-4. If edge exists (>15% EV divergence): write a position brief
-5. If no edge: design_x402_service — design ONE service Ben can sell. What would other agents pay for?
-6. Save all output, email midday status""",
+Markets are open. Your job this session:
+1. check_wallet + list_drafts — what's been done today?
+2. DO NOT chase same-day Limitless markets — they lock by midday (proven dead end, Session 14).
+3. get_octodamus_signal + get_grok_sentiment — direction read.
+4. scan_limitless for markets expiring TOMORROW or later. Multi-day only.
+5. If no multi-day Limitless edge: check get_polymarket_edges for longer-duration markets.
+6. design_x402_service OR buy_x402_service — either design a product or buy data to improve analysis.
+7. Save all output, email midday status""",
 
     "evening": """SESSION FOCUS — EVENING (6pm)
 End of US trading day. Your job this session:
