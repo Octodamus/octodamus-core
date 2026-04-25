@@ -700,6 +700,61 @@ def purge_stale_queue() -> int:
     return dropped
 
 
+def _telegram_reply_alert(post_text: str, tweet_url: str, post_type: str = "") -> None:
+    """
+    After a post goes live on X, send 5 reply draft options to owner's Telegram.
+    Owner picks one, replies from phone — boosts reach via mobile engagement signal.
+    """
+    try:
+        import json as _j, httpx as _hx, anthropic as _ant
+        from pathlib import Path as _P
+
+        s_raw = _j.loads(_P(__file__).parent.joinpath(".octo_secrets").read_text(encoding="utf-8"))
+        s     = s_raw.get("secrets", s_raw)
+        token   = s.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = s.get("TELEGRAM_CHAT_ID", "830070048")
+
+        if not token:
+            return
+
+        # Generate 5 reply options using Haiku
+        client = _ant.Anthropic(api_key=s.get("ANTHROPIC_API_KEY", ""))
+        prompt = (
+            f"This post was just published on X by @octodamusai:\n\n\"{post_text}\"\n\n"
+            "Write exactly 5 short reply options the account owner can choose from to reply from their phone. "
+            "Each reply adds value: one adds context, one is contrarian, one asks a sharp question, "
+            "one gives a specific number or data point, one is a dry one-liner. "
+            "Replies must be under 100 chars each. No hashtags. No emojis unless it's just one at the end. "
+            "Octodamus voice: dry, precise, confident. "
+            "Format: just the 5 replies numbered 1-5, nothing else."
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        replies = resp.content[0].text.strip()
+
+        msg = (
+            f"📤 Posted to X [{post_type}]\n"
+            f"{tweet_url}\n\n"
+            f"─────────────────\n"
+            f"{post_text[:200]}{'...' if len(post_text)>200 else ''}\n\n"
+            f"─────────────────\n"
+            f"Reply from phone — pick one:\n\n"
+            f"{replies}"
+        )
+
+        _hx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "disable_web_page_preview": True},
+            timeout=8,
+        )
+        print(f"[OctoPoster] Telegram reply alert sent.")
+    except Exception as _te:
+        print(f"[OctoPoster] Telegram reply alert failed: {_te}")
+
+
 def process_queue(max_posts: int = 1, force: bool = False) -> int:
     purge_stale_queue()
     if not force and not _should_post_now():
@@ -767,6 +822,7 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
             _save_queue(queue)
             posted_count += 1
             _discord_notify(entry["text"], entry["type"], tweet_url)
+            _telegram_reply_alert(entry["text"], tweet_url, entry["type"])
 
         except Exception as e:
             err = str(e)
