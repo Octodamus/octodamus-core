@@ -1150,6 +1150,50 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ── Main ────────────────────────────────────────────────────────────────────────
 
+async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Return the user's chat ID — needed to configure Telegram alerts."""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(
+        f"Your chat ID: `{chat_id}`\n\nAdd this to Bitwarden:\nAGENT - Octodamus - Control - Telegram → username field",
+        parse_mode="Markdown"
+    )
+
+
+async def ben_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show Agent_Ben's latest session summary."""
+    try:
+        import json
+        from pathlib import Path as _P
+        state_file = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\state.json")
+        log_file   = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\agent_session.log")
+
+        state    = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+        sessions = state.get("sessions", 0)
+        last_run = state.get("last_run", "never")
+        dead     = state.get("dead", False)
+
+        last_log = ""
+        if log_file.exists():
+            for line in reversed(log_file.read_text(encoding="utf-8").strip().split("\n")):
+                if line.startswith("[") and "Session #" not in line and len(line) > 20:
+                    last_log = line[:280]
+                    break
+
+        drafts_dir = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\drafts")
+        drafts = sorted(drafts_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:3] if drafts_dir.exists() else []
+
+        msg = (
+            f"*Agent Ben — Session #{sessions}*\n"
+            f"Last run: {last_run}\n"
+            f"Status: {'DEAD ⚠️' if dead else 'Active ✅'}\n\n"
+            f"*Last action:*\n{last_log or 'No recent activity'}\n\n"
+            f"*Recent drafts:*\n" + ("\n".join(f"• {d.stem}" for d in drafts) or "None yet")
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Ben status: {e}")
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -1175,6 +1219,8 @@ def main() -> None:
     app.add_handler(CommandHandler("feeds",     feeds_command))
     app.add_handler(CommandHandler("boto",         boto_command))
     app.add_handler(CommandHandler("correlations", correlations_command))
+    app.add_handler(CommandHandler("myid",      myid_command))
+    app.add_handler(CommandHandler("ben",       ben_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
