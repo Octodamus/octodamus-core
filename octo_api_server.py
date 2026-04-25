@@ -328,9 +328,15 @@ _X402_REQ_DERIV_GUIDE = PaymentRequirements(
     amount="3000000", pay_to=_X402_TREASURY, max_timeout_seconds=3600,
     extra=_USDC_EXTRA,
 )
+_X402_REQ_BEN_50CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="500000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
 _X402_REQS             = [_X402_REQ_MICRO, _X402_REQ_TRIAL, _X402_REQ_ANNUAL]
 _X402_REQS_GUIDE       = [_X402_REQ_GUIDE]
 _X402_REQS_DERIV_GUIDE = [_X402_REQ_DERIV_GUIDE]
+_X402_REQS_BEN_50CENT  = [_X402_REQ_BEN_50CENT]
 _X402_REQS_API         = [_X402_REQ_ANNUAL]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
@@ -1673,6 +1679,16 @@ def well_known_x402():
                     {"product": "premium_annual",  "amount_usdc": 29.0,  "description": "365 days, 10k req/day"},
                 ],
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
+            },
+            {
+                "path":        "/v2/ben/sentiment-divergence",
+                "method":      "GET",
+                "description": "Agent_Ben's Sentiment Divergence Scanner — Fear & Greed vs X crowd sentiment for BTC/ETH/SOL. Divergence score + CONTRARIAN BEAR/BULL/ALIGNED signal. $0.50 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.50, "description": "Single call, instant result."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/sentiment-divergence/preview",
+                "designer": "Agent_Ben",
             },
             {
                 "path":        "/v2/guide/derivatives",
@@ -4110,6 +4126,128 @@ def derivatives_guide_preview():
             "asset_mgr_cme":    "net long 5,261 contracts",
         },
         "by": "Octodamus (@octodamusai) · api.octodamus.com",
+    }
+
+
+# -- Ben's Sentiment Divergence Scanner ($0.50 USDC x402) --------------------
+# Designed by Agent_Ben. Detects Fear & Greed vs X crowd sentiment divergence.
+# When the crowd is bullish but fear index is low, or bearish but greed is high,
+# that divergence historically precedes reversals. Agent_Ben's primary signal.
+
+@app.get("/v2/ben/sentiment-divergence", tags=["Agent_Ben Services"])
+def ben_sentiment_divergence(request: Request):
+    """
+    Agent_Ben's Sentiment Divergence Scanner — $0.50 USDC on Base.
+    Detects dangerous divergences between Fear & Greed index and X/Twitter
+    crowd sentiment for BTC, ETH, SOL. High divergence = contrarian signal.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.50),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "Agent_Ben Sentiment Divergence Scanner",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.50,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "preview":     "GET https://api.octodamus.com/v2/ben/sentiment-divergence/preview",
+                "description": "Fear & Greed vs X crowd sentiment divergence for BTC/ETH/SOL. Divergence score 0-100. CONTRARIAN BEAR/BULL/ALIGNED signal.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_50CENT)
+
+    # Fetch data
+    try:
+        import httpx as _hx
+        # Fear & Greed
+        fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+        fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+        fg_lbl = fg_r.json()["data"][0].get("value_classification","Unknown") if fg_r.status_code == 200 else "Unknown"
+    except Exception:
+        fg_val, fg_lbl = 50, "Unknown"
+
+    from financial_data_client import get_crypto_prices
+    prices = get_crypto_prices(["BTC","ETH","SOL"])
+
+    assets = []
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        for asset in ["BTC","ETH","SOL"]:
+            gs  = get_grok_sentiment(asset)
+            p   = prices.get(asset, {})
+            # Divergence: crowd bullish (>60%) but fear low (<40) = CONTRARIAN BEAR
+            #             crowd bearish (<40%) but greed high (>60) = CONTRARIAN BULL
+            crowd_bull = gs.get("signal") == "BULLISH"
+            crowd_conf = gs.get("confidence", 0)
+            div_score  = int(abs(crowd_conf * 100 - fg_val))
+            if crowd_bull and fg_val < 45:
+                interpretation = "CONTRARIAN BEAR"
+                implication    = f"Crowd is {crowd_conf:.0%} bullish but Fear & Greed sits at {fg_val}. Historical pattern: crowd gets burned. Watch for reversal."
+            elif not crowd_bull and fg_val > 55:
+                interpretation = "CONTRARIAN BULL"
+                implication    = f"Crowd is bearish but greed at {fg_val}. Smart money diverging from retail. Watch for squeeze."
+            elif abs(crowd_conf * 100 - fg_val) < 15:
+                interpretation = "ALIGNED"
+                implication    = "Crowd and fear index agree. No divergence edge. Wait for separation."
+            else:
+                interpretation = "NEUTRAL"
+                implication    = "Moderate divergence. Not actionable yet."
+
+            assets.append({
+                "asset":           asset,
+                "price_usd":       p.get("usd", 0),
+                "change_24h":      p.get("usd_24h_change", 0),
+                "fear_greed":      fg_val,
+                "fear_greed_label": fg_lbl,
+                "grok_signal":     gs.get("signal","NEUTRAL"),
+                "grok_confidence": gs.get("confidence", 0),
+                "crowd_summary":   gs.get("summary","")[:150],
+                "divergence_score": div_score,
+                "interpretation":  interpretation,
+                "implication":     implication,
+            })
+    except Exception as e:
+        return {"error": str(e), "designer": "Agent_Ben"}
+
+    return {
+        "product":   "bens_sentiment_divergence_scanner",
+        "designer":  "Agent_Ben — octodamusai.com",
+        "timestamp": datetime.utcnow().isoformat(),
+        "assets":    assets,
+        "methodology": "Divergence between X/Twitter crowd sentiment (Grok real-time) and Fear & Greed index. High divergence = crowd is wrong = contrarian opportunity.",
+    }
+
+
+@app.get("/v2/ben/sentiment-divergence/preview", tags=["Agent_Ben Services"])
+def ben_sentiment_divergence_preview():
+    """Free preview — shows methodology and sample output structure."""
+    return {
+        "product":   "bens_sentiment_divergence_scanner",
+        "price_usdc": 0.50,
+        "buy":       "GET https://api.octodamus.com/v2/ben/sentiment-divergence (x402 $0.50 USDC)",
+        "designed_by": "Agent_Ben — autonomous AI agent in the Octodamus ecosystem",
+        "what_it_does": "Detects when X/Twitter crowd sentiment diverges from Fear & Greed index. High divergence historically precedes reversals.",
+        "assets_covered": ["BTC","ETH","SOL"],
+        "output_fields": ["price_usd","fear_greed","grok_signal","grok_confidence","divergence_score","interpretation","implication"],
+        "interpretations": {
+            "CONTRARIAN_BEAR": "Crowd bullish but fear index low — crowd historically gets burned here",
+            "CONTRARIAN_BULL": "Crowd bearish but greed high — squeeze risk, smart money diverging",
+            "ALIGNED":         "No divergence — wait for separation",
+            "NEUTRAL":         "Moderate divergence — not yet actionable",
+        },
+        "powered_by": "Grok real-time X data + Octodamus oracle + alternative.me Fear & Greed",
     }
 
 
