@@ -273,33 +273,39 @@ def tool_buy_octodamus_signal() -> str:
 
 
 def tool_scan_limitless(category: str = "crypto") -> str:
-    """Scan Limitless Exchange (Base-native prediction market, $600M+ volume) for active markets.
-    Your Base wallet works directly — no bridging needed. Use Octodamus signal to find edges."""
+    """Scan Limitless Exchange using authenticated API (avoids Cloudflare block)."""
     try:
         import httpx
-        r = httpx.get(
-            "https://limitless.exchange/api/markets",
-            params={"category": category, "status": "active", "limit": 20},
-            timeout=10,
-        )
+        s = _secrets()
+        token_id   = s.get("LIMITLESS_API_KEY", "")
+        secret_b64 = s.get("LIMITLESS_API_SECRET", "")
+
+        if token_id and secret_b64:
+            # Use authenticated REST API endpoint
+            path = f"/markets?category={category}&status=active&limit=20"
+            hdrs = _limitless_headers(token_id, secret_b64, "GET", path)
+            r = httpx.get(f"https://api.limitless.exchange{path}", headers=hdrs, timeout=10)
+        else:
+            r = httpx.get(
+                "https://api.limitless.exchange/markets",
+                params={"category": category, "status": "active", "limit": 20},
+                timeout=10,
+            )
+
         if r.status_code == 200:
-            markets = r.json() if isinstance(r.json(), list) else r.json().get("markets", [])
+            data    = r.json()
+            markets = data if isinstance(data, list) else data.get("markets", data.get("data", []))
             if markets:
-                lines = [f"Limitless Exchange markets ({category}) — Base-native, your wallet works:"]
-                for m in markets[:10]:
-                    title = m.get("title", m.get("question", ""))[:80]
-                    yes   = m.get("yes_price", m.get("probability", "?"))
-                    vol   = m.get("volume", m.get("collateralVolume", 0))
-                    lines.append(f"  YES={yes} | Vol=${float(vol or 0):,.0f} | {title}")
+                lines = [f"Limitless markets ({category}) — authenticated, Base-native:"]
+                for m in markets[:12]:
+                    title = (m.get("title") or m.get("question") or m.get("slug",""))[:80]
+                    yes   = m.get("yes_price") or m.get("probability") or m.get("bestAsk","?")
+                    vol   = m.get("volume") or m.get("collateralVolume") or 0
+                    slug  = m.get("slug","")
+                    lines.append(f"  slug={slug} | YES={yes} | Vol=${float(vol or 0):,.0f} | {title}")
                 return "\n".join(lines)
-        # Fallback: search via web
-        sys.path.insert(0, str(ROOT))
-        from octo_firecrawl import search_web
-        results = search_web(f"limitless.exchange {category} prediction market active 2025", num_results=5, cache_hours=2.0)
-        lines = ["Limitless Exchange (via search):"]
-        for r in results[:5]:
-            lines.append(f"  {r.get('title','')} — {r.get('url','')}")
-        return "\n".join(lines)
+            return f"No active {category} markets found. Raw: {str(data)[:200]}"
+        return f"Limitless API returned {r.status_code}: {r.text[:200]}"
     except Exception as e:
         return f"Limitless scan failed: {e}"
 
