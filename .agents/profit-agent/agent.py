@@ -280,31 +280,26 @@ def tool_scan_limitless(category: str = "crypto") -> str:
         token_id   = s.get("LIMITLESS_API_KEY", "")
         secret_b64 = s.get("LIMITLESS_API_SECRET", "")
 
-        if token_id and secret_b64:
-            # Use authenticated REST API endpoint
-            path = f"/markets?category={category}&status=active&limit=20"
-            hdrs = _limitless_headers(token_id, secret_b64, "GET", path)
-            r = httpx.get(f"https://api.limitless.exchange{path}", headers=hdrs, timeout=10)
-        else:
-            r = httpx.get(
-                "https://api.limitless.exchange/markets",
-                params={"category": category, "status": "active", "limit": 20},
-                timeout=10,
-            )
+        # Public endpoint — no auth needed, no Cloudflare block
+        r = httpx.get("https://api.limitless.exchange/markets/active", timeout=10)
 
         if r.status_code == 200:
-            data    = r.json()
-            markets = data if isinstance(data, list) else data.get("markets", data.get("data", []))
+            markets = r.json().get("data", [])
+            # Filter by category keyword if specified
+            if category.lower() not in ("all", ""):
+                markets = [m for m in markets if category.lower() in str(m.get("tags","")).lower()
+                           or category.lower() in str(m.get("title","")).lower()]
             if markets:
-                lines = [f"Limitless markets ({category}) — authenticated, Base-native:"]
-                for m in markets[:12]:
-                    title = (m.get("title") or m.get("question") or m.get("slug",""))[:80]
-                    yes   = m.get("yes_price") or m.get("probability") or m.get("bestAsk","?")
-                    vol   = m.get("volume") or m.get("collateralVolume") or 0
-                    slug  = m.get("slug","")
+                lines = [f"Limitless active markets ({category}) — Base-native, USDC:"]
+                for m in markets[:15]:
+                    title  = (m.get("title") or m.get("slug",""))[:75]
+                    slug   = m.get("slug","")
+                    prices = m.get("prices", {})
+                    yes    = prices.get("yes") or prices.get("bestAsk","?")
+                    vol    = m.get("volume") or m.get("collateralVolume") or 0
                     lines.append(f"  slug={slug} | YES={yes} | Vol=${float(vol or 0):,.0f} | {title}")
                 return "\n".join(lines)
-            return f"No active {category} markets found. Raw: {str(data)[:200]}"
+            return f"No active {category} markets. All markets: {len(r.json().get('data',[]))}"
         return f"Limitless API returned {r.status_code}: {r.text[:200]}"
     except Exception as e:
         return f"Limitless scan failed: {e}"
