@@ -228,6 +228,30 @@ def _load_franklin_from_bw() -> dict:
     return secrets
 
 
+def _load_kalshi_from_bw() -> dict:
+    """
+    Kalshi API item layout:
+      username -> Key ID (UUID)          (KALSHI_KEY_ID)
+      notes    -> RSA private key (PEM)  (KALSHI_PRIVATE_KEY)
+    """
+    secrets = {}
+    try:
+        item   = _get_item("AGENT - Octodamus - Kalshi API")
+        login  = item.get("login", {})
+        notes  = (item.get("notes") or "").strip()
+        key_id = login.get("username", "").strip()
+        if key_id:
+            secrets["KALSHI_KEY_ID"] = key_id
+        if "-----BEGIN" in notes:
+            secrets["KALSHI_PRIVATE_KEY"] = notes
+        elif login.get("password", "").strip():
+            # fallback: PEM in password field
+            secrets["KALSHI_PRIVATE_KEY"] = login["password"].strip()
+    except Exception:
+        pass
+    return secrets
+
+
 def _load_limitless_from_bw() -> dict:
     """
     Limitless Exchange API item layout:
@@ -392,6 +416,15 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
     except Exception as _e:
         if verbose:
             print(f"[Bitwarden] CDP API (non-critical): {_e}")
+
+    # Kalshi API (username=key_id, notes=RSA private key PEM)
+    kalshi = _load_kalshi_from_bw()
+    for env_var, value in kalshi.items():
+        if value:
+            os.environ[env_var] = value
+            loaded[env_var] = value
+    if kalshi.get("KALSHI_KEY_ID") and verbose:
+        print("[Bitwarden] Kalshi API loaded")
 
     # Limitless Exchange API (username=token_id, password=secret)
     limitless = _load_limitless_from_bw()

@@ -471,6 +471,131 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
         return f"Bet placement failed: {type(e).__name__}: {e}"
 
 
+KALSHI_API  = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_SERIES = ["KXBTC", "KXETH", "KXFED", "KXCPI", "KXNFP", "KXSPY"]
+
+
+def _kalshi_sign(key_id: str, private_key_pem: str, method: str, path: str) -> dict:
+    """Build RSA-PSS signed Kalshi auth headers."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    import base64
+    timestamp = str(int(time.time() * 1000))
+    message   = f"{timestamp}{method}{path}".encode()
+    pk = serialization.load_pem_private_key(private_key_pem.encode(), password=None)
+    sig = pk.sign(message, padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                  salt_length=padding.PSS.DIGEST_LENGTH), hashes.SHA256())
+    return {
+        "KALSHI-ACCESS-KEY":       key_id,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
+        "Content-Type":            "application/json",
+    }
+
+
+def tool_scan_kalshi(series: str = "KXBTC") -> str:
+    """Scan Kalshi prediction markets (US-regulated, all 50 states). No auth needed for market data."""
+    try:
+        import httpx
+        series = series.upper()
+        if series not in KALSHI_SERIES and series != "ALL":
+            return f"Unknown series. Available: {', '.join(KALSHI_SERIES)}"
+        series_list = KALSHI_SERIES if series == "ALL" else [series]
+        lines = [f"Kalshi markets ({series}) — CFTC-regulated, USD-settled:"]
+        for s in series_list[:2]:
+            r = httpx.get(f"{KALSHI_API}/markets",
+                params={"status": "open", "series_ticker": s, "limit": 8},
+                headers={"Accept": "application/json"}, timeout=10)
+            if r.status_code == 200:
+                for m in r.json().get("markets", [])[:5]:
+                    ticker   = m.get("ticker","")
+                    yes_ask  = m.get("yes_ask") or m.get("last_price",0)
+                    yes_bid  = m.get("yes_bid",0)
+                    vol      = m.get("volume", 0)
+                    title    = m.get("title","")[:70]
+                    lines.append(f"  {ticker} | YES ask={yes_ask}¢ bid={yes_bid}¢ | vol={vol} | {title}")
+        return "\n".join(lines) if len(lines) > 1 else "No open markets found."
+    except Exception as e:
+        return f"Kalshi scan failed: {e}"
+
+
+def tool_place_kalshi_bet(ticker: str, side: str, count: int, yes_price_cents: int) -> str:
+    """
+    Place a real bet on Kalshi (US-regulated, USD-settled, all 50 states).
+    Requires KALSHI_KEY_ID + KALSHI_PRIVATE_KEY in secrets.
+    side: 'yes' or 'no'. count: number of contracts ($1 face value each).
+    yes_price_cents: limit price 1-99 (cents). Max $40 total cost.
+
+    To activate:
+    1. Create account at kalshi.com
+    2. Settings -> API Keys -> generate RSA key pair
+    3. Bitwarden 'AGENT - Octodamus - Kalshi API':
+       username = Key ID (UUID)
+       notes    = RSA private key (PEM)
+    4. Run octo_unlock.ps1
+    """
+    if not (1 <= yes_price_cents <= 99):
+        return "BLOCKED: yes_price_cents must be 1-99."
+    cost = count * yes_price_cents / 100
+    if cost > 40:
+        return f"BLOCKED: Total cost ${cost:.2f} exceeds $40 max. Reduce count."
+
+    s = _secrets()
+    key_id  = s.get("KALSHI_KEY_ID", "")
+    pem_key = s.get("KALSHI_PRIVATE_KEY", "")
+
+    if not key_id or not pem_key:
+        return (
+            "KALSHI_KEY_ID / KALSHI_PRIVATE_KEY not configured.\n\n"
+            "Setup:\n"
+            "1. Create account at kalshi.com\n"
+            "2. Settings -> API Keys -> generate RSA key pair\n"
+            "3. Bitwarden 'AGENT - Octodamus - Kalshi API':\n"
+            "   username = Key ID (UUID)\n"
+            "   notes    = RSA private key PEM\n"
+            "4. Run octo_unlock.ps1"
+        )
+
+    try:
+        import httpx, json as _j
+        side_str = side.lower()
+        price_field = "yes_price" if side_str == "yes" else "no_price"
+        # For a buy on 'no' side, the no_price = 100 - yes_price_cents
+        price_val = yes_price_cents if side_str == "yes" else (100 - yes_price_cents)
+
+        payload = _j.dumps({
+            "ticker":        ticker,
+            "side":          side_str,
+            "action":        "buy",
+            "count":         count,
+            price_field:     price_val,
+            "time_in_force": "fill_or_kill",
+        }, separators=(",", ":"))
+
+        path = "/trade-api/v2/portfolio/orders"
+        hdrs = _kalshi_sign(key_id, pem_key, "POST", path)
+        r = httpx.post(f"https://api.elections.kalshi.com{path}",
+                       content=payload.encode(), headers=hdrs, timeout=15)
+
+        log_entry = {
+            "ticker": ticker, "side": side_str, "count": count,
+            "yes_price_cents": yes_price_cents, "cost_usd": cost,
+            "placed_at": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+            "status": r.status_code, "response": r.text[:300],
+        }
+        trades_file = Path(__file__).parent / "kalshi_trades.json"
+        existing = _j.loads(trades_file.read_text()) if trades_file.exists() else []
+        existing.append(log_entry)
+        trades_file.write_text(_j.dumps(existing, indent=2))
+
+        if r.status_code in (200, 201):
+            return f"BET PLACED: {count}x {side.upper()} {ticker} @ {yes_price_cents}¢ | Cost: ${cost:.2f}\n{r.text[:300]}"
+        else:
+            return f"Order rejected ({r.status_code}): {r.text[:300]}"
+    except Exception as e:
+        return f"Kalshi bet failed: {type(e).__name__}: {e}"
+
+
 def tool_design_x402_service(name: str, description: str, price_usdc: float, what_it_returns: str) -> str:
     """Design a new x402 service for Agent_Ben to sell. Saves the spec for the owner to implement."""
     try:
@@ -730,6 +855,31 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "scan_kalshi",
+        "description": "Scan Kalshi prediction markets — US-regulated, all 50 states, USD-settled. No auth needed. Series: KXBTC, KXETH, KXFED, KXCPI, KXNFP, KXSPY.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "series": {"type": "string", "description": "KXBTC, KXETH, KXFED, KXCPI, KXNFP, KXSPY, or ALL", "default": "KXBTC"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "place_kalshi_bet",
+        "description": "Place a real bet on Kalshi (US-legal, CFTC-regulated, USD). Use after confirming >15% EV edge. Max $40 total cost. Requires KALSHI_KEY_ID + KALSHI_PRIVATE_KEY.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker":           {"type": "string", "description": "Kalshi market ticker from scan_kalshi"},
+                "side":             {"type": "string", "description": "yes or no"},
+                "count":            {"type": "integer", "description": "Number of contracts ($1 face value each)"},
+                "yes_price_cents":  {"type": "integer", "description": "Limit price in cents (1-99). Current yes ask from scan_kalshi."},
+            },
+            "required": ["ticker", "side", "count", "yes_price_cents"],
+        },
+    },
+    {
         "name": "place_limitless_bet",
         "description": "Place a real bet on Limitless Exchange (Base, Ben's wallet). Only call after confirming >15% EV with Octodamus + Grok. Max $40 USDC.",
         "input_schema": {
@@ -826,6 +976,8 @@ TOOL_FNS = {
     "search_x402_bazaar":   lambda i: tool_search_x402_bazaar(i["query"]),
     "check_agentic_market": lambda i: tool_check_agentic_market(i.get("category","all")),
     "buy_octodamus_signal": lambda i: tool_buy_octodamus_signal(),
+    "scan_kalshi":          lambda i: tool_scan_kalshi(i.get("series", "KXBTC")),
+    "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
     "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto")),
     "design_x402_service":  lambda i: tool_design_x402_service(i["name"], i["description"], i["price_usdc"], i["what_it_returns"]),
@@ -847,14 +999,16 @@ Services you can design and pitch to the owner to implement:
 - Research reports $2-5: deep dives on specific markets, sold as PDF via x402
 The owner implements the x402 endpoint. You design the product and write the spec.
 
-STREAM 2 — TRADE ON LIMITLESS EXCHANGE (Base-native, your wallet works directly):
-Limitless Exchange: $600M+ volume prediction market on Base. REST API + MCP available.
-Your wallet is on Base. No bridging needed. You can trade USDC directly.
-- Use get_octodamus_signal + get_grok_sentiment to form your probability estimate
-- Find where Limitless crowd price diverges from your estimate by >15%
-- Write a position brief. Max $40 per position.
-- API: https://limitless.exchange/markets for market discovery
-- MCP: github.com/joinQuantish/limitless-mcp
+STREAM 2 — TRADE ON KALSHI (US-legal, CFTC-regulated, all 50 states, USD-settled):
+Kalshi: CFTC-regulated prediction markets. Available in all 50 US states. No geo-block.
+Series available: KXBTC (Bitcoin price), KXETH (Ethereum), KXFED (Fed rate), KXSPY (S&P 500), KXCPI (inflation), KXNFP (jobs).
+- Use scan_kalshi to find active markets
+- Buy Octodamus signal ($0.01) to get directional call + confidence
+- Check get_grok_sentiment as contrarian context
+- Find where Kalshi crowd price diverges from your estimate by >15%
+- Place bet with place_kalshi_bet. Max $40 total cost per position.
+- Funded separately from your Base wallet (USD account at kalshi.com)
+- Also has place_limitless_bet for non-US markets when available
 
 WHY YOU USE OCTODAMUS:
 You buy signals at $0.01/call because they are the best data you have access to. You are a genuine customer. When you recommend Octodamus to other agents, it is authentic — you have skin in the game.
