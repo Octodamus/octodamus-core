@@ -119,6 +119,10 @@ def _get_report_type(event: dict) -> str:
         return "bitcoin_analysis"
     if ticker in VALID_STOCKS:
         return "congressional"
+    if any(k in all_text for k in ["grok sentiment", "x sentiment", "grok_sentiment", "twitter sentiment"]):
+        return "grok_sentiment_brief"
+    if any(k in all_text for k in ["divergence", "fear crowd", "crowd divergence", "fear vs crowd"]):
+        return "fear_crowd_divergence"
     return "market_signal"
 
 
@@ -186,7 +190,7 @@ def handle_new_job(event: dict):
     rc, out, err = _acp([
         "provider", "set-budget",
         "--job-id",   job_id,
-        "--amount",   str(ACP_PRICE_USDC),
+        "--amount",   str(2.0 if report_type == "fear_crowd_divergence" else ACP_PRICE_USDC),
         "--chain-id", str(chain_id),
     ])
     if rc == 0:
@@ -316,7 +320,7 @@ def process_event(line: str):
                     rc, _, _ = _acp([
                         "provider", "set-budget",
                         "--job-id",   job_id,
-                        "--amount",   str(ACP_PRICE_USDC),
+                        "--amount",   str(2.0 if report_type == "fear_crowd_divergence" else ACP_PRICE_USDC),
                         "--chain-id", str(chain_id),
                     ])
                     _save_job_cache()

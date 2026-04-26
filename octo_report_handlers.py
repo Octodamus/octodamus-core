@@ -13,6 +13,7 @@ v3 — Coinglass Integration:
 import os
 import statistics
 from datetime import datetime
+from octo_acp_ben_reports import handle_grok_sentiment_brief, handle_fear_crowd_divergence
 
 # ── Results page link ────────────────────────────────────────────────────────
 
@@ -1083,6 +1084,10 @@ def get_handler(report_type: str):
         return handle_fear_greed
     if any(k in t for k in ["bitcoin", "deep_dive", "analysis", "forecast"]):
         return handle_bitcoin_analysis
+    if any(k in t for k in ["grok_sentiment", "grok_brief", "x_sentiment", "twitter_sentiment"]):
+        return handle_grok_sentiment_brief
+    if any(k in t for k in ["divergence", "fear_crowd", "crowd_divergence", "fear_vs_crowd"]):
+        return handle_fear_crowd_divergence
     return handle_crypto_market_signal
 
 
