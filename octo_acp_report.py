@@ -23,7 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from octo_health import send_email_alert
 
 EVENTS_FILE = Path(r"C:\Users\walli\octodamus\data\acp_events.jsonl")
-USDC_PER_JOB = 1.0
+USDC_PER_JOB = 1.0  # default; funded event carries actual amount
+
+# Offering ID -> name map (update when new offerings added)
+OFFERING_NAMES = {
+    "019dca02-a0c3-7b39-8efe-1279c5cb9307": "Grok Sentiment Brief ($1)",
+    "019dca05-6bdc-7228-adc2-f00585f46af1": "Divergence Alert ($2)",
+}
 
 
 def parse_events() -> dict:
@@ -53,15 +59,21 @@ def parse_events() -> dict:
 
         if job_id not in jobs:
             jobs[job_id] = {
-                "id":           job_id,
-                "status":       status,
-                "ticker":       None,
-                "client":       None,
-                "funded_ts":    None,
-                "completed_ts": None,
-                "amount_usdc":  USDC_PER_JOB,
+                "id":            job_id,
+                "status":        status,
+                "ticker":        None,
+                "offering_id":   None,
+                "client":        None,
+                "funded_ts":     None,
+                "completed_ts":  None,
+                "amount_usdc":   USDC_PER_JOB,
                 "first_seen_ts": ts_ms / 1000 if ts_ms else None,
             }
+
+        # Track offering ID
+        offering_id = e.get("offeringId") or ev.get("offeringId") or entry.get("offeringId")
+        if offering_id:
+            jobs[job_id]["offering_id"] = offering_id
 
         if status:
             jobs[job_id]["status"] = status
@@ -179,6 +191,18 @@ def build_report(context: str = "manual") -> str:
         for ticker, count in sorted(ticker_counts.items(), key=lambda x: -x[1]):
             bar = "#" * count
             lines.append(f"  {ticker:<8} {count:>3}  {bar}")
+        lines.append("")
+
+    # Offering breakdown (all-time completed)
+    offering_counts: dict[str, int] = defaultdict(int)
+    for j in all_completed:
+        oid  = j.get("offering_id") or "unknown"
+        name = OFFERING_NAMES.get(oid, f"Market Signal (legacy)")
+        offering_counts[name] += 1
+    if offering_counts:
+        lines.append("--- Completed Jobs by Offering (all-time) ---")
+        for name, count in sorted(offering_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  {count:>3}x  {name}")
         lines.append("")
 
     if client_counts:
