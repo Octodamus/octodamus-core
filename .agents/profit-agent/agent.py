@@ -658,27 +658,44 @@ def tool_check_acp_market() -> str:
         lines.append("Agent wallet: 0x94c037393ab0263194dcfd8d04a2176d6a80e385")
         lines.append("")
 
-        # Job history from events file
+        # Real job stats — parse events file same way the ACP report module does
         events_file = _P(ROOT) / "data" / "acp_events.jsonl"
         if events_file.exists():
-            events = [_j.loads(l) for l in events_file.read_text(encoding="utf-8").strip().split("\n") if l.strip()]
-            lines.append(f"Total ACP events received: {len(events)}")
+            job_statuses, ticker_counts, client_counts = {}, {}, {}
+            for l in events_file.read_text(encoding="utf-8").strip().split("\n"):
+                if not l.strip(): continue
+                try:
+                    e = _j.loads(l)
+                    jid = str(e.get("jobId",""))
+                    if not jid: continue
+                    status = e.get("status","")
+                    if status: job_statuses[jid] = status
+                    entry = e.get("entry",{})
+                    # Extract ticker from requirement messages
+                    if entry.get("contentType") == "requirement":
+                        try:
+                            reqs = _j.loads(entry.get("content","{}"))
+                            t = reqs.get("ticker","")
+                            if t and job_statuses.get(jid) == "completed":
+                                ticker_counts[t.upper()] = ticker_counts.get(t.upper(),0) + 1
+                        except Exception: pass
+                    # Extract buyer wallet
+                    evt = entry.get("event",{})
+                    client = evt.get("client","") or evt.get("buyer","")
+                    if client and status == "funded":
+                        client_counts[client] = client_counts.get(client,0) + 1
+                except Exception: pass
 
-        # Reports generated = jobs completed
-        reports = list((_P(ROOT) / "data" / "reports").glob("*.html"))
-        lines.append(f"Reports delivered: {len(reports)}")
-        lines.append(f"Revenue earned: ~${len(reports):.0f} USDC (at $1/job)")
-
-        # Check job cache for recent job types
-        cache_file = _P(ROOT) / "data" / "acp_job_cache.json"
-        if cache_file.exists():
-            cache = _j.loads(cache_file.read_text(encoding="utf-8"))
-            if cache:
-                types = {}
-                for job in cache.values():
-                    rt = job.get("report_type","unknown")
-                    types[rt] = types.get(rt, 0) + 1
-                lines.append(f"\nJob types in cache: {_j.dumps(types)}")
+            completed = sum(1 for s in job_statuses.values() if s == "completed")
+            lines.append(f"Completed jobs (paid, real): {completed}")
+            lines.append(f"USDC earned:                 ${completed:.2f} (~$1/job)")
+            lines.append(f"Unique job IDs tracked:      {len(job_statuses)}")
+            lines.append(f"NOTE: HTML files in data/reports/ are NOT job count — include dev/test artifacts")
+            if ticker_counts:
+                lines.append(f"Top tickers: {', '.join(f'{k}({v})' for k,v in sorted(ticker_counts.items(), key=lambda x:-x[1])[:5])}")
+            if client_counts:
+                top = max(client_counts, key=client_counts.get)
+                lines.append(f"Top buyer: {top[:14]}... ({client_counts[top]} funded jobs)")
 
         # Live check of Virtuals ACP marketplace for Octodamus listing
         lines.append("\n--- MARKETPLACE RESEARCH ---")
