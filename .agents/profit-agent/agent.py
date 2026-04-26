@@ -341,14 +341,14 @@ def _limitless_headers(token_id: str, secret_b64: str, method: str, path: str, b
     }
 
 
-_PAPER_MODE = True   # Set False only after paper trades confirm integration works
+_PAPER_MODE    = True   # Set False only after paper trades confirm integration works
+_MIN_EXPIRY_H  = 24     # Hard block: never bet on markets expiring within this many hours
 
 
 def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, price: float = 0.5) -> str:
     """
     Place a bet on Limitless Exchange. PAPER MODE is ON by default.
-    In paper mode: validates everything, logs the trade, but sends NO real order.
-    Real mode activates when _PAPER_MODE = False (owner sets this after verifying paper trades).
+    Hard block: markets expiring within 24h are REFUSED at execution time — no exceptions.
 
     side: 'YES' or 'NO'. Max $40 USDC. price: 0.01-0.99 (current YES price).
     """
@@ -383,7 +383,27 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
 
     try:
         import httpx, json as _j, random, time
+        from datetime import datetime, timezone, timedelta
         from eth_account import Account
+
+        # Hard expiry gate — fetch market and check expiry BEFORE anything else
+        r_check = httpx.get(f"https://api.limitless.exchange/markets/{market_slug}", timeout=10)
+        if r_check.status_code == 200:
+            market_data = r_check.json()
+            exp_str = market_data.get("expirationDate") or market_data.get("expirationTimestamp", "")
+            if exp_str:
+                try:
+                    exp_dt  = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                    hours_left = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+                    if hours_left < _MIN_EXPIRY_H:
+                        return (
+                            f"HARD BLOCKED: Market '{market_slug}' expires in {hours_left:.1f}h "
+                            f"(minimum {_MIN_EXPIRY_H}h required). Same-day markets always lock "
+                            f"before execution — proven dead end (Sessions 13, 14, 17). "
+                            f"Find a multi-day market or PASS."
+                        )
+                except Exception:
+                    pass  # If we can't parse expiry, proceed cautiously
         from eth_account.messages import encode_typed_data
 
         account = Account.from_key(wallet_key)
