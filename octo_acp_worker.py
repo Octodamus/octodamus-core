@@ -195,13 +195,45 @@ def handle_new_job(event: dict):
         log.error(f"Job #{job_id} set-budget failed (rc={rc})")
 
 
+def _verify_job_funded(job_id: str, chain_id: int) -> bool:
+    """
+    Verify via ACP CLI that this job is actually in funded/escrow state.
+    Refuse to deliver if we can't confirm payment — prevents free report delivery.
+    """
+    try:
+        rc, out, err = _acp(["jobs", "get", "--job-id", job_id, "--chain-id", str(chain_id)], timeout=15)
+        if rc != 0:
+            log.warning(f"Job #{job_id} -- could not verify funding (CLI rc={rc}). Refusing delivery.")
+            return False
+        out_lower = out.lower()
+        # Accept if CLI reports funded/escrow state
+        if any(k in out_lower for k in ("funded", "escrow", "payment")):
+            log.info(f"Job #{job_id} -- funding confirmed via CLI")
+            return True
+        # Reject if explicitly not funded
+        if any(k in out_lower for k in ("open", "pending", "created", "cancelled", "rejected")):
+            log.warning(f"Job #{job_id} -- not funded (status in CLI output). Refusing delivery.")
+            return False
+        # Unknown state — refuse to deliver, log for investigation
+        log.warning(f"Job #{job_id} -- unclear funding status. Output: {out[:200]}. Refusing delivery.")
+        return False
+    except Exception as e:
+        log.error(f"Job #{job_id} -- funding verification error: {e}. Refusing delivery.")
+        return False
+
+
 def handle_funded_job(event: dict):
-    """Escrow funded -- generate and submit deliverable."""
+    """Escrow funded -- verify payment then generate and submit deliverable."""
     job_id   = str(event.get("jobId") or event.get("job_id") or "")
     chain_id = event.get("chainId") or event.get("chain_id") or CHAIN_ID
 
     if not job_id:
         log.warning("FUNDED event missing jobId -- skipping")
+        return
+
+    # Gate: verify on-chain funding before generating any deliverable
+    if not _verify_job_funded(job_id, int(chain_id)):
+        log.warning(f"Job #{job_id} -- DELIVERY BLOCKED: payment not confirmed on-chain")
         return
 
     cached      = JOB_CACHE.get(job_id, {})
@@ -210,7 +242,7 @@ def handle_funded_job(event: dict):
     ticker      = cached.get("ticker") or str(reqs.get("ticker", "BTC")).upper()
     chain_id    = cached.get("chain_id") or chain_id
 
-    log.info(f"Job #{job_id} funded -- generating {report_type}/{ticker}")
+    log.info(f"Job #{job_id} funded + confirmed -- generating {report_type}/{ticker}")
 
     deliverable = _build_deliverable(report_type, ticker, reqs)
     if not deliverable:
@@ -478,6 +510,12 @@ def replay_funded_jobs():
             "requirements": reqs,
             "chain_id":     chain_id,
         }
+
+        # Gate: verify on-chain before delivering
+        if not _verify_job_funded(job_id, chain_id):
+            log.warning(f"Replay: job #{job_id} -- BLOCKED: payment not confirmed. Skipping.")
+            JOB_CACHE.pop(job_id, None)
+            continue
 
         log.info(f"Replay: submitting job #{job_id} ticker={ticker} type={report_type}")
         deliverable = _build_deliverable(report_type, ticker, reqs)
