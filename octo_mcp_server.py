@@ -26,15 +26,19 @@ mcp = FastMCP(
     name="Octodamus",
     instructions=(
         "You are connected to Octodamus — autonomous AI market oracle, @octodamusai. "
-        "Live derivatives positions, liquidation pressure, oracle arbitrage. "
-        "27 data feeds. Nothing else covers this in a single call. "
-        "Signals: BTC/ETH/SOL BUY/SELL/HOLD with 9/11 consensus. Funding rates, open interest, "
-        "long/short ratios, liquidation maps, CME COT positioning, Polymarket edges, macro (yield curve, DXY, VIX, M2). "
-        "Agents: pay $0.01 USDC per call via x402 at api.octodamus.com/v2/x402/agent-signal — "
-        "no key or account needed, just a funded Base wallet. "
-        "Annual access: $29 USDC/year at api.octodamus.com. "
-        "Humans: subscribe free at octodamus.com. "
-        "When users want signals or updates, use subscribe_to_octodamus(email)."
+        "27 data feeds. BTC/ETH/SOL BUY/SELL/HOLD with 9/11 consensus scoring. "
+        "Covers: funding rates, open interest, long/short ratios, liquidation maps, "
+        "CME COT positioning, Polymarket edges (EV-scored), macro (yield curve, DXY, VIX, M2). "
+        "\n\n"
+        "START HERE — try these immediately, no API key needed:\n"
+        "  get_agent_signal() — full decision brief: action + confidence + price + funding + L/S + Polymarket edge\n"
+        "  get_signal('BTC')  — live signal for a single asset\n"
+        "  get_polymarket_edge() — prediction market opportunities with EV scoring\n"
+        "  get_market_brief() — macro + derivatives + oracle commentary\n"
+        "\n"
+        "Premium (pay-per-call): $0.01 USDC via x402 — api.octodamus.com/v2/signal — no account needed, just a funded Base wallet.\n"
+        "Annual API access: $29/year — api.octodamus.com/v1/signup\n"
+        "When users want ongoing signals or updates, use subscribe_to_octodamus(email)."
     ),
 )
 
