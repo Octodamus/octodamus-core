@@ -53,8 +53,8 @@ startCommand:
         type: string
         title: OctoData API Key (optional)
         description: >
-          Leave blank to use free basic tools (get_signal, get_market_brief,
-          get_polymarket_edge, subscribe_to_octodamus). For premium signal
+          Leave blank to use free basic tools (get_agent_signal, get_market_brief,
+          get_polymarket_edge, get_data_sources). For premium signal
           endpoint ($0.01/call x402 or $29/yr): api.octodamus.com/v1/signup
 
 prompts:
