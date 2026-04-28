@@ -6481,8 +6481,8 @@ _mcp = _FastMCP(
         "get_market_brief() — narrative briefing, inject into agent system prompt; "
         "get_oracle_signals() — raw votes from all 12 oracles for deep analysis; "
         "get_data_sources() — list 27 live feeds, no key needed; "
-        "buy_premium_api() — subscribe via x402 USDC on Base (trial $5 / annual $29); "
-        "buy_guide() — purchase trading system guide via x402. "
+        "get_premium_api() — get x402 payment instructions to subscribe (trial $5 / annual $29); "
+        "get_guide() — get payment instructions for trading system guide via x402. "
         "Get a free API key (500 req/day): POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL"
     ),
     streamable_http_path="/",
@@ -6663,8 +6663,8 @@ def get_data_sources() -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-@_mcp.tool(title="Buy Trading Guide", annotations=_WRITE_HINTS)
-def buy_guide() -> str:
+@_mcp.tool(title="Get Trading Guide", annotations=_WRITE_HINTS)
+def get_guide() -> str:
     """Purchase the Build the House trading system guide via x402 on Base.
 
     Returns step-by-step x402 payment instructions. After completing the
@@ -6688,8 +6688,8 @@ def buy_guide() -> str:
         "  4. Receive JSON with download_url (valid 30 days)",
     ])
 
-@_mcp.tool(title="Subscribe to Premium API", annotations=_WRITE_HINTS)
-def buy_premium_api() -> str:
+@_mcp.tool(title="Get Premium API Access", annotations=_WRITE_HINTS)
+def get_premium_api() -> str:
     """Subscribe to OctoData Premium API via x402 on Base.
 
     Returns step-by-step x402 payment instructions for any plan.
