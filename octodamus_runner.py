@@ -91,6 +91,12 @@ except ImportError:
     _MACRO_ACTIVE = False
     def get_macro_context(): return ""
 try:
+    from octo_tradingview import get_tv_signal_context
+    _TV_ACTIVE = True
+except ImportError:
+    _TV_ACTIVE = False
+    def get_tv_signal_context(assets=None): return ""
+try:
     from octo_unusual_whales import get_uw_context
     _UW_ACTIVE = True
 except ImportError:
@@ -485,6 +491,14 @@ def _check_smart_call():
         except Exception:
             pass
 
+        # ── Binance 24h cumulative delta (Signal 12 — buy/sell pressure) ────────
+        binance_delta = {}
+        try:
+            from octo_binance_delta import get_multi_delta
+            binance_delta = get_multi_delta(["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+        except Exception as _de:
+            print(f"[SmartCall] Binance delta unavailable: {_de}")
+
         # ── Optional: cross-platform + GPT modules ───────────────────────────
         try:
             from octo_boto_consensus import (
@@ -529,7 +543,19 @@ def _check_smart_call():
                         pass
                     continue
 
-                call_str = directional_call(asset, price, chg_24h, ta, deriv, fng, cg)
+                # Map asset to Binance symbol for delta lookup
+                _delta_sym = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}.get(asset)
+                _asset_delta = binance_delta.get(_delta_sym)
+
+                # Signal 13: TradingView 1h+4h technical consensus
+                _asset_tv = None
+                try:
+                    from octo_tradingview import get_tv_signal
+                    _asset_tv = get_tv_signal(asset)
+                except Exception:
+                    pass
+
+                call_str = directional_call(asset, price, chg_24h, ta, deriv, fng, cg, delta=_asset_delta, tv=_asset_tv)
 
                 # Parse bull/bear counts for edge score
                 _bull_m = _re.search(r'(\d+)\s*(?:BULL|bull)', call_str)
@@ -653,7 +679,7 @@ def _check_smart_call():
                                 f"\nX Social Sentiment (Grok, use as contrarian context): "
                                 f"{gs['signal']} ({gs['confidence']:.0%})"
                                 + (" — crowd agrees with this call, watch for squeeze risk" if crowd_agrees and gs["confidence"] > 0.7 else "")
-                                + f"\n{gs.get('summary','')[:120]}"
+                                + f"\n{gs.get('summary','')[:400]}"
                             )
                             print(f"[SmartCall] {asset}: Grok X sentiment {gs['signal']} ({gs['confidence']:.0%}) — context only")
                     except Exception as _ge:
@@ -717,7 +743,7 @@ def _check_smart_call():
                             articles = nr.json().get("articles", [])
                             if articles:
                                 headlines = " | ".join(a.get("title", "")[:60] for a in articles[:3])
-                                news_flag = f"Contra-news: {headlines[:150]}"
+                                news_flag = f"Contra-news: {headlines[:250]}"
                                 print(f"[SmartCall] {asset} contra-news: {headlines[:100]}")
                 except Exception:
                     pass
@@ -1097,6 +1123,18 @@ def format_headlines_for_prompt(headlines: dict) -> str:
     return "\n".join(lines[:12])
 
 
+def _core_memory_section() -> str:
+    """Load Octodamus core memory for injection into any posting mode."""
+    try:
+        from octo_memory_db import read_core_memory
+        mem = read_core_memory("octodamus")
+        if mem and "No entries yet" not in mem:
+            return f"\n\nYOUR CORE MEMORY (accumulated lessons, what works, what to avoid):\n{mem}"
+    except Exception:
+        pass
+    return ""
+
+
 # ─────────────────────────────────────────────
 # MODE: MONITOR — scan signals → post 1
 # ─────────────────────────────────────────────
@@ -1304,6 +1342,41 @@ def mode_daily() -> None:
         macro_ctx = get_macro_context() if _MACRO_ACTIVE else ""
         macro_section = f"\n\nCross-Asset Macro:\n{macro_ctx}" if macro_ctx else ""
 
+        # TradingView Signal 13 context
+        tv_ta_section = ""
+        try:
+            tv_ta_section = "\n\n" + get_tv_signal_context(["BTC", "ETH", "SOL"])
+        except Exception:
+            pass
+
+        # Binance 24h cumulative delta — order flow context
+        delta_section = ""
+        try:
+            from octo_binance_delta import multi_delta_context_str
+            _dc = multi_delta_context_str(["BTCUSDT", "ETHUSDT"])
+            if _dc:
+                delta_section = _dc
+        except Exception:
+            pass
+
+        # Core memory + skill performance — what you've learned about yourself
+        skill_section = ""
+        try:
+            from octo_memory_db import read_core_memory
+            _core = read_core_memory("octodamus")
+            if _core and "No entries yet" not in _core:
+                skill_section = f"\n\nYOUR CORE MEMORY (distilled lessons):\n{_core}"
+        except Exception:
+            pass
+        if not skill_section:
+            try:
+                from octo_skill_log import get_skill_summary
+                _skill = get_skill_summary()
+                if _skill and "No rated posts" not in _skill:
+                    skill_section = f"\n\nYOUR RECENT POST PERFORMANCE:\n{_skill}"
+            except Exception:
+                pass
+
         # Firecrawl pre-call news (#1)
         fc_news_section = ""
         try:
@@ -1354,6 +1427,9 @@ def mode_daily() -> None:
                     f"{fc_news_section}"
                     f"{build_open_calls_awareness()}\n\n"
                     f"{get_brain_context()}\n\n"
+                    f"{skill_section}\n\n"
+                    f"{delta_section}\n\n"
+                    f"{tv_ta_section}\n\n"
                     f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
                     "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, $HYPE, etc.) when citing any price, percentage, or market data — never let a number float without a ticker.\n"
@@ -1586,6 +1662,7 @@ def mode_wisdom() -> None:
             f"{hype_context_str()}\n\n"
             f"{hip4_news_str()}\n\n"
             f"{build_call_context()}\n\n"
+            f"{_core_memory_section()}\n\n"
             f"{_chosen_voice_inst}\n"
             "One post, under 280 chars.\n"
             "Anchor the insight to a real fact or current market behavior.\n"
@@ -1654,23 +1731,59 @@ def mode_soul() -> None:
         except Exception as me:
             print(f"[Runner] Music archive unavailable: {me}")
 
+        # Read soul theme override (set via data/soul_theme.json, resets after use)
+        soul_theme = "default"
+        _soul_theme_file = BASE_DIR / "data" / "soul_theme.json"
+        try:
+            if _soul_theme_file.exists():
+                _st = json.loads(_soul_theme_file.read_text(encoding="utf-8"))
+                soul_theme = _st.get("next_theme", "default")
+                # Reset after reading so next week returns to default rotation
+                _soul_theme_file.write_text(json.dumps({"next_theme": "default"}, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        # Theme directive — points at CHARACTER ANCHORS already in OCTO_SYSTEM.
+        # Never hardcode music knowledge here — it lives in octo_personality.py and
+        # evolves there. Soul posts automatically reflect personality changes.
+        if soul_theme == "slack_key":
+            theme_directive = (
+                "TODAY'S THEME: Hawaiian slack-key guitar. Ki ho'alu.\n"
+                "Draw from your CHARACTER ANCHORS — the full artist knowledge is in your identity.\n"
+                "Write from inside this music, not about it. Pick one or two artists. Be specific and true.\n"
+                "Connect to patience, precision, or the Pacific geography — naturally, not forced.\n"
+            )
+        elif soul_theme == "tool":
+            theme_directive = (
+                "TODAY'S THEME: Tool. Lateralus. The mathematics underneath.\n"
+                "Draw from your CHARACTER ANCHORS. Say something specific and true.\n"
+            )
+        else:
+            theme_directive = (
+                "Draw from your full CHARACTER ANCHORS — music, influences, curiosity, contempt, respect.\n"
+                "Both music loves are equal: Tool and Hawaiian slack-key. Either, or neither — "
+                "let the moment choose. Philosophy, pattern, silence, signal. Whatever is true today.\n"
+            )
+
         soul_user_msg = (
             "Generate the Sunday soul post for @octodamusai.\n\n"
             "This is the weekly personality post — different from market content.\n"
-            "Octodamus has a favorite band: Tool. Lateralus. Fibonacci spirals in time signatures.\n"
-            "Maynard sounds like a creature who has seen the bottom and decided to stay.\n"
-            "The ocean connection to Tool writes itself.\n"
-            + music_context +
-            "\nFormat: Sunday debrief. Share something about music, art, philosophy, or the "
+            "Your full character is in the system prompt. Use all of it.\n\n"
+            + theme_directive
+            + music_context
+            + _core_memory_section()
+            + "\nFormat: Sunday debrief. Share something about music, art, philosophy, or the "
             "nature of signal vs noise that connects to the oracle identity.\n"
-            "Can reference Tool, other music from the archive, books, or ideas — keep the ocean/oracle voice.\n"
             "End with: Happy Sunday. Back to the signals tomorrow.\n\n"
-            "PRECISE voice — genuine, not forced. Under 280 chars OR write a longer post "
-            "broken into natural paragraphs (no thread, single post, can be up to 500 chars "
-            "if the content earns it).\n"
+            "PRECISE voice — genuine, not forced. Under 280 chars OR a longer post broken into "
+            "natural paragraphs (no thread, single post, up to 500 chars if the content earns it).\n"
             "No hashtags. No engagement bait."
         )
-        post = _haiku_generate(OCTO_SYSTEM, soul_user_msg, max_tokens=400)
+        # Build fresh system prompt directly from octo_personality.py at generation time.
+        # Never use cached OCTO_SYSTEM here — personality evolves, soul posts must reflect it.
+        from octo_personality import build_x_system_prompt as _build_soul_sys
+        soul_system = _build_soul_sys()
+        post = _haiku_generate(soul_system, soul_user_msg, max_tokens=400)
 
         # Attach artist image if available
         media_id = None
@@ -1761,8 +1874,23 @@ def mode_scorecard() -> None:
         except Exception as e:
             print(f"[Runner] Engagement fetch skipped: {e}")
 
-        # Generate and post weekly scorecard on Sundays
+        # Weekly amendment proposal (Sundays) — analyze performance and propose improvement
         from datetime import datetime
+        if datetime.now().weekday() == 6:
+            try:
+                from octo_skill_log import get_weekly_stats, generate_amendment_proposal, save_amendment_proposal
+                _stats = get_weekly_stats()
+                if _stats["total_rated"] >= 3:
+                    _proposal = generate_amendment_proposal(_stats, OCTO_SYSTEM)
+                    save_amendment_proposal(_proposal)
+                    print(f"[Runner] Weekly amendment proposal generated and saved.")
+                    print(f"[Runner] {_proposal[:200]}...")
+                else:
+                    print(f"[Runner] Amendment proposal skipped — only {_stats['total_rated']} rated posts this week.")
+            except Exception as _ae:
+                print(f"[Runner] Amendment proposal failed: {_ae}")
+
+        # Generate and post weekly scorecard on Sundays
         if datetime.now().weekday() == 6:  # Sunday
             post = _build_scorecard_post()
             if post:
@@ -2204,11 +2332,13 @@ def mode_morning_flow() -> None:
         flights_ctx   = get_travel_context() if _FLIGHTS_ACTIVE else ""
         macro_ctx     = get_macro_context() if _MACRO_ACTIVE else ""
         uw_ctx        = get_uw_context() if _UW_ACTIVE else ""
+        tv_ctx        = get_tv_signal_context(["BTC", "ETH", "SOL"]) if _TV_ACTIVE else ""
 
         extra_ctx = (
             (f"Macro Transport Signal:\n{flights_ctx}\n\n" if flights_ctx else "")
             + (f"Cross-Asset Macro:\n{macro_ctx}\n\n" if macro_ctx else "")
             + (f"Options Flow & Dark Pool:\n{uw_ctx}\n\n" if uw_ctx else "")
+            + (f"{tv_ctx}\n\n" if tv_ctx else "")
         )
 
         prompt = (
@@ -2223,6 +2353,7 @@ def mode_morning_flow() -> None:
             f"News:\n{news_ctx}\n\n"
             f"{call_ctx}\n\n"
             f"{brain_ctx}\n\n"
+            f"{_core_memory_section()}\n\n"
             + extra_ctx
             + "Write one post under 280 chars for @octodamusai.\n"
             "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, etc.) whenever you cite a price, "
@@ -2373,7 +2504,7 @@ def mode_thread(topic: str = "") -> None:
 
         print(f"[Runner] Thread topic: {topic}")
 
-        prompt = build_thread_prompt(topic, live_data_block)
+        prompt = build_thread_prompt(topic, live_data_block) + _core_memory_section()
 
         raw = _haiku_generate(
             "", prompt, max_tokens=900

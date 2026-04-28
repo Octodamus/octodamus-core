@@ -151,7 +151,13 @@ def _get_octodamus_signal_context(question: str) -> tuple[str, str]:
         except Exception:
             pass
 
-        call_str = directional_call(pull_asset, price, chg_24h, ta, deriv, fng, cg)
+        _tv = None
+        try:
+            from octo_tradingview import get_tv_signal
+            _tv = get_tv_signal(pull_asset)
+        except Exception:
+            pass
+        call_str = directional_call(pull_asset, price, chg_24h, ta, deriv, fng, cg, tv=_tv)
 
         # Parse direction from call string
         if "STRONG UP" in call_str:
@@ -422,6 +428,22 @@ def estimate(
     except Exception:
         pass
 
+    # Binance 24h cumulative delta — buy vs sell volume pressure
+    delta_section = ""
+    try:
+        q_lower_d = question.lower()
+        delta_sym = None
+        if any(w in q_lower_d for w in ["bitcoin", "btc"]):    delta_sym = "BTCUSDT"
+        elif any(w in q_lower_d for w in ["ethereum", "eth"]): delta_sym = "ETHUSDT"
+        elif any(w in q_lower_d for w in ["solana", "sol"]):   delta_sym = "SOLUSDT"
+        if delta_sym:
+            from octo_binance_delta import get_delta_signal, delta_context_str
+            _d = get_delta_signal(delta_sym)
+            if _d:
+                delta_section = delta_context_str(_d)
+    except Exception:
+        pass
+
     # Volume confidence tier (Markov state reliability signal)
     from octo_boto_math import volume_confidence_tier
     vol_tier = volume_confidence_tier(volume24h) if volume24h > 0 else "UNKNOWN"
@@ -475,7 +497,7 @@ Context: {description[:300] if description else "None provided"}{date_hint}
 ━━━ SIGNAL DATA — form your raw probability estimate from THIS first ━━━
 (Institutional best practice: anchor on data, NOT on market price.
  Do not look at the crowd price yet. Build your independent view first.)
-{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{smart_money_section}{grok_section}{consensus_section}{cat_context}{serial_escalation_note}
+{vol_section}{velocity_section}{futures_section}{octo_signal}{ob_section}{delta_section}{smart_money_section}{grok_section}{consensus_section}{cat_context}{serial_escalation_note}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 TASK: Determine if the market is mispriced. Form your estimate from signals alone, then compare.
@@ -670,6 +692,17 @@ def batch_estimate(
         adjusted_min_ev = volume_ev_floor(vol24, min_ev)
         adjusted_min_ev = ev_threshold_with_overtrade_penalty(adjusted_min_ev)
 
+        # Build orderbook context + live CLOB depth
+        ob_ctx = orderbook_context_str(m)
+        if m.get("yes_token_id"):
+            try:
+                from octo_polymarket_clob import get_clob_depth, clob_context_str
+                _depth = get_clob_depth(m["yes_token_id"])
+                if _depth:
+                    ob_ctx = (ob_ctx + clob_context_str(_depth)).strip()
+            except Exception:
+                pass
+
         ai    = estimate(
             market_id=m["id"],
             question=m["question"],
@@ -679,7 +712,7 @@ def batch_estimate(
             end_date=m.get("end_date", ""),
             use_search=True,
             min_ev=adjusted_min_ev,
-            orderbook_ctx_str=orderbook_context_str(m),
+            orderbook_ctx_str=ob_ctx,
             volume24h=vol24,
             velocity_pct=vel_pct,
         )

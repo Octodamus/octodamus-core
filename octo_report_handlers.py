@@ -334,15 +334,16 @@ def _fetch_coinglass_compact(ticker: str) -> dict:
 
 # ── Upgraded directional call — 11 signals ───────────────────────────────────
 
-def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None) -> str:
+def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None, delta=None, tv=None) -> str:
     """
     Oracle directional scoring engine.
-    v3: 11 signals (was 6). Coinglass data adds 5 new signals:
+    v5: 13 signals. TradingView 1h+4h technical consensus adds Signal 13:
       - Aggregate funding rate direction
       - Long/short ratio extremes
       - Top trader positioning
       - Taker flow direction
       - Recent liquidation skew
+      - Binance 24h buy/sell delta (NEW)
     """
     ta    = ta or {}
     deriv = deriv or {}
@@ -406,6 +407,32 @@ def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None) -> str:
     liq_short = cg.get("liq_short", 0) or 0
     if liq_long > liq_short * 2:   bull += 1  # Longs flushed = bounce likely
     elif liq_short > liq_long * 2: bear += 1  # Shorts flushed = dip likely
+
+    # Signal 12: Binance 24h cumulative buy/sell delta (real order flow)
+    # score +1 = buyers dominating, -1 = sellers dominating, 0 = neutral
+    if delta and isinstance(delta, dict):
+        d_score = delta.get("score", 0)
+        d_accel = delta.get("acceleration", "STEADY")
+        # Only count accelerating or steady delta — decelerating = fading signal
+        if d_score > 0 and d_accel != "DECELERATING":
+            bull += 1
+        elif d_score < 0 and d_accel != "DECELERATING":
+            bear += 1
+
+    # Signal 13: TradingView 1h+4h technical consensus (26 indicators)
+    # Counts only when both timeframes agree — divergence = neutral
+    if tv and isinstance(tv, dict):
+        tv_vote = tv.get("vote", 0)
+        tv_conf = tv.get("confidence", "neutral")
+        tv_agree = tv.get("agreement", False)
+        if tv_vote > 0 and tv_agree:
+            bull += 1  # Both TFs bullish
+        elif tv_vote < 0 and tv_agree:
+            bear += 1  # Both TFs bearish
+        elif tv_vote > 0 and tv_conf == "strong":
+            bull += 1  # 1h strong enough even without 4h agreement
+        elif tv_vote < 0 and tv_conf == "strong":
+            bear += 1
 
     total = bull + bear
     p = f"${price:,.0f}" if price else "current level"
@@ -1066,6 +1093,287 @@ def handle_ask(req: dict) -> dict:
         }
 
 
+# ── Smithery Agent Onboarding Brief ─────────────────────────────────────────
+
+def handle_smithery_onboarding_brief(req: dict) -> dict:
+    """Quick-start packet for agents discovering Octodamus via Smithery MCP."""
+    import json
+    from pathlib import Path
+    base = Path(__file__).parent
+
+    calls = []
+    try:
+        calls = json.loads((base / "data" / "octo_calls.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    open_calls = [c for c in calls if not c.get("resolved")]
+    resolved = [c for c in calls if c.get("resolved")]
+    wins = sum(1 for c in resolved if c.get("outcome") == "WIN")
+    losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
+    win_rate = round(wins / (wins + losses) * 100) if (wins + losses) > 0 else None
+    sample = open_calls[-1] if open_calls else (resolved[-1] if resolved else {})
+
+    tools_guide = [
+        {"tool": "get_agent_signal",   "purpose": "Oracle signal composite (BTC/ETH/SOL)",              "cadence": "Every 4-6h"},
+        {"tool": "get_polymarket_edge", "purpose": "OctoBoto open positions + Polymarket win/loss record", "cadence": "Before Polymarket entry"},
+        {"tool": "get_sentiment",       "purpose": "Fear & Greed + derivatives positioning snapshot",      "cadence": "Every 4h"},
+        {"tool": "get_prices",          "purpose": "Live BTC/ETH/SOL prices via Kraken",                  "cadence": "On demand"},
+        {"tool": "get_market_brief",    "purpose": "Full oracle briefing: price + technicals + futures",   "cadence": "Session open + evening"},
+        {"tool": "get_all_data",        "purpose": "All signals in one call",                              "cadence": "Session open"},
+        {"tool": "get_oracle_signals",  "purpose": "Raw oracle call history + open positions",             "cadence": "Once daily"},
+        {"tool": "get_data_sources",    "purpose": "List active data sources and their status",            "cadence": "On error"},
+    ]
+
+    return {
+        "type":         "smithery_onboarding",
+        "title":        "OCTODAMUS -- AGENT QUICK-START GUIDE",
+        "generated":    datetime.utcnow().strftime("%a, %b %d, %Y %H:%M UTC"),
+        "tools_guide":  tools_guide,
+        "api_key_url":  "https://api.octodamus.com/v1/signup",
+        "mcp_server":   "octodamusai/market-intelligence",
+        "sample_signal": sample,
+        "oracle_record": f"{wins}W / {losses}L" + (f" ({win_rate}% win rate)" if win_rate else ""),
+        "recommended_cadence": "Call get_market_brief at session open. get_agent_signal every 4h. get_polymarket_edge before any prediction market trade.",
+        "quick_start_snippet": 'result = use_mcp_tool("octodamusai/market-intelligence", "get_market_brief", {"ticker": "BTC"})',
+        "pricing": {
+            "x402_signal": "$1.00 — api.octodamus.com/v2/signal",
+            "acp_reports": "$1-2 USDC/job via ACP",
+            "annual_api":  "$29/year (first 100 seats) — api.octodamus.com/v1/signup",
+        },
+        "footer": FOOTER,
+    }
+
+
+# ── Overnight / Asia Session Brief ──────────────────────────────────────────
+
+def handle_overnight_brief(req: dict) -> dict:
+    """Pre-packaged macro brief for agents operating during Asia/overnight hours."""
+    import json
+    from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import octo_pulse
+
+    base = Path(__file__).parent
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_pulse = ex.submit(octo_pulse.run_pulse_scan)
+        f_ta    = ex.submit(fetch_technicals, "BTC")
+        f_cg    = ex.submit(_fetch_coinglass_compact, "BTC")
+        try:
+            pulse = f_pulse.result(timeout=30) or {}
+        except Exception:
+            pulse = {}
+        try:
+            ta = f_ta.result(timeout=15) or {}
+        except Exception:
+            ta = {}
+        try:
+            cg = f_cg.result(timeout=30) or {}
+        except Exception:
+            cg = {}
+
+    fng_val   = int((pulse.get("fear_greed") or {}).get("value", 50) or 50)
+    fng_label = (pulse.get("fear_greed") or {}).get("label", "N/A") or "N/A"
+
+    cg_prices = cg.get("prices", {})
+    btc_price = float((cg_prices.get("BTC") or {}).get("price", 0) or 0)
+    btc_chg   = float((cg_prices.get("BTC") or {}).get("chg_24h", 0) or 0)
+
+    calls = []
+    try:
+        calls = json.loads((base / "data" / "octo_calls.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    open_calls = [c for c in calls if not c.get("resolved")]
+    if open_calls:
+        latest = open_calls[-1]
+        oracle_signal = {
+            "action":     latest.get("direction", "HOLD"),
+            "asset":      latest.get("asset", "BTC"),
+            "confidence": latest.get("confidence", 0),
+            "reasoning":  (latest.get("reasoning") or "")[:200],
+        }
+    else:
+        oracle_signal = {"action": "NO CALL", "asset": "BTC", "confidence": 0, "reasoning": "No open oracle calls."}
+
+    top_edge = None
+    try:
+        trades_data = json.loads((base / "octo_boto_trades.json").read_text(encoding="utf-8"))
+        positions = trades_data.get("positions", [])
+        if positions:
+            top_edge = positions[0]
+    except Exception:
+        pass
+
+    action = oracle_signal["action"]
+    if action in ("UP", "BUY", "LONG") and fng_val < 50:
+        action_summary = "Oracle bullish + market in fear. High-conviction setup -- review oracle call and check Polymarket edges."
+    elif action in ("DOWN", "SELL", "SHORT") and fng_val > 50:
+        action_summary = "Oracle bearish + greed elevated. Fade-the-crowd setup -- potential short entry on bounces."
+    elif action == "NO CALL":
+        action_summary = "No active oracle call. Cash is a position. Wait for signal before entering any market."
+    else:
+        action_summary = f"Mixed signals. Oracle: {action}. F&G: {fng_val}. No high-conviction entry -- wait for convergence."
+
+    now = datetime.utcnow()
+    hour = now.hour
+    if 0 <= hour < 8:       session = "Asia"
+    elif 8 <= hour < 13:    session = "US Pre-Market"
+    elif 13 <= hour < 21:   session = "US Market"
+    else:                   session = "London/Asia"
+
+    return {
+        "type":      "overnight_brief",
+        "title":     "OCTODAMUS OVERNIGHT / ASIA SESSION BRIEF",
+        "generated": now.strftime("%a, %b %d, %Y %H:%M UTC"),
+        "session":   session,
+        "btc_price": round(btc_price, 2),
+        "btc_chg_24h": round(btc_chg, 2),
+        "fear_greed": {"value": fng_val, "label": fng_label},
+        "futures_snapshot": {
+            "funding_avg": cg.get("funding_avg"),
+            "long_pct":    cg.get("long_pct"),
+            "short_pct":   cg.get("short_pct"),
+            "ls_skew":     cg.get("ls_skew"),
+        },
+        "oracle_signal":  oracle_signal,
+        "top_edge":       top_edge,
+        "action_summary": action_summary,
+        "footer":         FOOTER,
+    }
+
+
+def handle_agent_market_intel_bundle(req: dict) -> dict:
+    """
+    Agent Market Intel Bundle — $2 ACP job.
+    One-call structured JSON bundle for AI agent decision loops.
+    Designed by Agent_Ben (Session #23, April 28 2026).
+    """
+    import json as _json, pathlib as _pl
+    pulse = _get_pulse()
+    fg    = (pulse.get("fear_greed") or {})
+    fg_val   = int(fg.get("value", 50) or 50)
+    fg_label = str(fg.get("label", "Unknown") or "Unknown")
+
+    from financial_data_client import get_crypto_prices
+    prices  = get_crypto_prices(["BTC", "ETH"])
+    btc_p   = prices.get("BTC", {})
+    btc_px  = round(btc_p.get("usd", 0), 2)
+    btc_chg = round(btc_p.get("usd_24h_change", 0), 2)
+    eth_px  = round((prices.get("ETH") or {}).get("usd", 0), 2)
+
+    # Oracle
+    calls_file = _pl.Path(__file__).parent / "data" / "octo_calls.json"
+    calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
+    calls = [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
+    open_calls = [c for c in calls if not c.get("resolved")]
+    resolved   = [c for c in calls if c.get("resolved")]
+    wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
+    losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
+    signal_str = "NO_SIGNAL"
+    oracle_note = "No active oracle signal."
+    if open_calls:
+        latest     = open_calls[-1]
+        direction  = latest.get("direction", "").upper()
+        signal_str = "BEARISH" if direction == "DOWN" else ("BULLISH" if direction == "UP" else "NEUTRAL")
+        oracle_note = f"{latest.get('asset','')} {direction} | entry ${latest.get('entry_price',0):,.0f}"
+
+    # Grok sentiment
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        gs = get_grok_sentiment("BTC")
+    except Exception:
+        gs = {"signal": "NEUTRAL", "confidence": 0.5, "summary": ""}
+    crowd_bullish   = gs.get("signal") == "BULLISH"
+    crowd_pct       = round((gs.get("confidence", 0.5)) * 100, 1)
+    contrarian_flag = (crowd_bullish and btc_chg < -0.5) or (not crowd_bullish and btc_chg > 0.5)
+    crowd_label     = "BULLISH" if crowd_bullish else "BEARISH"
+
+    # Top Polymarket edge
+    pm_edges = [c for c in (calls or []) if not c.get("resolved") and c.get("timeframe") == "Polymarket"]
+    top_edge = {}
+    if pm_edges:
+        best = max(pm_edges, key=lambda c: abs(float(c.get("edge_score", 0) or 0)))
+        top_edge = {"market": best.get("asset",""), "direction": best.get("direction",""), "ev": round(float(best.get("edge_score",0) or 0), 3)}
+
+    reasoning = [
+        f"BTC ${btc_px:,.0f} ({btc_chg:+.1f}% 24h) | Fear & Greed {fg_val}/100 ({fg_label}) | Oracle: {oracle_note}",
+        f"Grok X crowd {crowd_pct:.0f}% {crowd_label}{'— CONTRARIAN DIVERGENCE ACTIVE' if contrarian_flag else ' — aligned with price'}. "
+        f"Record: {wins}W/{losses}L (oracle calls only)."
+    ]
+
+    return {
+        "type":             "agent_market_intel_bundle",
+        "designed_by":      "Agent_Ben",
+        "btc_price":        btc_px,
+        "btc_24h_change":   btc_chg,
+        "eth_price":        eth_px,
+        "fear_greed":       {"value": fg_val, "label": fg_label},
+        "oracle_signal":    signal_str,
+        "oracle_record":    f"{wins}W/{losses}L",
+        "oracle_note":      oracle_note,
+        "crowd_sentiment":  {"score": crowd_pct, "direction": crowd_label, "contrarian_flag": contrarian_flag},
+        "top_polymarket_edge": top_edge,
+        "reasoning":        reasoning,
+        "footer":           FOOTER,
+    }
+
+
+def handle_bounty_hunter_recon(req: dict) -> dict:
+    """
+    Bounty Hunter Recon Brief — $2 ACP job.
+    For agents deciding whether to accept a Virtuals Bounty market-related request.
+    Returns YES/NO + crowd risk + top risk factor + reasoning.
+    Designed by Agent_Ben (Session #23, April 28 2026).
+    """
+    pulse    = _get_pulse()
+    fg       = (pulse.get("fear_greed") or {})
+    fg_val   = int(fg.get("value", 50) or 50)
+    fg_label = str(fg.get("label", "Unknown") or "Unknown")
+
+    # Market risk assessment
+    risk_score = 0
+    risk_factors = []
+    if fg_val < 30:
+        risk_score += 30
+        risk_factors.append(f"Extreme fear ({fg_val}/100) — market instability elevated")
+    elif fg_val < 45:
+        risk_score += 15
+        risk_factors.append(f"Fear zone ({fg_val}/100) — caution warranted")
+
+    # Check for active Octodamus DOWN call (bearish)
+    import json as _json, pathlib as _pl
+    calls_file = _pl.Path(__file__).parent / "data" / "octo_calls.json"
+    calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
+    open_calls = [c for c in calls if not c.get("resolved")]
+    if open_calls:
+        latest = open_calls[-1]
+        if latest.get("direction", "").upper() == "DOWN":
+            risk_score += 25
+            risk_factors.append(f"Octodamus oracle is DOWN on {latest.get('asset','BTC')} — bearish signal active")
+        else:
+            risk_factors.append(f"Octodamus oracle is UP on {latest.get('asset','BTC')} — bullish signal active")
+
+    verdict = "ACCEPT" if risk_score < 35 else ("CAUTION" if risk_score < 60 else "DECLINE")
+    top_risk = risk_factors[0] if risk_factors else "No major risk factors detected"
+
+    return {
+        "type":         "bounty_hunter_recon",
+        "designed_by":  "Agent_Ben",
+        "verdict":      verdict,
+        "risk_score":   risk_score,
+        "top_risk_factor": top_risk,
+        "all_risk_factors": risk_factors,
+        "fear_greed":   {"value": fg_val, "label": fg_label},
+        "reasoning":    f"Risk score {risk_score}/100. Verdict: {verdict}. {top_risk}.",
+        "footer":       FOOTER,
+    }
+
+
 # ── Route by type string ──────────────────────────────────────────────────────
 
 def get_handler(report_type: str):
@@ -1088,6 +1396,14 @@ def get_handler(report_type: str):
         return handle_grok_sentiment_brief
     if any(k in t for k in ["divergence", "fear_crowd", "crowd_divergence", "fear_vs_crowd"]):
         return handle_fear_crowd_divergence
+    if any(k in t for k in ["smithery", "onboarding", "quickstart", "quick_start", "getting_started"]):
+        return handle_smithery_onboarding_brief
+    if any(k in t for k in ["overnight", "asia_session", "asia", "night_brief", "overnight_brief"]):
+        return handle_overnight_brief
+    if any(k in t for k in ["agent_market_intel", "intel_bundle", "context_pack", "decision_loop"]):
+        return handle_agent_market_intel_bundle
+    if any(k in t for k in ["bounty", "bounty_hunter", "bounty_recon", "recon_brief"]):
+        return handle_bounty_hunter_recon
     return handle_crypto_market_signal
 
 
@@ -1596,6 +1912,74 @@ def render_text(data: dict) -> str:
             commentary,
             "",
             f"OCTODAMUS CALL: {call}",
+            "",
+            FOOTER,
+        ]
+        return "\n".join(L)
+
+    elif t == "smithery_onboarding":
+        L = [
+            data.get("title", "OCTODAMUS -- AGENT QUICK-START GUIDE"),
+            f"Generated: {data.get('generated', '')}",
+            "",
+            "── TOOLS GUIDE ──────────────────────────────",
+            "",
+        ]
+        for tool in data.get("tools_guide") or []:
+            L.append(f"  {tool['tool']:28s} {tool['purpose']} ({tool['cadence']})")
+        L += [
+            "",
+            f"MCP Server:   {data.get('mcp_server', '')}",
+            f"API Key URL:  {data.get('api_key_url', '')}",
+            f"Cadence:      {data.get('recommended_cadence', '')}",
+            f"Quick-start:  {data.get('quick_start_snippet', '')}",
+            "",
+            "── ORACLE RECORD ────────────────────────────",
+            "",
+            data.get("oracle_record", ""),
+            "",
+            "── PRICING ──────────────────────────────────",
+            "",
+        ]
+        pricing = data.get("pricing") or {}
+        for k, v in pricing.items():
+            L.append(f"  {k}: {v}")
+        L += ["", FOOTER]
+        return "\n".join(L)
+
+    elif t == "overnight_brief":
+        fng = data.get("fear_greed") or {}
+        fs  = data.get("futures_snapshot") or {}
+        orc = data.get("oracle_signal") or {}
+        L = [
+            data.get("title", "OCTODAMUS OVERNIGHT / ASIA SESSION BRIEF"),
+            f"Generated: {data.get('generated', '')} | Session: {data.get('session', '')}",
+            "",
+            "── MARKET ───────────────────────────────────",
+            "",
+            f"BTC: ${float(data.get('btc_price', 0) or 0):,.2f} ({float(data.get('btc_chg_24h', 0) or 0):+.2f}% 24h)",
+            f"Fear & Greed: {fng.get('value', 'N/A')} -- {fng.get('label', 'N/A')}",
+            "",
+            "── FUTURES ──────────────────────────────────",
+            "",
+        ]
+        if fs.get("funding_avg") is not None:
+            L.append(f"Avg Funding: {float(fs['funding_avg']):+.4f}%")
+        if fs.get("long_pct") is not None:
+            L.append(f"L/S Ratio: {fs['long_pct']}% long / {fs['short_pct']}% short ({fs.get('ls_skew', '')})")
+        L += [
+            "",
+            "── ORACLE SIGNAL ────────────────────────────",
+            "",
+            f"Action: {orc.get('action', 'N/A')} | Asset: {orc.get('asset', 'BTC')} | Confidence: {orc.get('confidence', 0)}",
+        ]
+        if orc.get("reasoning"):
+            L.append(f"Reasoning: {orc['reasoning']}")
+        L += [
+            "",
+            "── ACTION SUMMARY ───────────────────────────",
+            "",
+            data.get("action_summary", ""),
             "",
             FOOTER,
         ]
