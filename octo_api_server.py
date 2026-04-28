@@ -6394,6 +6394,70 @@ def v2_sources():
     }
 
 
+# -- Filtered OpenAPI specs (for Orbis separate listings) --------------------
+
+def _filtered_openapi(include_tags: list[str], title: str, description: str, version: str = "1.0.0") -> dict:
+    """Return a filtered OpenAPI spec containing only routes matching include_tags."""
+    full = app.openapi()
+    paths = {}
+    for path, methods in full.get("paths", {}).items():
+        filtered_methods = {}
+        for method, op in methods.items():
+            op_tags = op.get("tags", [])
+            if any(t in include_tags for t in op_tags):
+                filtered_methods[method] = op
+        if filtered_methods:
+            paths[path] = filtered_methods
+    return {
+        "openapi": full["openapi"],
+        "info": {
+            "title":       title,
+            "description": description,
+            "version":     version,
+            "x-logo":      {"url": "https://octodamus.com/octo_logo.png"},
+        },
+        "servers": [{"url": "https://api.octodamus.com", "description": "Octodamus API"}],
+        "paths": paths,
+        "components": full.get("components", {}),
+    }
+
+
+@app.get("/openapi-ben.json", include_in_schema=False)
+def openapi_ben():
+    """Filtered OpenAPI spec — Agent_Ben x402 intelligence services only. For Orbis Agent_Ben listing."""
+    return _filtered_openapi(
+        include_tags=["Agent_Ben Services"],
+        title="Agent_Ben Intelligence Suite",
+        description=(
+            "Agent_Ben's autonomous x402 intelligence services — designed by an AI agent, "
+            "priced per-call, paid in USDC on Base. No API key required — pay per request via x402. "
+            "Services: Bull Trap Monitor, BTC Contrarian Alert, Crypto Divergence Brief, "
+            "Fear/Greed Divergence Signal, Sentiment Divergence Scanner, Agent Context Pack. "
+            "All responses Ed25519 signed. Free preview at /preview for each endpoint. "
+            "Quickstart: GET https://api.octodamus.com/v2/ben/bens_bull_trap_monitor/preview"
+        ),
+        version="1.0.0",
+    )
+
+
+@app.get("/openapi-octodamus.json", include_in_schema=False)
+def openapi_octodamus():
+    """Filtered OpenAPI spec — Octodamus main oracle endpoints only. For Orbis Octodamus listing."""
+    return _filtered_openapi(
+        include_tags=["Agent Data v2", "Market Data", "Oracle"],
+        title="Octodamus Market Intelligence",
+        description=(
+            "Real-time crypto market intelligence oracle. 12-signal consensus system across "
+            "27 live data feeds. BUY/SELL/HOLD signals, Fear & Greed, Polymarket edges, "
+            "aviation volume, macro regime, CLOB order book depth, and Binance cumulative delta. "
+            "x402 native — pay $0.01 USDC per call on Base or get 500 req/day free. "
+            "Ed25519 signed responses. "
+            "Quickstart: GET https://api.octodamus.com/v2/demo"
+        ),
+        version="3.0.0",
+    )
+
+
 # -- MCP Server (SSE transport) — mounted at /mcp ----------------------------
 # Smithery URL: https://api.octodamus.com/mcp
 
