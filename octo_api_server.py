@@ -6232,7 +6232,11 @@ def v2_sources():
 # Smithery URL: https://api.octodamus.com/mcp
 
 from mcp.server.fastmcp import FastMCP as _FastMCP
+from mcp.types import ToolAnnotations as _ToolAnnotations
 from pydantic import Field as _Field
+
+_READ_HINTS  = _ToolAnnotations(readOnlyHint=True,  idempotentHint=True,  openWorldHint=True)
+_WRITE_HINTS = _ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=True, destructiveHint=False)
 
 _mcp = _FastMCP(
     "Octodamus Market Intelligence",
@@ -6273,7 +6277,7 @@ def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-@_mcp.tool()
+@_mcp.tool(title="Trading Signal", annotations=_READ_HINTS)
 def get_agent_signal(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6295,7 +6299,7 @@ def get_agent_signal(
     """
     return _mcp_get("/v2/agent-signal", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Polymarket Edge Plays", annotations=_READ_HINTS)
 def get_polymarket_edge(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6310,7 +6314,7 @@ def get_polymarket_edge(
     """
     return _mcp_get("/v2/polymarket", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Market Sentiment", annotations=_READ_HINTS)
 def get_sentiment(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
     symbol: Annotated[str, _Field(
@@ -6331,7 +6335,7 @@ def get_sentiment(
     path = f"/v2/sentiment/{symbol}" if symbol else "/v2/sentiment"
     return _mcp_get(path, api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Live Prices", annotations=_READ_HINTS)
 def get_prices(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6355,7 +6359,7 @@ def get_prices(
     """
     return _mcp_get("/v2/prices", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Market Brief", annotations=_READ_HINTS)
 def get_market_brief(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6370,7 +6374,7 @@ def get_market_brief(
     """
     return _mcp_get("/v2/brief", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="All Signals Combined", annotations=_READ_HINTS)
 def get_all_data(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6383,7 +6387,7 @@ def get_all_data(
     """
     return _mcp_get("/v2/all", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Oracle Signal Breakdown", annotations=_READ_HINTS)
 def get_oracle_signals(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
@@ -6415,7 +6419,7 @@ def get_oracle_signals(
     """
     return _mcp_get("/v2/signal", api_key)
 
-@_mcp.tool()
+@_mcp.tool(title="Data Sources", annotations=_READ_HINTS)
 def get_data_sources() -> dict:
     """List all 27 live data feeds powering the Octodamus oracle system.
 
@@ -6429,7 +6433,7 @@ def get_data_sources() -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-@_mcp.tool()
+@_mcp.tool(title="Buy Trading Guide", annotations=_WRITE_HINTS)
 def buy_guide() -> str:
     """Purchase the Build the House trading system guide via x402 on Base.
 
@@ -6454,7 +6458,7 @@ def buy_guide() -> str:
         "  4. Receive JSON with download_url (valid 30 days)",
     ])
 
-@_mcp.tool()
+@_mcp.tool(title="Subscribe to Premium API", annotations=_WRITE_HINTS)
 def buy_premium_api() -> str:
     """Subscribe to OctoData Premium API via x402 on Base.
 
