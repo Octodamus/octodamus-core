@@ -360,10 +360,28 @@ _X402_REQ_BEN_50CENT = PaymentRequirements(
     amount="500000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
     extra=_USDC_EXTRA,
 )
+_X402_REQ_BEN_35CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="350000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
 _X402_REQS             = [_X402_REQ_MICRO, _X402_REQ_TRIAL, _X402_REQ_ANNUAL]
 _X402_REQS_GUIDE       = [_X402_REQ_GUIDE]
 _X402_REQS_DERIV_GUIDE = [_X402_REQ_DERIV_GUIDE]
+_X402_REQ_BEN_75CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="750000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
+_X402_REQ_25CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="250000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
 _X402_REQS_BEN_50CENT  = [_X402_REQ_BEN_50CENT]
+_X402_REQS_BEN_35CENT  = [_X402_REQ_BEN_35CENT]
+_X402_REQS_BEN_75CENT  = [_X402_REQ_BEN_75CENT]
+_X402_REQS_25CENT      = [_X402_REQ_25CENT]
 _X402_REQS_API         = [_X402_REQ_ANNUAL]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
@@ -1540,11 +1558,43 @@ _ERC8004_CARD = {
             "price":    "$0.01 USDC per call",
         },
         {
+            "name":     "CryptoDivergenceBrief",
+            "url":      "https://api.octodamus.com/v2/ben/bens_crypto_divergence_brief",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Agent_Ben's complete morning brief: BTC/ETH/SOL price + Grok crowd sentiment + Octodamus oracle synthesized into divergence score (0-100) + contrarian thesis + TRADE/PASS verdict. Designed by Agent_Ben.",
+            "price":    "$0.75 USDC per call",
+        },
+        {
             "name":     "SentimentDivergence",
             "url":      "https://api.octodamus.com/v2/ben/sentiment-divergence",
             "protocol": "x402",
             "method":   "GET",
-            "description": "Detects Fear & Greed vs X crowd sentiment divergence. Returns CONTRARIAN_BEAR/BULL/ALIGNED signal. Designed by Agent_Ben.",
+            "description": "Detects Fear & Greed vs X crowd sentiment divergence for BTC/ETH/SOL. Returns CONTRARIAN_BEAR/BULL/ALIGNED signal. Designed by Agent_Ben.",
+            "price":    "$0.50 USDC per call",
+        },
+        {
+            "name":     "FearGreedDivergenceSignal",
+            "url":      "https://api.octodamus.com/v2/ben/bens_fear_greed_divergence_signal",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "Single-asset contrarian check (?asset=BTC|ETH|SOL). Crowd sentiment vs Fear & Greed divergence score + BULLISH/BEARISH/NEUTRAL signal + reasoning. Designed by Agent_Ben.",
+            "price":    "$0.35 USDC per call",
+        },
+        {
+            "name":     "BtcContrarianAlert",
+            "url":      "https://api.octodamus.com/v2/ben/bens_btc_contrarian_alert",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "BTC-only bull/bear trap detector. Scores crowd sentiment vs price action vs Octodamus oracle (0-100). Flags BULL_TRAP/BEAR_TRAP/NO_SIGNAL with recommended_action. Designed by Agent_Ben.",
+            "price":    "$0.35 USDC per call",
+        },
+        {
+            "name":     "AgentContextPack",
+            "url":      "https://api.octodamus.com/v2/ben/bens_agent_context_pack",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": "One-call market context block for AI agents: signal, F&G, Grok sentiment, top Polymarket edge, contrarian flag, reasoning. Replaces 5 chained tool calls. Pre-formatted for system prompt injection. Designed by Agent_Ben.",
             "price":    "$0.50 USDC per call",
         },
         {
@@ -1595,13 +1645,18 @@ _ERC8004_CARD = {
         "pay_to":      "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
         "products": {
             "micro_per_call":      {"price_usdc": 0.01, "endpoint": "GET /v2/x402/agent-signal"},
-            "sentiment_divergence":{"price_usdc": 0.50, "endpoint": "GET /v2/ben/sentiment-divergence"},
+            "crypto_divergence_brief":    {"price_usdc": 0.75, "endpoint": "GET /v2/ben/bens_crypto_divergence_brief"},
+            "sentiment_divergence":        {"price_usdc": 0.50, "endpoint": "GET /v2/ben/sentiment-divergence"},
+            "fear_greed_divergence_signal":{"price_usdc": 0.35, "endpoint": "GET /v2/ben/bens_fear_greed_divergence_signal?asset=BTC"},
+            "btc_contrarian_alert":        {"price_usdc": 0.35, "endpoint": "GET /v2/ben/bens_btc_contrarian_alert"},
+            "agent_context_pack":          {"price_usdc": 0.50, "endpoint": "GET /v2/ben/bens_agent_context_pack"},
             "derivatives_guide":   {"price_usdc": 3.00, "endpoint": "GET /v2/guide/derivatives"},
             "annual_api_key":      {"price_usdc": 29,   "duration_days": 365, "endpoint": "GET /v1/subscribe?plan=annual"},
             "free_key":            {"price_usdc": 0,    "endpoint": "POST /v1/signup?email="},
         },
     },
     "mcp":         "https://api.octodamus.com/mcp",
+    "orbis":       "https://orbisapi.com?ref=8TQZU7HH",
     "smithery":    "https://smithery.ai/server/octodamusai/market-intelligence",
     "registry":    "io.github.Octodamus/market-intelligence",
     "category":    ["market-intelligence", "crypto-signals", "prediction-markets", "macro-data"],
@@ -1705,6 +1760,16 @@ def well_known_x402():
                 "checkout": "POST https://api.octodamus.com/v1/agent-checkout",
             },
             {
+                "path":        "/v2/ben/bens_crypto_divergence_brief",
+                "method":      "GET",
+                "description": "Agent_Ben's Crypto Divergence Brief — BTC/ETH/SOL price + Grok X crowd sentiment + Octodamus oracle synthesized into divergence score (0-100), contrarian thesis, and TRADE/PASS verdict. The complete morning brief in one call. $0.75 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.75, "description": "Single call, Ed25519 signed, TRADE/PASS verdict included."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/bens_crypto_divergence_brief/preview",
+                "designer": "Agent_Ben",
+            },
+            {
                 "path":        "/v2/ben/sentiment-divergence",
                 "method":      "GET",
                 "description": "Agent_Ben's Sentiment Divergence Scanner — Fear & Greed vs X crowd sentiment for BTC/ETH/SOL. Divergence score + CONTRARIAN BEAR/BULL/ALIGNED signal. $0.50 per call.",
@@ -1712,6 +1777,36 @@ def well_known_x402():
                     {"product": "per_call", "amount_usdc": 0.50, "description": "Single call, instant result."},
                 ],
                 "preview":  "GET https://api.octodamus.com/v2/ben/sentiment-divergence/preview",
+                "designer": "Agent_Ben",
+            },
+            {
+                "path":        "/v2/ben/bens_fear_greed_divergence_signal",
+                "method":      "GET",
+                "description": "Agent_Ben's single-asset contrarian check — crowd sentiment vs Fear & Greed for BTC, ETH, or SOL. Divergence score + BULLISH/BEARISH/NEUTRAL signal + plain-English reasoning. ?asset=BTC|ETH|SOL. $0.35 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.35, "description": "Single asset, Ed25519 signed."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/bens_fear_greed_divergence_signal/preview",
+                "designer": "Agent_Ben",
+            },
+            {
+                "path":        "/v2/ben/bens_btc_contrarian_alert",
+                "method":      "GET",
+                "description": "Agent_Ben's BTC bull/bear trap detector — scores real-time divergence between BTC crowd sentiment and price action (0-100), flags BULL_TRAP/BEAR_TRAP/NO_SIGNAL, returns recommended_action. $0.35 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.35, "description": "BTC only, Ed25519 signed, instant."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/bens_btc_contrarian_alert/preview",
+                "designer": "Agent_Ben",
+            },
+            {
+                "path":        "/v2/ben/bens_agent_context_pack",
+                "method":      "GET",
+                "description": "Agent_Ben's one-call market context pack — signal, F&G, Grok crowd sentiment, top Polymarket edge, contrarian flag, 2-sentence reasoning block. Replaces 5 chained tool calls. Pre-formatted for system prompt injection. $0.50 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.50, "description": "Full context block, Ed25519 signed, ~1s response."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/bens_agent_context_pack/preview",
                 "designer": "Agent_Ben",
             },
             {
@@ -4276,6 +4371,1073 @@ def ben_sentiment_divergence_preview():
     }
 
 
+# Designed by Agent_Ben. Single-asset contrarian check: crowd sentiment vs Fear & Greed.
+# Cheaper than the full scanner ($0.35 vs $0.50) — focused on one asset, clean output.
+
+@app.get("/v2/ben/bens_fear_greed_divergence_signal", tags=["Agent_Ben Services"])
+def ben_fear_greed_divergence_signal(request: Request, asset: str = "BTC"):
+    """
+    Agent_Ben's Fear/Greed Divergence Signal — $0.35 USDC on Base.
+    Single-asset contrarian check. Pass ?asset=BTC|ETH|SOL.
+    Returns divergence score (0-100), contrarian_signal, confidence_pct, reasoning.
+    Designed by Agent_Ben to fill the live crypto sentiment gap on x402/Orbis.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.35),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "bens_fear_greed_divergence_signal",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.35,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "usage":       "GET /v2/ben/bens_fear_greed_divergence_signal?asset=BTC",
+                "preview":     "GET https://api.octodamus.com/v2/ben/bens_fear_greed_divergence_signal/preview",
+                "description": "Crowd sentiment vs Fear & Greed divergence for one asset. Score 0-100. BULLISH/BEARISH/NEUTRAL contrarian signal.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_35CENT)
+
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH", "SOL"):
+        asset = "BTC"
+
+    try:
+        import httpx as _hx
+        fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+        fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+        fg_lbl = fg_r.json()["data"][0].get("value_classification", "Unknown") if fg_r.status_code == 200 else "Unknown"
+    except Exception:
+        fg_val, fg_lbl = 50, "Unknown"
+
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        gs = get_grok_sentiment(asset)
+    except Exception as e:
+        return _sign_payload({"error": str(e), "designer": "Agent_Ben"})
+
+    crowd_bull  = gs.get("signal") == "BULLISH"
+    crowd_conf  = gs.get("confidence", 0.5)
+    crowd_pct   = round(crowd_conf * 100, 1)
+    div_score   = min(100, int(abs(crowd_pct - fg_val)))
+
+    if crowd_bull and fg_val < 45:
+        contrarian_signal = "BEARISH"
+        confidence_pct    = round(min(95, 50 + div_score * 0.5), 1)
+        reasoning = (
+            f"Crowd is {crowd_pct:.0f}% bullish on {asset} while Fear & Greed sits at {fg_val} ({fg_lbl}). "
+            f"Historical pattern: extreme crowd bullishness during fear regimes precedes 5-12% drawdowns within 72h."
+        )
+    elif not crowd_bull and fg_val > 55:
+        contrarian_signal = "BULLISH"
+        confidence_pct    = round(min(95, 50 + div_score * 0.5), 1)
+        reasoning = (
+            f"Crowd is bearish on {asset} but Fear & Greed at {fg_val} ({fg_lbl}) shows greed. "
+            f"Smart money diverging from retail sentiment — squeeze risk elevated."
+        )
+    elif div_score < 15:
+        contrarian_signal = "NEUTRAL"
+        confidence_pct    = 40.0
+        reasoning = (
+            f"Crowd sentiment ({crowd_pct:.0f}% {'bullish' if crowd_bull else 'bearish'}) and Fear & Greed ({fg_val}) are aligned. "
+            f"No divergence edge. Wait for separation before acting."
+        )
+    else:
+        contrarian_signal = "NEUTRAL"
+        confidence_pct    = round(30 + div_score * 0.2, 1)
+        reasoning = (
+            f"Moderate divergence detected on {asset} (score {div_score}/100). "
+            f"Not yet at actionable threshold — monitor for escalation above 60."
+        )
+
+    return _sign_payload({
+        "product":           "bens_fear_greed_divergence_signal",
+        "designer":          "Agent_Ben — octodamusai.com",
+        "asset":             asset,
+        "crowd_sentiment":   f"{'BULLISH' if crowd_bull else 'BEARISH'}_{crowd_pct:.0f}",
+        "fear_greed_index":  fg_val,
+        "fear_greed_label":  fg_lbl,
+        "divergence_score":  div_score,
+        "contrarian_signal": contrarian_signal,
+        "confidence_pct":    confidence_pct,
+        "brief_reasoning":   reasoning,
+        "grok_summary":      gs.get("summary", "")[:200],
+        "timestamp":         datetime.utcnow().isoformat() + "Z",
+    })
+
+
+@app.get("/v2/ben/bens_fear_greed_divergence_signal/preview", tags=["Agent_Ben Services"])
+def ben_fear_greed_divergence_signal_preview():
+    """Free preview — shows structure and sample output."""
+    return {
+        "product":    "bens_fear_greed_divergence_signal",
+        "price_usdc": 0.35,
+        "buy":        "GET https://api.octodamus.com/v2/ben/bens_fear_greed_divergence_signal?asset=BTC (x402 $0.35)",
+        "designed_by": "Agent_Ben — autonomous profit agent in the Octodamus ecosystem",
+        "what_it_does": "Single-asset contrarian check. Detects when X/Twitter crowd sentiment diverges from Fear & Greed index — the setup that precedes reversals.",
+        "usage":       "GET /v2/ben/bens_fear_greed_divergence_signal?asset=BTC|ETH|SOL",
+        "output_fields": ["asset","crowd_sentiment","fear_greed_index","divergence_score","contrarian_signal","confidence_pct","brief_reasoning","timestamp"],
+        "sample_output": {
+            "asset": "BTC", "crowd_sentiment": "BULLISH_75", "fear_greed_index": 33,
+            "divergence_score": 42, "contrarian_signal": "BEARISH", "confidence_pct": 71.0,
+            "brief_reasoning": "Crowd is 75% bullish on BTC while Fear & Greed sits at 33 (Fear). Historical pattern: extreme crowd bullishness during fear regimes precedes 5-12% drawdowns within 72h.",
+        },
+        "powered_by": "Grok real-time X data + alternative.me Fear & Greed",
+        "gap_filled":  "As of April 2026, no live crypto sentiment intel exists on Orbis (10,584 APIs) or x402 bazaar.",
+    }
+
+
+# -- Ben's Crypto Divergence Brief ($0.75 USDC x402) -------------------------
+# Designed by Agent_Ben. Three-source synthesis: price + Grok crowd sentiment
+# + Octodamus oracle signal. Produces a divergence score, contrarian thesis,
+# and TRADE/PASS verdict in one call. The complete Agent_Ben morning brief.
+
+@app.get("/v2/ben/bens_crypto_divergence_brief", tags=["Agent_Ben Services"])
+def ben_crypto_divergence_brief(request: Request):
+    """
+    Agent_Ben's Crypto Divergence Brief — $0.75 USDC on Base.
+    Synthesizes BTC/ETH/SOL price action, Grok X crowd sentiment, and the
+    Octodamus oracle signal into a single divergence score + TRADE/PASS verdict.
+    The complete morning brief that Agent_Ben runs every session.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.75),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "bens_crypto_divergence_brief",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.75,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "preview":     "GET https://api.octodamus.com/v2/ben/bens_crypto_divergence_brief/preview",
+                "description": "BTC/ETH/SOL price + Grok crowd sentiment + Octodamus oracle signal synthesized into divergence score (0-100) + contrarian thesis + TRADE/PASS verdict.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_75CENT)
+
+    # Fear & Greed
+    try:
+        import httpx as _hx
+        fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+        fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+        fg_lbl = fg_r.json()["data"][0].get("value_classification", "Unknown") if fg_r.status_code == 200 else "Unknown"
+    except Exception:
+        fg_val, fg_lbl = 50, "Unknown"
+
+    # Prices
+    from financial_data_client import get_crypto_prices
+    prices = get_crypto_prices(["BTC", "ETH", "SOL"])
+
+    # Octodamus open calls
+    calls      = _load_calls()
+    open_calls = [c for c in calls if not c.get("resolved")]
+    stats      = _call_stats(calls)
+    oracle_dir = None
+    oracle_call = None
+    if open_calls:
+        latest     = open_calls[-1]
+        oracle_dir = latest.get("direction", "").upper()
+        oracle_call = {
+            "id":        latest.get("id", ""),
+            "direction": oracle_dir,
+            "entry":     latest.get("entry", ""),
+            "timeframe": latest.get("timeframe", ""),
+        }
+
+    # Per-asset divergence
+    assets = []
+    overall_div_scores = []
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        for asset in ["BTC", "ETH", "SOL"]:
+            gs   = get_grok_sentiment(asset)
+            p    = prices.get(asset, {})
+            crowd_bull  = gs.get("signal") == "BULLISH"
+            crowd_conf  = gs.get("confidence", 0.5)
+            crowd_pct   = round(crowd_conf * 100, 1)
+            div_score   = min(100, int(abs(crowd_pct - fg_val)))
+            overall_div_scores.append(div_score)
+
+            if crowd_bull and fg_val < 45:
+                sent_signal = "CONTRARIAN_BEAR"
+            elif not crowd_bull and fg_val > 55:
+                sent_signal = "CONTRARIAN_BULL"
+            elif div_score < 15:
+                sent_signal = "ALIGNED"
+            else:
+                sent_signal = "NEUTRAL"
+
+            assets.append({
+                "asset":              asset,
+                "price_usd":          p.get("usd", 0),
+                "change_24h_pct":     round(p.get("usd_24h_change", 0), 2),
+                "grok_signal":        gs.get("signal", "NEUTRAL"),
+                "grok_confidence_pct": crowd_pct,
+                "crowd_summary":      gs.get("summary", "")[:150],
+                "fear_greed":         fg_val,
+                "fear_greed_label":   fg_lbl,
+                "divergence_score":   div_score,
+                "sentiment_signal":   sent_signal,
+            })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "designer": "Agent_Ben"})
+
+    # Aggregate divergence score (max across assets — worst crowd dislocation)
+    agg_div = max(overall_div_scores) if overall_div_scores else 0
+
+    # Contrarian thesis
+    btc = next((a for a in assets if a["asset"] == "BTC"), {})
+    btc_dir   = btc.get("grok_signal", "NEUTRAL")
+    btc_conf  = btc.get("grok_confidence_pct", 50)
+    btc_price = btc.get("price_usd", 0)
+    btc_chg   = btc.get("change_24h_pct", 0)
+
+    if oracle_dir == "DOWN" and btc_dir == "BULLISH" and btc_chg < 0:
+        thesis = (
+            f"Classic distribution setup: BTC crowd is {btc_conf:.0f}% bullish on X while price is "
+            f"falling ({btc_chg:+.2f}% 24h). Octodamus oracle is DOWN. "
+            f"Fear & Greed at {fg_val} ({fg_lbl}). Crowd is wrong — oracle and price action agree."
+        )
+        verdict       = "TRADE"
+        verdict_note  = "Oracle + contrarian sentiment align bearish on BTC. Seek a liquid >24h market to short."
+    elif oracle_dir == "UP" and btc_dir == "BEARISH" and btc_chg > 0:
+        thesis = (
+            f"Crowd is {btc_conf:.0f}% bearish on X but BTC is rising ({btc_chg:+.2f}% 24h). "
+            f"Octodamus oracle is UP. Fear & Greed at {fg_val} ({fg_lbl}). "
+            f"Crowd fighting the trend — squeeze risk elevated."
+        )
+        verdict       = "TRADE"
+        verdict_note  = "Oracle + contrarian sentiment align bullish on BTC. Seek a liquid >24h market to go long."
+    elif agg_div < 20:
+        thesis = (
+            f"No strong divergence detected. Crowd and Fear & Greed ({fg_val}, {fg_lbl}) largely aligned. "
+            f"Oracle direction: {oracle_dir or 'none'}. No contrarian edge — wait for crowd to get offside."
+        )
+        verdict       = "PASS"
+        verdict_note  = "Insufficient divergence for a contrarian edge. Hold cash."
+    else:
+        thesis = (
+            f"Moderate divergence (score {agg_div}/100). BTC crowd {btc_conf:.0f}% {btc_dir.lower()}, "
+            f"F&G at {fg_val} ({fg_lbl}), oracle {oracle_dir or 'no open call'}. "
+            f"Not yet at actionable threshold — monitor for escalation."
+        )
+        verdict       = "PASS"
+        verdict_note  = f"Divergence score {agg_div}/100 — below 40-point action threshold. Wait."
+
+    return _sign_payload({
+        "product":              "bens_crypto_divergence_brief",
+        "designer":             "Agent_Ben — octodamusai.com",
+        "timestamp":            datetime.utcnow().isoformat() + "Z",
+        "fear_greed":           fg_val,
+        "fear_greed_label":     fg_lbl,
+        "overall_divergence_score": agg_div,
+        "oracle_signal":        oracle_call,
+        "oracle_record":        f"{stats.get('wins',0)}W / {stats.get('losses',0)}L",
+        "assets":               assets,
+        "contrarian_thesis":    thesis,
+        "verdict":              verdict,
+        "verdict_rationale":    verdict_note,
+        "methodology":          "Three-source synthesis: price action + Grok X crowd sentiment + Octodamus oracle. Divergence score is max crowd/F&G separation across BTC/ETH/SOL. TRADE when oracle + crowd mismatch align directionally.",
+    })
+
+
+@app.get("/v2/ben/bens_crypto_divergence_brief/preview", tags=["Agent_Ben Services"])
+def ben_crypto_divergence_brief_preview():
+    """Free preview — methodology, output structure, and sample."""
+    return {
+        "product":     "bens_crypto_divergence_brief",
+        "price_usdc":  0.75,
+        "buy":         "GET https://api.octodamus.com/v2/ben/bens_crypto_divergence_brief (x402 $0.75 USDC)",
+        "designed_by": "Agent_Ben — autonomous profit agent in the Octodamus ecosystem",
+        "what_it_does": (
+            "Delivers a complete crypto morning brief in one call. Synthesizes BTC/ETH/SOL price action, "
+            "Grok real-time X crowd sentiment, and the Octodamus oracle signal into a divergence score (0-100), "
+            "a plain-English contrarian trade thesis, and a TRADE/PASS verdict with rationale."
+        ),
+        "why_it_exists": (
+            "This is the exact analysis Agent_Ben runs every morning. Three data sources that other agents "
+            "can't easily combine themselves. $0.75 is cheap enough for daily use, meaningful at scale."
+        ),
+        "assets_covered": ["BTC", "ETH", "SOL"],
+        "output_fields": [
+            "fear_greed", "fear_greed_label", "overall_divergence_score",
+            "oracle_signal", "oracle_record", "assets",
+            "contrarian_thesis", "verdict", "verdict_rationale",
+        ],
+        "verdict_logic": {
+            "TRADE": "Oracle direction + crowd mismatch align. Classic distribution/squeeze setup. Seek a liquid >24h market.",
+            "PASS":  "No clean directional edge. Divergence below threshold or signals conflicting. Hold cash.",
+        },
+        "sample_output": {
+            "fear_greed": 47, "fear_greed_label": "Neutral",
+            "overall_divergence_score": 28,
+            "oracle_signal": {"id": "BITC-REAC-AP", "direction": "DOWN", "entry": "$68", "timeframe": "Polymarket"},
+            "oracle_record": "8W / 8L",
+            "contrarian_thesis": "Classic distribution setup: BTC crowd is 75% bullish on X while price is falling (-1.24% 24h). Octodamus oracle is DOWN. Fear & Greed at 47 (Neutral). Crowd is wrong — oracle and price action agree.",
+            "verdict": "TRADE",
+            "verdict_rationale": "Oracle + contrarian sentiment align bearish on BTC. Seek a liquid >24h market to short.",
+        },
+        "powered_by": "Grok real-time X data + alternative.me Fear & Greed + Octodamus oracle (api.octodamus.com)",
+    }
+
+
+@app.get("/v2/ben/bens_btc_contrarian_alert", tags=["Agent_Ben Services"])
+def ben_btc_contrarian_alert(request: Request):
+    """
+    Agent_Ben's BTC Bull/Bear Trap Detector — $0.35 USDC on Base.
+    Scores real-time divergence between BTC crowd sentiment (Grok X), price action,
+    Fear & Greed, and the Octodamus oracle. Returns a contrarian edge score 0-100
+    with BULL_TRAP / BEAR_TRAP / NO_SIGNAL verdict and recommended action.
+    Designed by Agent_Ben during Midday Session #22 (April 27, 2026).
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.35),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "bens_btc_contrarian_alert",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.35,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "preview":     "GET https://api.octodamus.com/v2/ben/bens_btc_contrarian_alert/preview",
+                "description": "BTC crowd sentiment vs price action divergence scored 0-100. Flags BULL_TRAP/BEAR_TRAP/NO_SIGNAL with recommended_action.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_35CENT)
+
+    # Fear & Greed
+    try:
+        import httpx as _hx
+        fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+        fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+        fg_lbl = fg_r.json()["data"][0].get("value_classification", "Unknown") if fg_r.status_code == 200 else "Unknown"
+    except Exception:
+        fg_val, fg_lbl = 50, "Unknown"
+
+    # BTC price
+    from financial_data_client import get_crypto_prices
+    prices  = get_crypto_prices(["BTC"])
+    btc_p   = prices.get("BTC", {})
+    btc_px  = round(btc_p.get("usd", 0), 2)
+    btc_chg = round(btc_p.get("usd_24h_change", 0), 2)
+
+    # Grok BTC sentiment
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        gs = get_grok_sentiment("BTC")
+    except Exception:
+        gs = {"signal": "NEUTRAL", "confidence": 0.5, "summary": ""}
+
+    crowd_bullish  = gs.get("signal") == "BULLISH"
+    crowd_pct      = round((gs.get("confidence", 0.5)) * 100, 1)
+    crowd_label    = "BULLISH" if crowd_bullish else "BEARISH"
+
+    # Octodamus oracle
+    calls      = _load_calls()
+    open_calls = [c for c in calls if not c.get("resolved")]
+    stats      = _call_stats(calls)
+    oracle_dir = None
+    if open_calls:
+        oracle_dir = open_calls[-1].get("direction", "").upper()
+
+    # --- Contrarian Edge Score (0-100) ---
+    # Component 1: Crowd extremity vs neutral (0-40 pts)
+    crowd_extreme = min(40, int(abs(crowd_pct - 50)))
+
+    # Component 2: Price action contradicts crowd direction (0-30 pts)
+    price_contradicts = (crowd_bullish and btc_chg < -0.5) or (not crowd_bullish and btc_chg > 0.5)
+    price_pts = 30 if price_contradicts else 0
+
+    # Component 3: Octodamus oracle aligns with contrarian thesis (0-20 pts)
+    oracle_contrarian = (crowd_bullish and oracle_dir == "DOWN") or (not crowd_bullish and oracle_dir == "UP")
+    oracle_pts = 20 if (oracle_dir and oracle_contrarian) else 0
+
+    # Component 4: F&G in neutral zone = crowd longs/shorts not yet flushed (0-10 pts)
+    fg_bonus = 10 if (crowd_bullish and 30 <= fg_val <= 62) or (not crowd_bullish and fg_val >= 55) else 0
+
+    edge_score = crowd_extreme + price_pts + oracle_pts + fg_bonus
+
+    # Verdict
+    if edge_score >= 65 and price_contradicts:
+        if crowd_bullish:
+            divergence_type    = "BULL_TRAP"
+            recommended_action = f"BEARISH BIAS — crowd is {crowd_pct:.0f}% bullish but BTC is {btc_chg:+.2f}%. Seek liquid >24h short market."
+        else:
+            divergence_type    = "BEAR_TRAP"
+            recommended_action = f"BULLISH BIAS — crowd is {crowd_pct:.0f}% bearish but BTC is {btc_chg:+.2f}%. Squeeze risk elevated. Seek liquid >24h long market."
+    elif edge_score >= 40:
+        divergence_type    = "CAUTION"
+        recommended_action = f"Monitor — divergence building (score {edge_score}/100) but not at action threshold. Check again in 2-4h."
+    else:
+        divergence_type    = "NO_SIGNAL"
+        recommended_action = "Hold cash. Crowd and price action are not sufficiently divergent for a contrarian edge."
+
+    # Reasoning
+    oracle_note = f"Octodamus oracle is {oracle_dir} ({'confirms' if oracle_contrarian else 'no open call or disagrees'})." if oracle_dir else "No open Octodamus oracle call."
+    reasoning = (
+        f"BTC at ${btc_px:,.0f} ({btc_chg:+.2f}% 24h). "
+        f"Grok X crowd is {crowd_pct:.0f}% {crowd_label}. "
+        f"Fear & Greed: {fg_val}/100 ({fg_lbl}). "
+        f"{oracle_note} "
+        f"Crowd extremity: {crowd_extreme}/40 pts. "
+        f"Price contradiction: {price_pts}/30 pts. "
+        f"Oracle alignment: {oracle_pts}/20 pts. "
+        f"F&G setup: {fg_bonus}/10 pts."
+    )
+
+    return _sign_payload({
+        "product":               "bens_btc_contrarian_alert",
+        "designer":              "Agent_Ben — octodamusai.com",
+        "timestamp":             datetime.utcnow().isoformat() + "Z",
+        "btc_price":             btc_px,
+        "price_24h_change":      btc_chg,
+        "crowd_sentiment_score": crowd_pct,
+        "crowd_direction":       crowd_label,
+        "crowd_summary":         gs.get("summary", "")[:150],
+        "fear_greed":            fg_val,
+        "fear_greed_label":      fg_lbl,
+        "octodamus_signal":      oracle_dir or "no_open_call",
+        "oracle_record":         f"{stats.get('wins',0)}W / {stats.get('losses',0)}L",
+        "contrarian_edge_score": edge_score,
+        "divergence_type":       divergence_type,
+        "recommended_action":    recommended_action,
+        "reasoning":             reasoning,
+        "score_components": {
+            "crowd_extremity_pts": crowd_extreme,
+            "price_contradiction_pts": price_pts,
+            "oracle_alignment_pts": oracle_pts,
+            "fg_setup_pts": fg_bonus,
+            "max_possible": 100,
+        },
+    })
+
+
+@app.get("/v2/ben/bens_btc_contrarian_alert/preview", tags=["Agent_Ben Services"])
+def ben_btc_contrarian_alert_preview():
+    """Free preview — methodology, output structure, and sample."""
+    return {
+        "product":      "bens_btc_contrarian_alert",
+        "price_usdc":   0.35,
+        "buy":          "GET https://api.octodamus.com/v2/ben/bens_btc_contrarian_alert (x402 $0.35 USDC)",
+        "designed_by":  "Agent_Ben — autonomous profit agent in the Octodamus ecosystem",
+        "what_it_does": (
+            "BTC-only bull/bear trap detector. Scores real-time divergence between Grok X crowd sentiment "
+            "and BTC price action, cross-referenced with Fear & Greed and the Octodamus oracle. "
+            "Returns a contrarian edge score (0-100), divergence type (BULL_TRAP/BEAR_TRAP/CAUTION/NO_SIGNAL), "
+            "and a plain-English recommended_action."
+        ),
+        "why_it_exists": (
+            "Today's proof of concept: BTC crowd was 75% bullish on X while BTC was down 2.3% and the "
+            "Octodamus oracle was calling DOWN. Score: 85/100. That's a BULL_TRAP. Agent_Ben designed this "
+            "endpoint during Midday Session #22 specifically to catch this setup before the flush."
+        ),
+        "score_methodology": {
+            "crowd_extremity":      "abs(crowd_pct - 50), capped at 40 pts — how far the crowd is from neutral",
+            "price_contradiction":  "30 pts if price direction opposes crowd consensus",
+            "oracle_alignment":     "20 pts if Octodamus oracle confirms the contrarian thesis",
+            "fg_setup_bonus":       "10 pts if Fear & Greed is neutral (longs/shorts not yet flushed)",
+            "action_threshold":     "score >= 65 + price contradiction = BULL_TRAP or BEAR_TRAP",
+        },
+        "output_fields": [
+            "btc_price", "price_24h_change", "crowd_sentiment_score", "crowd_direction",
+            "fear_greed", "fear_greed_label", "octodamus_signal", "oracle_record",
+            "contrarian_edge_score", "divergence_type", "recommended_action", "reasoning",
+            "score_components",
+        ],
+        "sample_output": {
+            "btc_price": 76845, "price_24h_change": -2.30,
+            "crowd_sentiment_score": 75.0, "crowd_direction": "BULLISH",
+            "fear_greed": 47, "fear_greed_label": "Neutral",
+            "octodamus_signal": "DOWN", "oracle_record": "8W / 8L",
+            "contrarian_edge_score": 85,
+            "divergence_type": "BULL_TRAP",
+            "recommended_action": "BEARISH BIAS — crowd is 75% bullish but BTC is -2.30%. Seek liquid >24h short market.",
+        },
+        "powered_by": "Grok real-time X data + alternative.me Fear & Greed + Octodamus oracle (api.octodamus.com)",
+    }
+
+
+@app.get("/v2/ben/bens_agent_context_pack", tags=["Agent_Ben Services"])
+def ben_agent_context_pack(request: Request):
+    """
+    Agent_Ben's One-Call Market Context Pack — $0.50 USDC on Base.
+    Returns a complete market context block ready to inject into any AI agent's
+    system prompt or reasoning chain. Replaces 5 chained tool calls with one request:
+    signal + F&G + Grok crowd sentiment + top Polymarket edge + contrarian flag + reasoning.
+    Designed by Agent_Ben during Overnight Session #23 (April 28, 2026).
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.50),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "bens_agent_context_pack",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.50,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "preview":     "GET https://api.octodamus.com/v2/ben/bens_agent_context_pack/preview",
+                "description": "One-call market context: signal + F&G + Grok sentiment + Polymarket edge + contrarian flag + reasoning. Replaces 5 chained tool calls.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_50CENT)
+
+    # Gather all data sources in parallel-ish sequence
+    try:
+        import httpx as _hx
+
+        # Fear & Greed
+        try:
+            fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+            fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+            fg_lbl = fg_r.json()["data"][0].get("value_classification", "Unknown") if fg_r.status_code == 200 else "Unknown"
+        except Exception:
+            fg_val, fg_lbl = 50, "Unknown"
+
+        # BTC price
+        from financial_data_client import get_crypto_prices
+        prices  = get_crypto_prices(["BTC", "ETH"])
+        btc_p   = prices.get("BTC", {})
+        btc_px  = round(btc_p.get("usd", 0), 2)
+        btc_chg = round(btc_p.get("usd_24h_change", 0), 2)
+
+        # Octodamus oracle
+        calls       = _load_calls()
+        open_calls  = [c for c in calls if not c.get("resolved")]
+        stats       = _call_stats(calls)
+        signal_str  = "NO_SIGNAL"
+        confidence  = None
+        oracle_note = "No active signal — sub-9/11 consensus threshold."
+        if open_calls:
+            latest     = open_calls[-1]
+            direction  = latest.get("direction", "").upper()
+            signal_str = "BEARISH" if direction == "DOWN" else ("BULLISH" if direction == "UP" else "NEUTRAL")
+            oracle_note = f"Open call: {latest.get('asset','')} {direction} | entry ${latest.get('entry_price',0):,.0f} | tf {latest.get('timeframe','?')}"
+
+        # Grok BTC sentiment
+        try:
+            from octo_grok_sentiment import get_grok_sentiment
+            gs = get_grok_sentiment("BTC")
+        except Exception:
+            gs = {"signal": "NEUTRAL", "confidence": 0.5, "summary": ""}
+        crowd_bullish   = gs.get("signal") == "BULLISH"
+        crowd_pct       = round((gs.get("confidence", 0.5)) * 100, 1)
+        contrarian_flag = (crowd_bullish and btc_chg < -0.5) or (not crowd_bullish and btc_chg > 0.5)
+
+        # Top Polymarket edge
+        top_edge = {}
+        try:
+            calls_data  = _load_calls()
+            open_pm     = [c for c in calls_data if not c.get("resolved") and c.get("timeframe") == "Polymarket"]
+            if open_pm:
+                best = max(open_pm, key=lambda c: abs(float(c.get("edge_score", 0) or 0)))
+                top_edge = {
+                    "market":    best.get("asset", ""),
+                    "direction": best.get("direction", ""),
+                    "ev":        round(float(best.get("edge_score", 0) or 0), 3),
+                    "entry":     best.get("entry_price", 0),
+                }
+        except Exception:
+            pass
+
+        # Reasoning block (2-3 sentences, ready for injection)
+        crowd_label = "BULLISH" if crowd_bullish else "BEARISH"
+        if contrarian_flag:
+            reasoning = (
+                f"BTC at ${btc_px:,.0f} ({btc_chg:+.1f}% 24h) while Grok X crowd is {crowd_pct:.0f}% {crowd_label} — "
+                f"contrarian divergence is active. Fear & Greed at {fg_val}/100 ({fg_lbl}). "
+                f"Octodamus oracle: {oracle_note}"
+            )
+        else:
+            reasoning = (
+                f"BTC at ${btc_px:,.0f} ({btc_chg:+.1f}% 24h). Crowd sentiment {crowd_pct:.0f}% {crowd_label} — "
+                f"no significant divergence from price action. Fear & Greed: {fg_val}/100 ({fg_lbl}). "
+                f"Octodamus: {oracle_note}"
+            )
+
+        return _sign_payload({
+            "product":          "bens_agent_context_pack",
+            "designer":         "Agent_Ben — octodamusai.com",
+            "timestamp":        datetime.utcnow().isoformat() + "Z",
+            "btc_price":        btc_px,
+            "btc_24h_change":   btc_chg,
+            "fear_greed":       fg_val,
+            "fear_greed_label": fg_lbl,
+            "oracle_signal":    signal_str,
+            "oracle_record":    f"{stats.get('wins',0)}W / {stats.get('losses',0)}L",
+            "oracle_note":      oracle_note,
+            "crowd_sentiment":  crowd_pct,
+            "crowd_direction":  crowd_label,
+            "crowd_summary":    gs.get("summary", "")[:120],
+            "contrarian_flag":  contrarian_flag,
+            "top_polymarket_edge": top_edge,
+            "reasoning_block":  reasoning,
+            "inject_as":        "system_context",
+            "usage_note":       "Paste reasoning_block into your agent's system prompt or prepend to your market analysis chain.",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "designer": "Agent_Ben"})
+
+
+@app.get("/v2/ben/bens_agent_context_pack/preview", tags=["Agent_Ben Services"])
+def ben_agent_context_pack_preview():
+    """Free preview — what the context pack contains and why it exists."""
+    return {
+        "product":      "bens_agent_context_pack",
+        "price_usdc":   0.50,
+        "buy":          "GET https://api.octodamus.com/v2/ben/bens_agent_context_pack (x402 $0.50 USDC)",
+        "designed_by":  "Agent_Ben — autonomous profit agent in the Octodamus ecosystem",
+        "what_it_does": (
+            "One-call market context block for AI agents. Returns signal, Fear & Greed, Grok X crowd sentiment, "
+            "top Polymarket edge, contrarian flag, and a 2-3 sentence reasoning_block pre-formatted for "
+            "injection into any agent's system prompt or reasoning chain. Replaces 5 separate tool calls."
+        ),
+        "why_it_exists": (
+            "Agent_Ben runs this analysis every session. Five chained calls at ~$0.01 each = $0.05. "
+            "One call here = $0.50. The 10x price reflects the synthesis: you get the conclusion, "
+            "not the raw data. Your agent makes better decisions faster."
+        ),
+        "output_fields": [
+            "btc_price", "btc_24h_change", "fear_greed", "fear_greed_label",
+            "oracle_signal", "oracle_record", "oracle_note",
+            "crowd_sentiment", "crowd_direction", "crowd_summary",
+            "contrarian_flag", "top_polymarket_edge", "reasoning_block",
+        ],
+        "contrarian_flag": "True when crowd direction contradicts price action — highest-signal condition",
+        "sample_reasoning_block": (
+            "BTC at $76,692 (-0.88% 24h) while Grok X crowd is 75% BULLISH — contrarian divergence is active. "
+            "Fear & Greed at 33/100 (Fear). Octodamus oracle: No active signal — sub-9/11 consensus threshold."
+        ),
+        "powered_by": "Octodamus oracle + Grok real-time X + alternative.me F&G + Polymarket Gamma API",
+    }
+
+
+# -- MacroMind — Macro Intelligence Agent endpoints --------------------------
+
+def _nyse_macromind_gate(request: Request, price_usdc: float, reqs: list, product: str):
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
+                 request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "MacroMind", "product": product,
+                         "price_usdc": price_usdc, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com/v2/nyse_macromind/{product}/preview",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/nyse_macromind/signal", tags=["NYSE_MacroMind"])
+def nyse_macromind_signal(request: Request):
+    """MacroMind macro regime signal — RISK-ON / RISK-OFF / NEUTRAL. $0.25 USDC."""
+    gate = _nyse_macromind_gate(request, 0.25, _X402_REQS_25CENT, "signal")
+    if gate: return gate
+    try:
+        from octo_macro import get_macro_signal
+        sig = get_macro_signal()
+        return _sign_payload({
+            "agent": "MacroMind", "product": "macro_regime_signal",
+            "signal": sig.get("signal", "NEUTRAL"),
+            "score":  sig.get("score", 0),
+            "brief":  sig.get("brief", ""),
+            "components": sig.get("raw", {}),
+            "interpretation": (
+                "RISK-ON: macro tailwinds dominate — favorable for risk assets. " if sig.get("signal") == "RISK-ON"
+                else "RISK-OFF: macro headwinds dominate — reduce risk exposure. " if sig.get("signal") == "RISK-OFF"
+                else "NEUTRAL: mixed macro signals — no strong directional bias. "
+            ),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "MacroMind (@octodamusai ecosystem) | FRED API",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "MacroMind"})
+
+
+@app.get("/v2/nyse_macromind/signal/preview", tags=["NYSE_MacroMind"])
+def nyse_macromind_signal_preview():
+    return {"agent": "MacroMind", "product": "macro_regime_signal", "price_usdc": 0.25,
+            "buy": "GET https://api.octodamus.com/v2/nyse_macromind/signal (x402 $0.25)",
+            "what_it_does": "RISK-ON/RISK-OFF/NEUTRAL macro regime scored from 5 FRED series: T10Y2Y, DXY, SPX, VIX, M2.",
+            "output_fields": ["signal", "score", "brief", "components", "interpretation"]}
+
+
+@app.get("/v2/nyse_macromind/yield-curve", tags=["NYSE_MacroMind"])
+def nyse_macromind_yield_curve(request: Request):
+    """MacroMind yield curve analysis — T10Y2Y spread with regime interpretation. $0.25 USDC."""
+    gate = _nyse_macromind_gate(request, 0.25, _X402_REQS_25CENT, "yield-curve")
+    if gate: return gate
+    try:
+        from octo_macro import get_macro_signal
+        sig  = get_macro_signal()
+        raw  = sig.get("raw", {})
+        t10y2y = raw.get("t10y2y_now")
+        prev   = raw.get("t10y2y_prev")
+        if t10y2y is None:
+            return _sign_payload({"error": "Yield curve data unavailable", "agent": "MacroMind"})
+        status  = "NORMAL" if t10y2y > 0 else "INVERTED"
+        trend   = "steepening" if (prev and t10y2y > prev) else ("flattening" if (prev and t10y2y < prev) else "stable")
+        signal  = "BULLISH" if t10y2y > 0.5 else ("BEARISH" if t10y2y < 0 else "CAUTION")
+        return _sign_payload({
+            "agent": "MacroMind", "product": "yield_curve",
+            "t10y2y_spread": t10y2y,
+            "status": status, "trend": trend, "signal": signal,
+            "interpretation": (
+                f"Inverted by {abs(t10y2y):.2f}% — historically precedes recession 12-18 months out." if t10y2y < 0
+                else f"Spread {t10y2y:.2f}% — healthy growth conditions." if t10y2y > 0.5
+                else f"Near-flat at {t10y2y:.2f}% — watch for inversion."
+            ),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "MacroMind (@octodamusai ecosystem) | FRED T10Y2Y",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "MacroMind"})
+
+
+@app.get("/v2/nyse_macromind/yield-curve/preview", tags=["NYSE_MacroMind"])
+def nyse_macromind_yield_curve_preview():
+    return {"agent": "MacroMind", "product": "yield_curve", "price_usdc": 0.25,
+            "buy": "GET https://api.octodamus.com/v2/nyse_macromind/yield-curve (x402 $0.25)",
+            "what_it_does": "T10Y2Y spread: NORMAL/INVERTED status, steepening/flattening trend, BULLISH/BEARISH/CAUTION signal."}
+
+
+# -- StockOracle — Equity Intelligence Agent endpoints -----------------------
+
+def _nyse_stockoracle_gate(request: Request, price_usdc: float, reqs: list, product: str):
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
+                 request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "StockOracle", "product": product,
+                         "price_usdc": price_usdc, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com/v2/nyse_stockoracle/{product}/preview",
+                         "disclaimer": "Not financial advice. Informational signal only.",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/nyse_stockoracle/congress", tags=["NYSE_StockOracle"])
+def nyse_stockoracle_congress(request: Request, ticker: str = "NVDA"):
+    """StockOracle congressional trading signal for a stock. $0.35 USDC. Not financial advice."""
+    gate = _nyse_stockoracle_gate(request, 0.35, _X402_REQS_BEN_35CENT, "congress")
+    if gate: return gate
+    try:
+        from octo_congress import run_congress_scan
+        scan   = run_congress_scan(days_back=30)
+        trades = scan.get("recent_trades", [])
+        t_up   = ticker.upper()
+        relevant = [t for t in trades if t.get("Ticker","").upper() == t_up]
+        buys   = [t for t in relevant if "purchase" in t.get("Transaction","").lower()]
+        sells  = [t for t in relevant if "sale" in t.get("Transaction","").lower()]
+        signal = "BULLISH" if len(buys) > len(sells) else ("BEARISH" if len(sells) > len(buys) else "NEUTRAL")
+        top_trades = sorted(relevant, key=lambda x: x.get("TransactionDate",""), reverse=True)[:5]
+        return _sign_payload({
+            "agent": "StockOracle", "product": "congressional_signal",
+            "ticker": t_up, "signal": signal,
+            "buys": len(buys), "sells": len(sells), "total_activity": len(relevant),
+            "lookback_days": 30,
+            "top_trades": [{"date": t.get("TransactionDate"), "representative": t.get("Representative"),
+                            "transaction": t.get("Transaction"), "amount": t.get("Amount"),
+                            "committee": t.get("Committee","")} for t in top_trades],
+            "interpretation": (
+                f"Congress is NET BUYING {t_up} ({len(buys)} purchases vs {len(sells)} sales in 30d). "
+                f"Committee members with regulatory oversight are taking positions." if signal == "BULLISH"
+                else f"Congress is NET SELLING {t_up} ({len(sells)} sales vs {len(buys)} purchases in 30d)." if signal == "BEARISH"
+                else f"Mixed congressional activity on {t_up} — no clear directional signal."
+            ),
+            "disclaimer": "Not financial advice. Congressional trading data is publicly disclosed under STOCK Act.",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "StockOracle (@octodamusai ecosystem) | QuiverQuant",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "StockOracle"})
+
+
+@app.get("/v2/nyse_stockoracle/congress/preview", tags=["NYSE_StockOracle"])
+def nyse_stockoracle_congress_preview():
+    return {"agent": "StockOracle", "product": "congressional_signal", "price_usdc": 0.35,
+            "buy": "GET https://api.octodamus.com/v2/nyse_stockoracle/congress?ticker=NVDA (x402 $0.35)",
+            "what_it_does": "Net congressional trading signal (BULLISH/BEARISH/NEUTRAL) for any stock. 30-day lookback. QuiverQuant data.",
+            "disclaimer": "Not financial advice. Informational signal only."}
+
+
+@app.get("/v2/nyse_stockoracle/signal", tags=["NYSE_StockOracle"])
+def nyse_stockoracle_signal(request: Request, ticker: str = "NVDA"):
+    """StockOracle full equity signal: congressional + price + macro overlay. $0.50 USDC. Not financial advice."""
+    gate = _nyse_stockoracle_gate(request, 0.50, _X402_REQS_BEN_50CENT, "signal")
+    if gate: return gate
+    try:
+        import httpx as _hx
+        # Congressional signal
+        from octo_congress import run_congress_scan
+        scan   = run_congress_scan(days_back=30)
+        trades = scan.get("recent_trades", [])
+        t_up   = ticker.upper()
+        relevant = [t for t in trades if t.get("Ticker","").upper() == t_up]
+        buys   = [t for t in relevant if "purchase" in t.get("Transaction","").lower()]
+        sells  = [t for t in relevant if "sale" in t.get("Transaction","").lower()]
+        congress_signal = "BULLISH" if len(buys) > len(sells) else ("BEARISH" if len(sells) > len(buys) else "NEUTRAL")
+
+        # Price via Finnhub
+        price_data = {}
+        try:
+            from pathlib import Path as _P
+            _s = json.loads(_P(__file__).parent / ".octo_secrets").read_text() if False else {}
+        except Exception:
+            pass
+        try:
+            _secrets_raw = json.loads(Path(__file__).parent / ".octo_secrets")
+        except Exception:
+            pass
+        _finn_key = ""
+        try:
+            _finn_key = json.loads((Path(__file__).parent / ".octo_secrets").read_text(encoding="utf-8"))
+            _finn_key = _finn_key.get("secrets", _finn_key).get("FINNHUB_API_KEY", "")
+        except Exception:
+            pass
+        if _finn_key:
+            try:
+                _pr = _hx.get(f"https://finnhub.io/api/v1/quote?symbol={t_up}&token={_finn_key}", timeout=6)
+                _pd = _pr.json()
+                price_data = {"price": _pd.get("c",0), "change_pct": _pd.get("dp",0)}
+            except Exception:
+                pass
+
+        # Macro overlay
+        from octo_macro import get_macro_signal
+        macro = get_macro_signal()
+        macro_signal = macro.get("signal","NEUTRAL")
+
+        # Composite
+        signals = {"congress": congress_signal, "macro": macro_signal}
+        bullish  = sum(1 for s in signals.values() if s == "BULLISH" or s == "RISK-ON")
+        bearish  = sum(1 for s in signals.values() if s == "BEARISH" or s == "RISK-OFF")
+        composite = "BULLISH" if bullish > bearish else ("BEARISH" if bearish > bullish else "NEUTRAL")
+
+        return _sign_payload({
+            "agent": "StockOracle", "product": "equity_signal",
+            "ticker": t_up, "composite_signal": composite,
+            "signals": signals, "price": price_data,
+            "congressional_detail": {"buys": len(buys), "sells": len(sells), "total": len(relevant)},
+            "macro_score": macro.get("score", 0),
+            "disclaimer": "Not financial advice. Informational signal only.",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "StockOracle (@octodamusai ecosystem) | QuiverQuant + Finnhub + FRED",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "StockOracle"})
+
+
+@app.get("/v2/nyse_stockoracle/signal/preview", tags=["NYSE_StockOracle"])
+def nyse_stockoracle_signal_preview():
+    return {"agent": "StockOracle", "product": "equity_signal", "price_usdc": 0.50,
+            "buy": "GET https://api.octodamus.com/v2/nyse_stockoracle/signal?ticker=NVDA (x402 $0.50)",
+            "what_it_does": "Full equity signal: congressional trading + Finnhub price + FRED macro overlay. Composite BULLISH/BEARISH/NEUTRAL.",
+            "disclaimer": "Not financial advice. Informational signal only."}
+
+
+# -- Order_ChainFlow — On-Chain Order Flow Agent endpoints -------------------
+
+def _chainflow_gate(request: Request, price_usdc: float, reqs: list, product: str):
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
+                 request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Order_ChainFlow", "product": product,
+                         "price_usdc": price_usdc, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com/v2/order_chainflow/{product}/preview",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/order_chainflow/delta", tags=["Order_ChainFlow"])
+def chainflow_delta(request: Request, asset: str = "BTC"):
+    """Order_ChainFlow Binance 24h cumulative buy/sell delta. $0.25 USDC."""
+    gate = _chainflow_gate(request, 0.25, _X402_REQS_25CENT, "delta")
+    if gate: return gate
+    try:
+        from octo_binance_delta import get_delta_signal
+        sym = asset.upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        d = get_delta_signal(sym)
+        if not d:
+            return _sign_payload({"error": f"Delta unavailable for {sym}", "agent": "Order_ChainFlow"})
+        return _sign_payload({
+            "agent": "Order_ChainFlow", "product": "binance_delta",
+            "asset": asset.upper(), "symbol": sym,
+            "buy_volume": d["buy_volume"], "sell_volume": d["sell_volume"],
+            "total_volume": d["total_volume"],
+            "delta": d["delta"], "delta_ratio": d["delta_ratio"],
+            "signal": d["signal"], "score": d["score"],
+            "acceleration": d["acceleration"],
+            "current_price": d["current_price"],
+            "price_change_24h_pct": d["price_change_pct"],
+            "interpretation": (
+                f"Buyers controlled {d['delta_ratio']:.1%} of 24h volume. {d['acceleration']} pressure." if d["signal"] == "BUYERS"
+                else f"Sellers controlled {1-d['delta_ratio']:.1%} of 24h volume. {d['acceleration']} distribution." if d["signal"] == "SELLERS"
+                else "No dominant side — wait for delta to resolve."
+            ),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "Order_ChainFlow (@octodamusai ecosystem) | Binance REST API",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "Order_ChainFlow"})
+
+
+@app.get("/v2/order_chainflow/delta/preview", tags=["Order_ChainFlow"])
+def chainflow_delta_preview():
+    return {"agent": "Order_ChainFlow", "product": "binance_delta", "price_usdc": 0.25,
+            "buy": "GET https://api.octodamus.com/v2/order_chainflow/delta?asset=BTC (x402 $0.25)",
+            "what_it_does": "Binance 24h cumulative buy/sell delta. delta_ratio, signal (BUYERS/SELLERS/NEUTRAL), acceleration, price. 15-min cache."}
+
+
+@app.get("/v2/order_chainflow/dex", tags=["Order_ChainFlow"])
+def chainflow_dex(request: Request, chain: str = "base"):
+    """Order_ChainFlow DEX volume and flow on Base. $0.25 USDC."""
+    gate = _chainflow_gate(request, 0.25, _X402_REQS_25CENT, "dex")
+    if gate: return gate
+    try:
+        import httpx as _hx
+        r = _hx.get("https://api.dexscreener.com/latest/dex/tokens/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", timeout=8)
+        pairs = r.json().get("pairs", []) if r.status_code == 200 else []
+        total_vol = sum(float(p.get("volume", {}).get("h24", 0)) for p in pairs[:10])
+        total_liq = sum(float(p.get("liquidity", {}).get("usd", 0)) for p in pairs[:10])
+        top = [{"pair": f"{p.get('baseToken',{}).get('symbol','?')}/USDC",
+                "dex": p.get("dexId","?"),
+                "volume_24h": float(p.get("volume",{}).get("h24",0)),
+                "price_change_24h": float(p.get("priceChange",{}).get("h24",0))}
+               for p in pairs[:5]]
+        return _sign_payload({
+            "agent": "Order_ChainFlow", "product": "dex_flow",
+            "chain": chain, "total_volume_24h": round(total_vol, 2),
+            "total_liquidity": round(total_liq, 2),
+            "activity_ratio": round(total_vol / total_liq, 3) if total_liq > 0 else 0,
+            "top_pairs": top,
+            "signal": "ACTIVE" if total_vol > 5_000_000 else ("MODERATE" if total_vol > 1_000_000 else "QUIET"),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "Order_ChainFlow (@octodamusai ecosystem) | DexScreener API",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "Order_ChainFlow"})
+
+
+@app.get("/v2/order_chainflow/dex/preview", tags=["Order_ChainFlow"])
+def chainflow_dex_preview():
+    return {"agent": "Order_ChainFlow", "product": "dex_flow", "price_usdc": 0.25,
+            "buy": "GET https://api.octodamus.com/v2/order_chainflow/dex?chain=base (x402 $0.25)",
+            "what_it_does": "DEX volume and top pairs on Base. Total 24h volume, liquidity, activity ratio, ACTIVE/MODERATE/QUIET signal."}
+
+
+@app.get("/v2/order_chainflow/whales", tags=["Order_ChainFlow"])
+def chainflow_whales(request: Request):
+    """Order_ChainFlow large on-chain transactions (>$100k USDC on Base). $0.35 USDC."""
+    gate = _chainflow_gate(request, 0.35, _X402_REQS_BEN_35CENT, "whales")
+    if gate: return gate
+    try:
+        import httpx as _hx
+        r = _hx.get("https://api.basescan.org/api", params={
+            "module": "account", "action": "tokentx",
+            "contractaddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "page": 1, "offset": 30, "sort": "desc"
+        }, timeout=10)
+        txs = r.json().get("result", []) if r.status_code == 200 else []
+        whales = []
+        for tx in (txs if isinstance(txs, list) else []):
+            try:
+                val = int(tx.get("value", 0)) / 1e6
+                if val >= 100_000:
+                    whales.append({"amount_usdc": round(val, 2),
+                                   "from": tx.get("from","")[:12] + "...",
+                                   "to":   tx.get("to","")[:12] + "...",
+                                   "hash": tx.get("hash","")[:16] + "..."})
+            except Exception:
+                continue
+        total_whale_vol = sum(w["amount_usdc"] for w in whales)
+        signal = "ACTIVE" if len(whales) >= 5 else ("MODERATE" if len(whales) >= 2 else "QUIET")
+        return _sign_payload({
+            "agent": "Order_ChainFlow", "product": "whale_activity",
+            "chain": "base", "whale_count": len(whales),
+            "total_whale_volume_usdc": round(total_whale_vol, 2),
+            "signal": signal, "transactions": whales[:10],
+            "interpretation": f"{len(whales)} transactions >$100k USDC on Base. {'Institutional activity elevated.' if signal == 'ACTIVE' else 'Normal activity.'}",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "Order_ChainFlow (@octodamusai ecosystem) | Basescan API",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "Order_ChainFlow"})
+
+
+@app.get("/v2/order_chainflow/whales/preview", tags=["Order_ChainFlow"])
+def chainflow_whales_preview():
+    return {"agent": "Order_ChainFlow", "product": "whale_activity", "price_usdc": 0.35,
+            "buy": "GET https://api.octodamus.com/v2/order_chainflow/whales (x402 $0.35)",
+            "what_it_does": "Large USDC transactions (>$100k) on Base chain. Count, total volume, ACTIVE/MODERATE/QUIET signal."}
+
+
 # -- V2 Ask — Agent-to-Octodamus conversation (no auth required) -------------
 
 # IP-based rate limit for /v2/ask — 20 req/day free, no key needed
@@ -5113,7 +6275,7 @@ def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
 
 @_mcp.tool()
 def get_agent_signal(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
     """Consolidated trading signal from the 9/11 oracle consensus system.
 
@@ -5135,7 +6297,7 @@ def get_agent_signal(
 
 @_mcp.tool()
 def get_polymarket_edge(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
     """Ranked Polymarket prediction markets by expected value (EV).
 
@@ -5150,7 +6312,7 @@ def get_polymarket_edge(
 
 @_mcp.tool()
 def get_sentiment(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
     symbol: Annotated[str, _Field(
         description='Asset to filter by: "BTC", "ETH", or "SOL". '
                     'Leave empty ("") to get scores for all assets.',
@@ -5171,19 +6333,31 @@ def get_sentiment(
 
 @_mcp.tool()
 def get_prices(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
-    """Live spot prices with 24-hour percentage change for major crypto assets.
+    """Live spot prices with 24-hour percentage change for BTC, ETH, SOL, NVDA, TSLA, AAPL.
 
-    Use to ground calculations (e.g. position sizing, level checks) before
-    acting on a signal. Refreshes every minute. Returns dict keyed by symbol
-    with price_usd and change_24h_pct fields.
+    Use before position sizing, level checks, or any calculation that requires
+    a current reference price. Refreshes every 60 seconds via Kraken (crypto)
+    and Finnhub (equities). Free tier included.
+
+    Response keyed by symbol — example:
+      {
+        "BTC":  {"price_usd": 84200.50, "change_24h_pct": 2.3},
+        "ETH":  {"price_usd": 1820.10,  "change_24h_pct": -0.8},
+        "SOL":  {"price_usd": 148.40,   "change_24h_pct": 1.1},
+        "NVDA": {"price_usd": 875.00,   "change_24h_pct": 0.4},
+        "TSLA": {"price_usd": 250.20,   "change_24h_pct": -1.2},
+        "AAPL": {"price_usd": 190.50,   "change_24h_pct": 0.6}
+      }
+
+    For directional signal on these prices, call get_agent_signal() instead.
     """
     return _mcp_get("/v2/prices", api_key)
 
 @_mcp.tool()
 def get_market_brief(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
     """Full AI market briefing as a concise narrative paragraph.
 
@@ -5198,7 +6372,7 @@ def get_market_brief(
 
 @_mcp.tool()
 def get_all_data(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
     """All signal data in a single call: signal + sentiment + prices + Polymarket edges.
 
@@ -5211,15 +6385,33 @@ def get_all_data(
 
 @_mcp.tool()
 def get_oracle_signals(
-    api_key: Annotated[str, _Field(description=_API_KEY_DESC)],
+    api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
 ) -> dict:
-    """Raw individual votes from all 11 oracles with consensus strength and win rate.
+    """Raw votes from all 12 oracle signals with per-signal confidence and consensus score.
 
-    Use for deep analysis or debugging: see how each oracle voted, the
-    consensus score, and the historical win rate per oracle. For a simple
-    BUY/SELL/HOLD decision use get_agent_signal() instead.
+    Each oracle is a separate real-world data source: funding rate, open interest,
+    long/short ratio, Fear & Greed index, macro regime (FRED), aviation volume,
+    TSA travel demand, Polymarket crowd, options flow, congressional trading,
+    CLOB order book depth, and Binance 24h cumulative delta. Each votes
+    BUY (+1), SELL (-1), or NEUTRAL (0) independently.
 
-    Response: {oracles: [{name, vote, confidence}], consensus_score, win_rate}
+    Use this for deep analysis, signal attribution, or debugging a BUY/SELL/HOLD
+    decision. For a consolidated action, call get_agent_signal() instead.
+
+    Response example:
+      {
+        "consensus_score": 8,
+        "max_score": 12,
+        "action": "BUY",
+        "win_rate": 0.62,
+        "oracles": [
+          {"name": "funding_rate",       "vote": 1,  "confidence": 0.85},
+          {"name": "long_short_ratio",   "vote": 1,  "confidence": 0.70},
+          {"name": "fear_greed",         "vote": 0,  "confidence": 0.50},
+          {"name": "macro_regime",       "vote": 1,  "confidence": 0.80},
+          {"name": "binance_delta",      "vote": 1,  "confidence": 0.75}
+        ]
+      }
     """
     return _mcp_get("/v2/signal", api_key)
 

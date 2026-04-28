@@ -51,11 +51,13 @@ startCommand:
     properties:
       apiKey:
         type: string
-        title: OctoData API Key (optional)
+        title: OctoData API Key (optional — leave blank for free tools)
         description: >
-          Leave blank to use free basic tools (get_agent_signal, get_market_brief,
-          get_polymarket_edge, get_data_sources). For premium signal
-          endpoint ($0.01/call x402 or $29/yr): api.octodamus.com/v1/signup
+          Leave blank to use free tools: get_agent_signal, get_market_brief,
+          get_polymarket_edge, get_data_sources. Premium ($0.01/call x402
+          or $29/yr): api.octodamus.com/v1/signup
+        default: ""
+    required: []
 
 prompts:
   - name: btc-signal-now
