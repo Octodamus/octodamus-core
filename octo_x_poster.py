@@ -123,6 +123,14 @@ def get_my_user_id() -> str:
 
 def _post_single(text: str, media_ids: list = None) -> dict:
     """Post a single tweet. Returns dict with tweet id and url."""
+    # Hard gate — no internal reasoning ever reaches Twitter regardless of call path
+    if _is_internal_reasoning(text):
+        try:
+            from octo_notify import _send
+            _send("BLOCKED internal reasoning at _post_single", f"Text: {text[:300]}")
+        except Exception:
+            pass
+        raise ValueError(f"BLOCKED: internal reasoning detected in _post_single: {text[:80]}")
     import tweepy
     client = _get_client()
     kwargs = {"text": text}
@@ -638,7 +646,50 @@ def _log_post(text: str, metadata: dict) -> None:
     _save_log(log)
 
 
+_INTERNAL_PATTERNS = [
+    # Model said SKIP (with or without trailing reasoning)
+    lambda t: t.strip().upper().startswith("SKIP"),
+    lambda t: "\nSKIP" in t.upper() or "SKIP\n" in t.upper(),
+    # Curly-brace reasoning dump — model explaining why it's skipping
+    lambda t: t.strip().startswith("{") and len(t) > 30,
+    lambda t: bool(__import__("re").search(r"^\{[^}]{20,}\}", t.strip())),
+    # Parenthetical internal reasoning dump
+    lambda t: t.strip().startswith("(") and len(t) > 40,
+    # Fourth-wall meta-commentary
+    lambda t: any(p in t.lower() for p in [
+        "article is about", "no new data on", "generic analyst",
+        "this is not relevant", "not directly relevant",
+        "i don't have", "i cannot post", "i can't post", "i'm unable to",
+        "this prompt", "you've given me", "no live data",
+        "i need to be direct", "i appreciate the setup",
+        "no connection to the asset", "headline mentions",
+        "this is a litecoin", "this is a bitcoin", "this is an ethereum",
+    ]),
+]
+
+
+def _is_internal_reasoning(text: str) -> bool:
+    """Return True if text is model reasoning/filtering output, not a real post."""
+    for check in _INTERNAL_PATTERNS:
+        try:
+            if check(text):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def queue_post(text: str, post_type: str = "signal", metadata: dict = None, priority: int = 5) -> str | None:
+    if _is_internal_reasoning(text):
+        print(f"[OctoPoster] BLOCKED internal reasoning from queue: {text[:80]}...")
+        try:
+            from octo_notify import _send
+            _send("Octodamus POST BLOCKED — internal reasoning detected",
+                  f"Type: {post_type}\nText:\n{text[:500]}")
+        except Exception:
+            pass
+        return None
+
     queue = _load_queue()
     log   = _load_log()
     cid   = _hash(text)
@@ -798,6 +849,19 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
                 media_id  = entry.get("metadata", {}).get("media_id") if entry.get("metadata") else None
                 media_ids = [media_id] if media_id else None
                 text      = ensure_cashtag(entry["text"])
+                if _is_internal_reasoning(text):
+                    print(f"[OctoPoster] BLOCKED at post time — internal reasoning: {text[:80]}...")
+                    for q in queue:
+                        if q["id"] == entry["id"]:
+                            q["status"] = "blocked"
+                            break
+                    _save_queue(queue)
+                    try:
+                        from octo_notify import _send
+                        _send("Octodamus POST BLOCKED at fire time", f"Type: {entry['type']}\nText:\n{text[:500]}")
+                    except Exception:
+                        pass
+                    continue
                 chunks    = split_for_thread(text)
                 if len(chunks) > 1:
                     print(f"[OctoPoster] Auto-threading ({len(chunks)} tweets): {text[:60]}...")
