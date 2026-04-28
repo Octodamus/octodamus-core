@@ -6245,7 +6245,7 @@ _mcp = _FastMCP(
         "get_sentiment() — per-asset sentiment score (-1 to +1) for BTC/ETH/SOL; "
         "get_prices() — live prices with 24h change; "
         "get_market_brief() — narrative briefing, inject into agent system prompt; "
-        "get_oracle_signals() — raw votes from all 11 oracles for deep analysis; "
+        "get_oracle_signals() — raw votes from all 12 oracles for deep analysis; "
         "get_data_sources() — list 27 live feeds, no key needed; "
         "buy_premium_api() — subscribe via x402 USDC on Base (trial $5 / annual $29); "
         "buy_guide() — purchase trading system guide via x402. "
