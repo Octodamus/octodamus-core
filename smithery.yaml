@@ -1,4 +1,4 @@
-name: octodamus-market-intelligence
+name: market-intelligence
 displayName: Octodamus Market Intelligence
 description: >
   AI oracle for crypto markets. BUY/SELL/HOLD signals with 9/11 consensus
@@ -8,8 +8,8 @@ description: >
   Sample output from get_agent_signal():
     action: "BUY" | confidence: 8/11 | signal: "UP"
     btc_price: 78420 | fear_greed: 47 (Neutral)
-    funding_rate: -0.003% (shorts paying — bullish)
-    long_short: 43% long / 57% short (SHORT-HEAVY — contrarian BUY)
+    funding_rate: -0.003% (shorts paying - bullish)
+    long_short: 43% long / 57% short (SHORT-HEAVY - contrarian BUY)
     polymarket_edge: { market: "BTC above 80K Apr 30?", ev_gap: "14%" }
     reasoning: "Funding negative, top traders flipped long, BB compressed..."
 
@@ -51,7 +51,7 @@ startCommand:
     properties:
       apiKey:
         type: string
-        title: OctoData API Key (optional — leave blank for free tools)
+        title: OctoData API Key (optional - leave blank for free tools)
         description: >
           Leave blank to use free tools: get_agent_signal, get_market_brief,
           get_polymarket_edge, get_data_sources. Premium ($0.01/call x402
