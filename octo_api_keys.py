@@ -3,7 +3,7 @@ octo_api_keys.py - Octodamus API Key Management
 Handles key generation, validation, tier enforcement, and rate limiting.
 
 Tiers:
-  free    - get_signal summary, sentiment, who_is_octodamus, track_record
+  free    - get_signal summary, sentiment, get_octodamus_info, track_record
             50 requests/day
   premium - all tools + raw derivatives, liquidation maps, full CLOB data
             unlimited requests, $29/year
@@ -36,14 +36,14 @@ TIER_TOOLS = {
     "free": {
         "get_signal",
         "get_market_sentiment",
-        "who_is_octodamus",
+        "get_octodamus_info",
         "get_track_record",
         "get_active_calls",
     },
     "premium": {
         "get_signal",
         "get_market_sentiment",
-        "who_is_octodamus",
+        "get_octodamus_info",
         "get_track_record",
         "get_active_calls",
         "get_market_brief",

@@ -1,26 +1,41 @@
 name: octodamus-market-intelligence
 displayName: Octodamus Market Intelligence
 description: >
-  AI oracle for crypto markets. BUY/SELL/HOLD signals with 9/11 consensus
-  scoring across 27 live data feeds. One call returns everything an agent
-  needs to make a trade decision.
+  Octodamus is an autonomous market intelligence oracle built for AI agents.
+  27 live data feeds. 11-signal consensus scoring. BUY/SELL/HOLD decisions with
+  confidence scores, Polymarket edges (EV + Kelly sizing), and full reasoning.
 
-  Sample output from get_agent_signal():
-    action: "BUY" | confidence: 8/11 | signal: "UP"
-    btc_price: 78420 | fear_greed: 47 (Neutral)
-    funding_rate: -0.003% (shorts paying - bullish)
-    long_short: 43% long / 57% short (SHORT-HEAVY - contrarian BUY)
-    polymarket_edge: { market: "BTC above 80K Apr 30?", ev_gap: "14%" }
-    reasoning: "Funding negative, top traders flipped long, BB compressed..."
+  Covers: BTC, ETH, SOL — plus tokenized NYSE stocks (AAPL, MSFT, SPY, NVDA,
+  TSLA on Base). Macro regime (RISK-ON/OFF/NEUTRAL) from FRED yield curve, DXY,
+  VIX, M2. Congressional trading signals. On-chain order flow (Binance 24h delta,
+  Base DEX, whale moves). Grok/X crowd sentiment with contrarian divergence flags.
+  Overnight Asia session briefs. Fear vs Crowd divergence (BULL_TRAP/BEAR_TRAP).
 
-  Free to try — no API key needed for basic tools.
-  Premium ($0.01/call via x402 on Base, or $29/year):
-  api.octodamus.com/v2/signal
+  Start here — no API key needed:
+    get_signal("BTC")        — live BUY/SELL/HOLD + price + funding + L/S ratio
+    get_market_brief()       — full oracle read across all assets + macro
+    get_market_sentiment()   — Fear & Greed + funding rates + long/short ratios
+    get_active_calls()       — open Polymarket positions with EV and reasoning
+    get_track_record()       — win rate, P&L, Sharpe, max drawdown
 
-  Designed for 15-minute agent poll cycles. Used by autonomous trading
-  agents on Polymarket and Limitless Exchange.
+  Premium: $0.01 USDC/call via x402 on Base (no account needed — just a funded
+  Base wallet). Annual: $29/year at api.octodamus.com/v1/signup
 
-version: 1.1.0
+  14 ACP OFFERINGS (agent-to-agent commerce via Virtuals ACP, $1-2 USDC/job):
+    Market Signal (BTC/ETH/SOL) $1 | Grok Sentiment Brief $1
+    Fear vs Crowd Divergence $2 | BTC Bull Trap Monitor $1.50
+    Overnight Asia Brief $2 | Agent Intel Bundle $2
+    Tokenized Stock Signal (AAPL/MSFT/SPY on Base) $1
+    MacroMind Brief (yield curve/M2/Fed) $1
+    StockOracle Brief (congressional trades) $1
+    Order ChainFlow Brief (Binance delta/Base DEX) $1
+    X Sentiment Agent Brief $1 | Bounty Hunter Recon $2
+    NYSE Tech Brief (tokenization regulatory) $1 | Smithery Onboarding $1
+
+  x402 native on Base. Runs on 15-minute agent poll cycles.
+  Used by autonomous trading agents on Polymarket and Limitless Exchange.
+
+version: 1.2.0
 icon: https://octodamus.com/octo_logo.png
 homepage: https://octodamus.com
 repository: https://github.com/octodamusai/octodamus
@@ -42,6 +57,16 @@ tags:
   - x402
   - autonomous-agent
   - limitless
+  - tokenized-equities
+  - agentic-finance
+  - macro-signal
+  - congressional-trading
+  - order-flow
+  - crowd-sentiment
+  - nyse-tokenization
+  - base-chain
+  - tokenized-stocks
+  - multi-agent
 
 startCommand:
   type: url
@@ -74,3 +99,36 @@ prompts:
   - name: polymarket-edges
     description: Find prediction market opportunities with EV scoring
     arguments: []
+
+  - name: tokenized-stock-signal
+    description: Get oracle signal for tokenized NYSE stocks (AAPL, MSFT, SPY on Base)
+    arguments:
+      - name: ticker
+        description: Stock ticker (AAPL, MSFT, SPY, TSLA, NVDA, AMZN, META, COIN, MSTR)
+        required: false
+
+  - name: overnight-brief
+    description: Overnight Asia session brief — market context for agents waking up
+    arguments: []
+
+  - name: fear-crowd-divergence
+    description: Detect Fear vs crowd sentiment divergence — contrarian edge signal
+    arguments: []
+
+  - name: macro-regime
+    description: Current macro regime (RISK-ON/OFF/NEUTRAL) with yield curve, M2, Fed probability
+    arguments: []
+
+  - name: congressional-signal
+    description: Congressional trading signal — Finance Committee insider activity on mega-cap stocks
+    arguments:
+      - name: ticker
+        description: Stock ticker (NVDA, TSLA, AAPL, MSFT, COIN, MSTR, HOOD)
+        required: false
+
+  - name: order-flow
+    description: On-chain order flow — Binance 24h delta, Base DEX, whale movements
+    arguments:
+      - name: asset
+        description: Asset (BTC, ETH, SOL)
+        required: false
