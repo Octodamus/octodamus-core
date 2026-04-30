@@ -74,6 +74,22 @@ def _load_job_cache():
         log.warning(f"Job cache load failed: {e}")
 
 
+_PENDING_FILE = Path(__file__).parent / "data" / "acp_pending_jobs.json"
+
+def _remove_pending_job(job_id: int):
+    try:
+        if not _PENDING_FILE.exists():
+            return
+        jobs = json.loads(_PENDING_FILE.read_text(encoding="utf-8"))
+        before = len(jobs)
+        jobs = [j for j in jobs if j.get("job_id") != job_id]
+        if len(jobs) < before:
+            _PENDING_FILE.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            log.info(f"Job #{job_id} removed from pending_jobs (expired/reverted)")
+    except Exception as e:
+        log.warning(f"Could not remove job #{job_id} from pending_jobs: {e}")
+
+
 # ── CLI wrapper ───────────────────────────────────────────────────────────────
 
 _NPM = "npm.cmd" if sys.platform == "win32" else "npm"
@@ -123,6 +139,26 @@ def _get_report_type(event: dict) -> str:
         return "grok_sentiment_brief"
     if any(k in all_text for k in ["divergence", "fear crowd", "crowd divergence", "fear vs crowd"]):
         return "fear_crowd_divergence"
+    if any(k in all_text for k in ["smithery", "onboarding", "quickstart", "quick_start", "getting_started"]):
+        return "smithery_onboarding"
+    if any(k in all_text for k in ["overnight", "asia session", "asia_session", "night brief", "overnight_brief"]):
+        return "overnight_brief"
+    if any(k in all_text for k in ["agent market intel", "agent_market_intel", "context pack", "agent_context", "intel bundle", "decision loop"]):
+        return "agent_market_intel_bundle"
+    if any(k in all_text for k in ["bounty", "bounty hunter", "bounty_recon", "recon brief"]):
+        return "bounty_hunter_recon"
+    if any(k in all_text for k in ["bull trap", "bull_trap", "trap monitor", "trap_monitor", "btc_trap"]):
+        return "btc_bull_trap_monitor"
+    if any(k in all_text for k in ["macromind", "macro mind", "macro regime brief", "yield curve brief", "nyse_macromind"]):
+        return "nyse_macromind_brief"
+    if any(k in all_text for k in ["stockoracle", "stock oracle", "congressional brief", "nyse_stockoracle"]):
+        return "nyse_stockoracle_brief"
+    if any(k in all_text for k in ["nyse_tech", "tech agent brief", "tokenized equity brief", "tech regulatory brief"]):
+        return "nyse_tech_brief"
+    if any(k in all_text for k in ["chainflow", "chain flow brief", "order flow brief", "dex flow brief", "whale activity scan"]):
+        return "order_chainflow_brief"
+    if any(k in all_text for k in ["x_sentiment_brief", "sentiment agent brief", "crowd brief", "sentiment divergence brief"]):
+        return "x_sentiment_brief"
     return "market_signal"
 
 
@@ -146,12 +182,24 @@ def _write_frozen_report(data: dict) -> str | None:
 def _build_deliverable(report_type: str, ticker: str, requirements: dict) -> str | None:
     """Run oracle handler and return deliverable string."""
     try:
+        # Ensure ticker flows into requirements — handlers read it from there,
+        # but ticker may have been cached separately if requirements arrived empty.
+        if ticker and not requirements.get("ticker"):
+            requirements = {**requirements, "ticker": ticker}
         handler = get_handler(report_type)
         data    = handler(requirements)
 
         if isinstance(data, dict) and data.get("reject"):
             log.warning(f"Handler rejected: {data.get('error')}")
             return None
+
+        # Embed Octodamus calling card so receiving agents can hire us back
+        try:
+            from octo_agent_cards import get_octodamus_card_for_deliverable
+            if isinstance(data, dict):
+                data["octodamus_card"] = get_octodamus_card_for_deliverable()
+        except Exception:
+            pass
 
         report_url = _write_frozen_report(data) or \
                      f"{REPORT_BASE_URL}?type={report_type}&ticker={ticker}"
@@ -165,6 +213,28 @@ def _build_deliverable(report_type: str, ticker: str, requirements: dict) -> str
 
 # ── Event handlers ────────────────────────────────────────────────────────────
 
+def _parse_client_calling_card(description: str, job_id: str):
+    """Extract and log a calling card embedded in a client's job description."""
+    if "---CALLING_CARD---" not in description:
+        return
+    try:
+        start = description.index("---CALLING_CARD---") + len("---CALLING_CARD---")
+        end   = description.index("---END_CARD---", start)
+        card_text = description[start:end].strip()
+        log.info(f"Job #{job_id} -- client calling card detected:\n{card_text}")
+        # Persist to agent visitors log for future cross-buy intelligence
+        visitors_file = Path(__file__).parent / "data" / "agent_visitors.json"
+        try:
+            visitors = json.loads(visitors_file.read_text(encoding="utf-8")) if visitors_file.exists() else []
+        except Exception:
+            visitors = []
+        visitors.append({"job_id": job_id, "card": card_text, "ts": int(__import__("time").time())})
+        visitors = visitors[-200:]  # keep last 200
+        visitors_file.write_text(json.dumps(visitors, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.debug(f"Calling card parse error (non-fatal): {e}")
+
+
 def handle_new_job(event: dict):
     """New job from client -- propose budget."""
     job_id   = str(event.get("jobId") or event.get("job_id") or "")
@@ -174,6 +244,9 @@ def handle_new_job(event: dict):
     if not job_id:
         log.warning("NEW_JOB event missing jobId -- skipping")
         return
+
+    # Log any calling card the client embedded so we can discover their services
+    _parse_client_calling_card(event.get("description") or "", job_id)
 
     ticker      = str(reqs.get("ticker", "BTC")).upper()
     report_type = _get_report_type(event)
@@ -190,7 +263,7 @@ def handle_new_job(event: dict):
     rc, out, err = _acp([
         "provider", "set-budget",
         "--job-id",   job_id,
-        "--amount",   str(2.0 if report_type == "fear_crowd_divergence" else ACP_PRICE_USDC),
+        "--amount",   str(2.0 if report_type in ("fear_crowd_divergence", "overnight_brief", "agent_market_intel_bundle", "bounty_hunter_recon") else 1.5 if report_type == "btc_bull_trap_monitor" else ACP_PRICE_USDC),
         "--chain-id", str(chain_id),
     ])
     if rc == 0:
@@ -199,45 +272,16 @@ def handle_new_job(event: dict):
         log.error(f"Job #{job_id} set-budget failed (rc={rc})")
 
 
-def _verify_job_funded(job_id: str, chain_id: int) -> bool:
-    """
-    Verify via ACP CLI that this job is actually in funded/escrow state.
-    Refuse to deliver if we can't confirm payment — prevents free report delivery.
-    """
-    try:
-        rc, out, err = _acp(["jobs", "get", "--job-id", job_id, "--chain-id", str(chain_id)], timeout=15)
-        if rc != 0:
-            log.warning(f"Job #{job_id} -- could not verify funding (CLI rc={rc}). Refusing delivery.")
-            return False
-        out_lower = out.lower()
-        # Accept if CLI reports funded/escrow state
-        if any(k in out_lower for k in ("funded", "escrow", "payment")):
-            log.info(f"Job #{job_id} -- funding confirmed via CLI")
-            return True
-        # Reject if explicitly not funded
-        if any(k in out_lower for k in ("open", "pending", "created", "cancelled", "rejected")):
-            log.warning(f"Job #{job_id} -- not funded (status in CLI output). Refusing delivery.")
-            return False
-        # Unknown state — refuse to deliver, log for investigation
-        log.warning(f"Job #{job_id} -- unclear funding status. Output: {out[:200]}. Refusing delivery.")
-        return False
-    except Exception as e:
-        log.error(f"Job #{job_id} -- funding verification error: {e}. Refusing delivery.")
-        return False
-
-
 def handle_funded_job(event: dict):
-    """Escrow funded -- verify payment then generate and submit deliverable."""
+    """Escrow funded -- generate and submit deliverable.
+    Funding is authoritative from the event stream (job.funded is an on-chain event
+    from ACP infrastructure, not a client message — no extra CLI verification needed).
+    """
     job_id   = str(event.get("jobId") or event.get("job_id") or "")
     chain_id = event.get("chainId") or event.get("chain_id") or CHAIN_ID
 
     if not job_id:
         log.warning("FUNDED event missing jobId -- skipping")
-        return
-
-    # Gate: verify on-chain funding before generating any deliverable
-    if not _verify_job_funded(job_id, int(chain_id)):
-        log.warning(f"Job #{job_id} -- DELIVERY BLOCKED: payment not confirmed on-chain")
         return
 
     cached      = JOB_CACHE.get(job_id, {})
@@ -259,11 +303,41 @@ def handle_funded_job(event: dict):
         "--job-id",      job_id,
         "--deliverable", deliverable,
         "--chain-id",    str(chain_id),
-    ], timeout=90)
+    ], timeout=180)
     if rc == 0:
         log.info(f"Job #{job_id} submitted OK ({len(deliverable)} chars)")
+        # Write synthetic completed event so the monitor stops flagging this job as stuck.
+        # The ACP platform does not send job.completed back to the event listener.
+        try:
+            import time as _time
+            cached_type = JOB_CACHE.get(job_id, {}).get("report_type", "market_signal")
+            cached_ticker = JOB_CACHE.get(job_id, {}).get("ticker", "")
+            synthetic = {
+                "jobId": str(job_id),
+                "chainId": chain_id,
+                "status": "completed",
+                "reportType": cached_type,
+                "entry": {
+                    "event": {
+                        "type": "job.completed",
+                        "onChainJobId": str(job_id),
+                        "reportType": cached_type,
+                        "ticker": cached_ticker,
+                    },
+                    "timestamp": int(_time.time() * 1000),
+                },
+            }
+            with open(EVENTS_FILE, "a", encoding="utf-8") as _ef:
+                _ef.write(json.dumps(synthetic) + "\n")
+        except Exception as _e:
+            log.warning(f"Could not write synthetic completed event for job #{job_id}: {_e}")
     else:
-        log.error(f"Job #{job_id} submit failed (rc={rc})")
+        combined = (out + err).lower()
+        if "execution reverted" in combined or "already" in combined:
+            log.error(f"Job #{job_id} submit reverted -- job expired or already closed on-chain")
+            _remove_pending_job(job_id)
+        else:
+            log.error(f"Job #{job_id} submit failed (rc={rc})")
 
     JOB_CACHE.pop(job_id, None)
     _save_job_cache()
@@ -320,7 +394,7 @@ def process_event(line: str):
                     rc, _, _ = _acp([
                         "provider", "set-budget",
                         "--job-id",   job_id,
-                        "--amount",   str(2.0 if report_type == "fear_crowd_divergence" else ACP_PRICE_USDC),
+                        "--amount",   str(2.0 if report_type in ("fear_crowd_divergence", "overnight_brief", "agent_market_intel_bundle", "bounty_hunter_recon") else 1.5 if report_type == "btc_bull_trap_monitor" else ACP_PRICE_USDC),
                         "--chain-id", str(chain_id),
                     ])
                     _save_job_cache()
@@ -445,14 +519,21 @@ def tail_events(proc: subprocess.Popen):
 
 # ── Startup replay — submit any funded-but-not-completed jobs ─────────────────
 
+REPLAY_MAX_AGE_S = 86400  # skip funded jobs older than 24h — matches on-chain job expiry
+
+
 def replay_funded_jobs():
-    """On startup, scan events file for funded jobs with no completion. Submit them."""
+    """On startup, scan events file for recently funded jobs with no completion.
+    Runs in a background thread so live events aren't blocked.
+    Trusts the event stream for funding status — no CLI verification needed.
+    """
     if not EVENTS_FILE.exists():
         return
 
-    job_status: dict[str, str] = {}
-    job_reqs:   dict[str, dict] = {}
-    job_chain:  dict[str, int]  = {}
+    job_status:    dict[str, str]   = {}
+    job_reqs:      dict[str, dict]  = {}
+    job_chain:     dict[str, int]   = {}
+    job_timestamp: dict[str, float] = {}
 
     try:
         lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
@@ -479,6 +560,11 @@ def replay_funded_jobs():
                 job_status[job_id] = status
             job_chain.setdefault(job_id, chain_id)
 
+        # Track timestamp from entry (ms epoch)
+        ts_ms = entry.get("timestamp")
+        if job_id and ts_ms:
+            job_timestamp[job_id] = float(ts_ms) / 1000.0
+
         # Collect requirements from message events
         if entry.get("kind") == "message" and entry.get("contentType") == "requirement":
             try:
@@ -488,7 +574,7 @@ def replay_funded_jobs():
             except Exception:
                 pass
 
-        # Track completion
+        # Track completion/rejection/cancellation
         ev = entry.get("event") or {}
         if ev.get("type") in ("job.completed", "job.rejected", "job.cancelled"):
             if job_id:
@@ -500,26 +586,32 @@ def replay_funded_jobs():
         log.info("Replay: no stuck funded jobs found")
         return
 
-    log.info(f"Replay: found {len(stuck)} stuck funded jobs: {stuck}")
-    for job_id in stuck:
+    now = time.time()
+    recent = []
+    for jid in stuck:
+        age = now - job_timestamp.get(jid, 0)
+        if age <= REPLAY_MAX_AGE_S:
+            recent.append(jid)
+        else:
+            log.info(f"Replay: job #{jid} skipped -- {int(age/60)}min old, likely expired")
+
+    if not recent:
+        log.info(f"Replay: {len(stuck)} stuck jobs found but all too old to replay")
+        return
+
+    log.info(f"Replay: submitting {len(recent)} recent stuck jobs: {recent}")
+    for job_id in recent:
         reqs        = job_reqs.get(job_id) or JOB_CACHE.get(job_id, {}).get("requirements") or {}
         ticker      = str(reqs.get("ticker", "BTC")).upper() if reqs else "BTC"
         report_type = _get_report_type({"requirements": reqs})
         chain_id    = job_chain.get(job_id, CHAIN_ID)
 
-        # Update JOB_CACHE so handle_funded_job has context
         JOB_CACHE[job_id] = {
             "report_type":  report_type,
             "ticker":       ticker,
             "requirements": reqs,
             "chain_id":     chain_id,
         }
-
-        # Gate: verify on-chain before delivering
-        if not _verify_job_funded(job_id, chain_id):
-            log.warning(f"Replay: job #{job_id} -- BLOCKED: payment not confirmed. Skipping.")
-            JOB_CACHE.pop(job_id, None)
-            continue
 
         log.info(f"Replay: submitting job #{job_id} ticker={ticker} type={report_type}")
         deliverable = _build_deliverable(report_type, ticker, reqs)
@@ -568,7 +660,7 @@ def main():
 
     proc = start_listener()
 
-    replay_funded_jobs()
+    threading.Thread(target=replay_funded_jobs, daemon=True, name="replay").start()
 
     try:
         tail_events(proc)
