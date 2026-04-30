@@ -132,3 +132,109 @@ prompts:
       - name: asset
         description: Asset (BTC, ETH, SOL)
         required: false
+
+tools:
+  - name: get_agent_signal
+    description: >
+      Primary oracle signal — BUY/SELL/HOLD/WATCH with confidence, Fear & Greed,
+      BTC price + trend, top Polymarket edges. Start here for any market decision.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key (leave blank for free tier — 500 req/day)
+          default: ""
+      required: []
+
+  - name: get_polymarket_edge
+    description: >
+      Polymarket prediction market edges — EV, true probability, recommended side,
+      and Kelly-sized position for each active market. OctoBoto runs live on these.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+      required: []
+
+  - name: get_sentiment
+    description: >
+      AI sentiment score per asset from -1.0 (bearish) to +1.0 (bullish).
+      Free: BTC. Premium: BTC, ETH, SOL, NVDA, TSLA, AAPL.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+        symbol:
+          type: string
+          description: Asset symbol (BTC, ETH, SOL, NVDA, TSLA, AAPL)
+          default: BTC
+      required: []
+
+  - name: get_prices
+    description: >
+      Current prices with 24h percentage change.
+      Free: BTC, ETH, SOL. Premium: + NVDA, TSLA, AAPL.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+      required: []
+
+  - name: get_market_brief
+    description: >
+      One-paragraph market briefing synthesizing all 27 live signals.
+      Paste directly into an LLM system prompt for grounded market responses.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+      required: []
+
+  - name: get_all_data
+    description: >
+      Everything in one call — signal + Polymarket edges + sentiment + prices + brief.
+      Counts as 1 request against your daily quota.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+      required: []
+
+  - name: get_oracle_signals
+    description: >
+      Raw 12-signal oracle votes — RSI, MACD, EMA, Fear & Greed, funding rate,
+      long/short ratio, taker flow, liquidation skew, Binance delta, and more.
+      Returns each vote + consensus strength + win rate.
+    inputSchema:
+      type: object
+      properties:
+        api_key:
+          type: string
+          description: OctoData API key
+          default: ""
+      required: []
+
+  - name: get_data_sources
+    description: >
+      All 27+ live data feeds with update frequencies. No API key required.
+      Returns source names, types, and refresh cadence.
+    inputSchema:
+      type: object
+      properties: {}
+      required: []
