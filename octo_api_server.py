@@ -3126,7 +3126,7 @@ async def create_transak_session(
         "cryptoCurrencyCode":       "USDC",
         "network":                  "base",
         "walletAddress":            p["payment_address"],
-        "fiatAmount":               str(p["amount_usdc"]),
+        "cryptoAmount":             str(p["amount_usdc"]),
         "partnerOrderId":           payment_id,
         "isAutoFillUserData":       "true",
         "disableWalletAddressForm": "true",
