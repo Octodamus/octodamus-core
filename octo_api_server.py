@@ -6854,7 +6854,7 @@ _mcp = _FastMCP(
 _API_KEY_DESC = (
     "OctoData API key (format: octo_...). "
     "Free key (500 req/day): POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL. "
-    "Premium key (10k req/day): call buy_premium_api() or GET /v1/subscribe?plan=trial."
+    "Premium key (10k req/day): call get_premium_api() or GET /v1/subscribe?plan=trial."
 )
 
 def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
@@ -7091,6 +7091,55 @@ def get_premium_api() -> _OracleDict:
             "4. Receive JSON with api_key",
         ],
     )
+
+from mcp.types import TextContent as _TextContent, PromptMessage as _PromptMessage
+
+@_mcp.prompt()
+def btc_signal_now(asset: str = "BTC") -> list[_PromptMessage]:
+    """Get the current oracle signal for BTC, ETH, or SOL with full reasoning."""
+    return [_PromptMessage(role="user", content=_TextContent(
+        type="text",
+        text=f"Call get_agent_signal() and then get_oracle_signals() for {asset.upper()}. "
+             f"Report: action, confidence, which oracles voted BUY/SELL, and the key reason behind the consensus."
+    ))]
+
+@_mcp.prompt()
+def should_i_trade() -> list[_PromptMessage]:
+    """Full decision brief — oracle signal + Polymarket edges + macro regime."""
+    return [_PromptMessage(role="user", content=_TextContent(
+        type="text",
+        text="Call get_all_data() and give me a complete trade decision brief: "
+             "current oracle action and confidence, top Polymarket edge play with EV, "
+             "macro regime (RISK-ON/OFF), and a one-sentence recommendation."
+    ))]
+
+@_mcp.prompt()
+def polymarket_edges() -> list[_PromptMessage]:
+    """Find the top prediction market opportunities by expected value."""
+    return [_PromptMessage(role="user", content=_TextContent(
+        type="text",
+        text="Call get_polymarket_edge() and list the top 3 prediction market opportunities "
+             "ranked by EV. For each: market question, recommended side, EV, and confidence."
+    ))]
+
+@_mcp.prompt()
+def overnight_brief() -> list[_PromptMessage]:
+    """Overnight Asia session brief — market context for agents waking up."""
+    return [_PromptMessage(role="user", content=_TextContent(
+        type="text",
+        text="Call get_market_brief() and get_agent_signal(). Summarise overnight market action: "
+             "current oracle stance, macro regime, any fear/greed extreme, and the one setup to watch."
+    ))]
+
+@_mcp.prompt()
+def macro_regime() -> list[_PromptMessage]:
+    """Current macro regime with yield curve, M2, and Fed probability context."""
+    return [_PromptMessage(role="user", content=_TextContent(
+        type="text",
+        text="Call get_oracle_signals() and focus on the macro_regime oracle vote. "
+             "Report: RISK-ON / RISK-OFF / NEUTRAL, which FRED indicators are driving it "
+             "(yield curve T10Y2Y, DXY, VIX, M2), and what it means for crypto positioning."
+    ))]
 
 import threading as _threading
 
