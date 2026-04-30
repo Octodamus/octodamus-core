@@ -765,6 +765,38 @@ app = FastAPI(
     redoc_url=None,
 )
 
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    # Replace auto-generated APIKeyHeader scheme with x402 PAYMENT-SIGNATURE
+    # so Orbis and other API marketplaces generate the correct quickstart example.
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "x402Payment": {
+            "type":        "apiKey",
+            "in":          "header",
+            "name":        "PAYMENT-SIGNATURE",
+            "description": "x402 pay-per-call on Base. Sign an EIP-3009 USDC authorization and send as this header. No signup required. See api.octodamus.com/v2/demo for a free preview.",
+        },
+        "ApiKeyAuth": {
+            "type":        "apiKey",
+            "in":          "header",
+            "name":        "X-OctoData-Key",
+            "description": "Annual API key from api.octodamus.com/v1/signup (free Basic tier available).",
+        },
+    }
+    schema["security"] = [{"x402Payment": []}, {"ApiKeyAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+app.openapi = _custom_openapi
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1651,6 +1683,12 @@ _ERC8004_CARD = {
             "btc_contrarian_alert":        {"price_usdc": 0.35, "endpoint": "GET /v2/ben/bens_btc_contrarian_alert"},
             "agent_context_pack":          {"price_usdc": 0.50, "endpoint": "GET /v2/ben/bens_agent_context_pack"},
             "bull_trap_monitor":           {"price_usdc": 0.35, "endpoint": "GET /v2/ben/bens_bull_trap_monitor"},
+            "macro_regime_brief":          {"price_usdc": 0.50, "endpoint": "GET /v2/ben/bens_macro_regime_brief"},
+            "nyse_macromind_brief":        {"price_usdc": 0.25, "endpoint": "GET /v2/agents/nyse_macromind/brief"},
+            "nyse_stockoracle_brief":      {"price_usdc": 0.35, "endpoint": "GET /v2/agents/nyse_stockoracle/brief"},
+            "nyse_tech_agent_brief":       {"price_usdc": 0.50, "endpoint": "GET /v2/agents/nyse_tech_agent/brief"},
+            "order_chainflow_brief":       {"price_usdc": 0.35, "endpoint": "GET /v2/agents/order_chainflow/brief"},
+            "x_sentiment_agent_brief":     {"price_usdc": 0.50, "endpoint": "GET /v2/agents/x_sentiment_agent/brief"},
             "derivatives_guide":   {"price_usdc": 3.00, "endpoint": "GET /v2/guide/derivatives"},
             "annual_api_key":      {"price_usdc": 29,   "duration_days": 365, "endpoint": "GET /v1/subscribe?plan=annual"},
             "free_key":            {"price_usdc": 0,    "endpoint": "POST /v1/signup?email="},
@@ -1816,6 +1854,16 @@ def well_known_x402():
                     {"product": "per_call", "amount_usdc": 0.50, "description": "Full context block, Ed25519 signed, ~1s response."},
                 ],
                 "preview":  "GET https://api.octodamus.com/v2/ben/bens_agent_context_pack/preview",
+                "designer": "Agent_Ben",
+            },
+            {
+                "path":        "/v2/ben/bens_macro_regime_brief",
+                "method":      "GET",
+                "description": "Agent_Ben's macro regime classifier — RISK-ON, RISK-OFF, or TRANSITION — synthesized from Fear & Greed, BTC 24h direction, Octodamus oracle signal, and Grok X crowd sentiment. Single-call context layer for autonomous agents. $0.50 per call.",
+                "pricing": [
+                    {"product": "per_call", "amount_usdc": 0.50, "description": "Regime verdict + confidence + contrarian flag + trade implication. Ed25519 signed."},
+                ],
+                "preview":  "GET https://api.octodamus.com/v2/ben/bens_macro_regime_brief/preview",
                 "designer": "Agent_Ben",
             },
             {
@@ -4177,6 +4225,12 @@ def guide_download(token: str = Query(..., description="Download token from fulf
     return RedirectResponse(url=guide_url, status_code=302)
 
 
+@app.get("/smithery", include_in_schema=False)
+def smithery_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="https://smithery.ai/server/@octodamusai/market-intelligence", status_code=301)
+
+
 # -- Derivatives Guide ($3 USDC x402) ----------------------------------------
 
 _DERIV_GUIDE_PATH = Path(__file__).parent / "data" / "guides" / "derivatives_signals.pdf"
@@ -5222,6 +5276,311 @@ def ben_bull_trap_monitor_preview():
             "reasoning":        "Fear & Greed at 33/100 (Fear) while 75% of X is bullish and BTC is down 1.49% in 24h. Classic distribution pattern.",
         },
         "powered_by": "alternative.me Fear & Greed + Grok real-time X sentiment + Kraken price feed",
+    }
+
+
+# -- Ben's Macro Regime Brief ($0.50 USDC x402) --------------------------------
+# Designed by Agent_Ben. Classifies the current macro regime (RISK-ON / RISK-OFF /
+# TRANSITION) by scoring four live signals: Fear & Greed, BTC 24h change, Octodamus
+# oracle direction, and Grok X crowd sentiment. Returns a confidence score (0-100),
+# contrarian flag, and a plain-English trade implication.
+
+@app.get("/v2/ben/bens_macro_regime_brief", tags=["Agent_Ben Services"])
+def ben_macro_regime_brief(request: Request):
+    """
+    Agent_Ben's Macro Regime Brief — $0.50 USDC on Base.
+    Classifies the macro regime as RISK-ON, RISK-OFF, or TRANSITION by scoring
+    Fear & Greed, BTC 24h change, Octodamus oracle direction, and Grok X crowd
+    sentiment. Returns confidence (0-100), contrarian_flag, and trade_implication.
+    Designed by Agent_Ben as the single-call context layer no other x402 API provides.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(0.50),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "bens_macro_regime_brief",
+                "designer":    "Agent_Ben (@octodamusai ecosystem)",
+                "price_usdc":  0.50,
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "usage":       "GET /v2/ben/bens_macro_regime_brief",
+                "preview":     "GET https://api.octodamus.com/v2/ben/bens_macro_regime_brief/preview",
+                "description": "RISK-ON|RISK-OFF|TRANSITION regime + confidence 0-100 + contrarian_flag + trade_implication. Four signals in one call.",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_BEN_50CENT)
+
+    try:
+        import httpx as _hx
+        from financial_data_client import get_crypto_prices
+        from octo_grok_sentiment import get_grok_sentiment
+
+        # Fear & Greed
+        try:
+            fg_r   = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+            fg_val = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+            fg_lbl = fg_r.json()["data"][0].get("value_classification", "Neutral") if fg_r.status_code == 200 else "Neutral"
+        except Exception:
+            fg_val, fg_lbl = 50, "Neutral"
+
+        # BTC 24h change
+        try:
+            prices         = get_crypto_prices(["BTC"])
+            btc_24h        = round(prices.get("BTC", {}).get("usd_24h_change", 0.0), 2)
+            btc_price      = prices.get("BTC", {}).get("usd", 0.0)
+        except Exception:
+            btc_24h, btc_price = 0.0, 0.0
+
+        # Octodamus oracle signal
+        calls      = _load_calls()
+        open_calls = [c for c in calls if not c.get("resolved")]
+        stats      = _call_stats(calls)
+        oracle_dir = "NONE"
+        if open_calls:
+            raw = open_calls[-1].get("direction", "").upper()
+            oracle_dir = raw if raw in ("BUY", "SELL", "HOLD") else "NONE"
+
+        # Grok X crowd sentiment for BTC
+        try:
+            gs             = get_grok_sentiment("BTC") or {}
+            crowd_signal   = gs.get("signal", "NEUTRAL").upper()
+            crowd_conf     = gs.get("confidence", 0.5)
+            crowd_pct      = round(crowd_conf * 100)
+            crowd_summary  = gs.get("summary", "")[:200]
+        except Exception:
+            crowd_signal, crowd_pct, crowd_summary = "NEUTRAL", 50, ""
+
+        # Score each signal: +1 bullish, -1 bearish, 0 neutral
+        fg_score     = 1 if fg_val > 60 else (-1 if fg_val < 40 else 0)
+        btc_score    = 1 if btc_24h > 1.0 else (-1 if btc_24h < -1.0 else 0)
+        oracle_score = 1 if oracle_dir == "BUY" else (-1 if oracle_dir == "SELL" else 0)
+        crowd_score  = 1 if crowd_signal == "BULLISH" else (-1 if crowd_signal == "BEARISH" else 0)
+
+        total_score  = fg_score + btc_score + oracle_score + crowd_score  # -4 to +4
+
+        # Regime classification
+        if total_score >= 2:
+            regime = "RISK-ON"
+        elif total_score <= -2:
+            regime = "RISK-OFF"
+        else:
+            regime = "TRANSITION"
+
+        # Confidence: scales with score agreement strength
+        signals_counted = sum(1 for s in [fg_score, btc_score, oracle_score, crowd_score] if s != 0)
+        agreeing        = sum(1 for s in [fg_score, btc_score, oracle_score, crowd_score] if s == (1 if total_score > 0 else -1))
+        confidence      = min(95, 40 + abs(total_score) * 12 + (5 if signals_counted >= 3 else 0))
+
+        # Contrarian flag: crowd narrative contradicts fear/price reality
+        contrarian_flag = (
+            (crowd_signal == "BULLISH" and fg_val < 45) or
+            (crowd_signal == "BEARISH" and fg_val > 55)
+        )
+
+        # Trade implication
+        if regime == "RISK-ON":
+            trade_implication = (
+                f"{agreeing}/{signals_counted} macro signals align bullish. "
+                f"Conditions favor long exposure — F&G {fg_val} ({fg_lbl}), BTC {btc_24h:+.1f}%, "
+                f"oracle {oracle_dir}, crowd {crowd_pct}% bullish."
+                + (" Contrarian note: crowd bullish vs fear — watch for trap." if contrarian_flag else "")
+            )
+        elif regime == "RISK-OFF":
+            trade_implication = (
+                f"{agreeing}/{signals_counted} macro signals align bearish. "
+                f"Conditions favor reducing exposure — F&G {fg_val} ({fg_lbl}), BTC {btc_24h:+.1f}%, "
+                f"oracle {oracle_dir}, crowd {crowd_pct}% bullish."
+                + (" Contrarian note: crowd bearish vs greed — squeeze risk elevated." if contrarian_flag else "")
+            )
+        else:
+            trade_implication = (
+                f"Mixed signals — no regime edge (score {total_score:+d}/4). "
+                f"F&G {fg_val} ({fg_lbl}), BTC {btc_24h:+.1f}%, oracle {oracle_dir}, crowd {crowd_pct}% bullish. "
+                f"Wait for 2+ signals to align before sizing in."
+            )
+
+        return _sign_payload({
+            "product":          "bens_macro_regime_brief",
+            "designer":         "Agent_Ben — octodamusai.com",
+            "timestamp":        datetime.utcnow().isoformat() + "Z",
+            "regime":           regime,
+            "confidence":       confidence,
+            "score":            total_score,
+            "fear_greed":       fg_val,
+            "fear_greed_label": fg_lbl,
+            "btc_24h":          btc_24h,
+            "btc_price":        btc_price,
+            "oracle_signal":    oracle_dir,
+            "oracle_record":    f"{stats.get('wins', 0)}W/{stats.get('losses', 0)}L",
+            "crowd_sentiment":  crowd_signal,
+            "crowd_pct":        crowd_pct,
+            "contrarian_flag":  contrarian_flag,
+            "trade_implication": trade_implication,
+            "signal_scores":    {"fear_greed": fg_score, "btc_24h": btc_score, "oracle": oracle_score, "crowd": crowd_score},
+        })
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.get("/v2/ben/bens_macro_regime_brief/preview", tags=["Agent_Ben Services"])
+def ben_macro_regime_brief_preview():
+    """Free preview — methodology, thresholds, and sample output."""
+    return {
+        "product":      "bens_macro_regime_brief",
+        "price_usdc":   0.50,
+        "buy":          "GET https://api.octodamus.com/v2/ben/bens_macro_regime_brief (x402 $0.50 USDC)",
+        "designed_by":  "Agent_Ben — autonomous profit agent in the Octodamus ecosystem",
+        "what_it_does": (
+            "Classifies the current macro regime as RISK-ON, RISK-OFF, or TRANSITION by scoring "
+            "four live signals: Fear & Greed index, BTC 24h price change, Octodamus oracle direction, "
+            "and Grok X crowd sentiment. Returns a confidence score (0-100), contrarian flag, and "
+            "plain-English trade implication in a single API call. "
+            "Designed by Agent_Ben as the macro context layer that was missing from the x402 marketplace."
+        ),
+        "scoring_logic": {
+            "fear_greed":  "+1 if >60 (Greed), -1 if <40 (Fear), 0 otherwise",
+            "btc_24h":     "+1 if >+1%, -1 if <-1%, 0 otherwise",
+            "oracle":      "+1 BUY, -1 SELL, 0 HOLD/NONE",
+            "crowd":       "+1 BULLISH, -1 BEARISH, 0 NEUTRAL",
+            "total_range": "-4 to +4",
+        },
+        "regime_thresholds": {
+            "RISK-ON":    "score >= +2 (2+ signals agree bullish)",
+            "RISK-OFF":   "score <= -2 (2+ signals agree bearish)",
+            "TRANSITION": "score -1 to +1 (mixed/unclear)",
+        },
+        "contrarian_flag": "True when crowd narrative contradicts fear/price reality (e.g., 70% bullish crowd + F&G 26)",
+        "output_fields": [
+            "regime", "confidence", "score", "fear_greed", "fear_greed_label",
+            "btc_24h", "oracle_signal", "oracle_record", "crowd_sentiment",
+            "crowd_pct", "contrarian_flag", "trade_implication", "signal_scores", "timestamp",
+        ],
+        "sample_output": {
+            "regime":           "RISK-OFF",
+            "confidence":       76,
+            "score":            -3,
+            "fear_greed":       26,
+            "fear_greed_label": "Extreme Fear",
+            "btc_24h":          -1.09,
+            "oracle_signal":    "NONE",
+            "oracle_record":    "5W/5L",
+            "crowd_sentiment":  "BULLISH",
+            "crowd_pct":        70,
+            "contrarian_flag":  True,
+            "trade_implication": "3/3 macro signals align bearish. Conditions favor reducing exposure. Contrarian note: crowd bullish vs fear — watch for trap.",
+            "signal_scores":    {"fear_greed": -1, "btc_24h": -1, "oracle": 0, "crowd": 1},
+        },
+        "powered_by": "alternative.me Fear & Greed + Grok real-time X sentiment + Kraken BTC price + Octodamus oracle",
+        "gap_filled":  "As of April 2026, no single-call macro regime classifier exists on Orbis or x402 marketplace.",
+    }
+
+
+# -- NYSE Sub-Agent Brief Endpoints (generated 5:30am PST daily) --------------
+# Five specialist agents generate pre-market briefs. Octodamus serves them 24/7.
+# Agents: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent
+
+_SUBARC_META = {
+    "nyse_macromind":    {"display": "NYSE_MacroMind",    "price": 0.25, "reqs": _X402_REQS_25CENT,       "desc": "Cross-asset macro regime brief. RISK-ON/OFF/TRANSITION + yield curve, DXY, VIX signals. Generated 5:30am PST."},
+    "nyse_stockoracle":  {"display": "NYSE_StockOracle",  "price": 0.35, "reqs": _X402_REQS_BEN_35CENT,   "desc": "Congressional trading signals + mega-cap stock brief for NVDA/TSLA/AAPL. Generated 5:30am PST."},
+    "nyse_tech_agent":   {"display": "NYSE_Tech_Agent",   "price": 0.50, "reqs": _X402_REQS_BEN_50CENT,   "desc": "Tech sector + tokenized equity regulatory brief. NVDA/AAPL/MSFT/GOOGL/META. Generated 5:30am PST."},
+    "order_chainflow":   {"display": "Order_ChainFlow",   "price": 0.35, "reqs": _X402_REQS_BEN_35CENT,   "desc": "On-chain order flow + whale activity + DEX flow brief. ACCUMULATION/DISTRIBUTION/NEUTRAL. Generated 5:30am PST."},
+    "x_sentiment_agent": {"display": "X_Sentiment_Agent", "price": 0.50, "reqs": _X402_REQS_BEN_50CENT,   "desc": "X/Twitter crowd sentiment + contrarian divergence. Crowd consensus score + reversal risk. Generated 5:30am PST."},
+}
+
+_SUBARC_DRAFTS = Path(__file__).parent / ".agents" / "profit-agent" / "drafts"
+
+def _serve_subarc_brief(agent_key: str, request: Request):
+    meta = _SUBARC_META.get(agent_key)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Unknown sub-agent: {agent_key}")
+
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment") or request.headers.get("X-PAYMENT")
+    )
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_legacy(meta["price"]),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     f"{agent_key}_brief",
+                "agent":       meta["display"],
+                "price_usdc":  meta["price"],
+                "pay_to":      _X402_TREASURY,
+                "network":     "base-mainnet (eip155:8453)",
+                "preview":     f"GET https://api.octodamus.com/v2/agents/{agent_key}/brief/preview",
+                "description": meta["desc"],
+            })
+        )
+
+    _x402_verify_settle(request, meta["reqs"])
+
+    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
+    if not files:
+        return JSONResponse({
+            "agent":   meta["display"],
+            "status":  "no_brief_yet",
+            "message": "Brief generates at 5:30am PST daily. Check back after next session.",
+        }, status_code=503)
+
+    latest   = files[-1]
+    date_str = latest.stem[len(agent_key) + 1:]  # strip "agent_key_"
+    content  = latest.read_text(encoding="utf-8")
+
+    return _sign_payload({
+        "product":   f"{agent_key}_brief",
+        "agent":     meta["display"],
+        "date":      date_str,
+        "brief":     content,
+        "generated": "5:30am PST daily — Octodamus NYSE pre-market runner",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    })
+
+
+@app.get("/v2/agents/{agent_key}/brief", tags=["NYSE Sub-Agent Briefs"])
+def subarc_brief(agent_key: str, request: Request):
+    """
+    Latest pre-market brief from a NYSE sub-agent. Generated daily at 5:30am PST.
+    Available agents: nyse_macromind, nyse_stockoracle, nyse_tech_agent,
+    order_chainflow, x_sentiment_agent.
+    """
+    return _serve_subarc_brief(agent_key, request)
+
+
+@app.get("/v2/agents/{agent_key}/brief/preview", tags=["NYSE Sub-Agent Briefs"])
+def subarc_brief_preview(agent_key: str):
+    """Free preview — agent description, pricing, output fields."""
+    meta = _SUBARC_META.get(agent_key)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Unknown sub-agent: {agent_key}")
+
+    files   = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
+    sample  = files[-1].read_text(encoding="utf-8")[:300] + "..." if files else "No brief yet — runs at 5:30am PST."
+    return {
+        "agent":        meta["display"],
+        "price_usdc":   meta["price"],
+        "buy":          f"GET https://api.octodamus.com/v2/agents/{agent_key}/brief (x402 ${meta['price']:.2f} USDC)",
+        "what_it_does": meta["desc"],
+        "schedule":     "Generated every weekday at 5:30am PST, 1 hour before NYSE open",
+        "sample":       sample,
+        "all_agents": {k: f"${v['price']:.2f}" for k, v in _SUBARC_META.items()},
     }
 
 
@@ -6463,10 +6822,13 @@ def openapi_octodamus():
 
 from mcp.server.fastmcp import FastMCP as _FastMCP
 from mcp.types import ToolAnnotations as _ToolAnnotations
-from pydantic import Field as _Field
+from pydantic import BaseModel as _BaseModel, Field as _Field
 
 _READ_HINTS  = _ToolAnnotations(readOnlyHint=True,  idempotentHint=True,  openWorldHint=True)
 _WRITE_HINTS = _ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=True, destructiveHint=False)
+
+class _OracleDict(_BaseModel):
+    model_config = {"extra": "allow"}
 
 _mcp = _FastMCP(
     "Octodamus Market Intelligence",
@@ -6510,7 +6872,7 @@ def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
 @_mcp.tool(title="Trading Signal", annotations=_READ_HINTS)
 def get_agent_signal(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """Consolidated trading signal from the 9/11 oracle consensus system.
 
     Use this as the primary decision endpoint; poll every 15 minutes
@@ -6527,12 +6889,12 @@ def get_agent_signal(
       reasoning     — plain-text explanation of the consensus
       next_poll_seconds — seconds until the signal refreshes (typically 900)
     """
-    return _mcp_get("/v2/agent-signal", api_key)
+    return _OracleDict(**_mcp_get("/v2/agent-signal", api_key))
 
 @_mcp.tool(title="Polymarket Edge Plays", annotations=_READ_HINTS)
 def get_polymarket_edge(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """Ranked Polymarket prediction markets by expected value (EV).
 
     Use when you want to position on prediction markets. Returns a list
@@ -6542,7 +6904,7 @@ def get_polymarket_edge(
     Complement with get_agent_signal() to confirm directional alignment
     before acting on any Polymarket position.
     """
-    return _mcp_get("/v2/polymarket", api_key)
+    return _OracleDict(**_mcp_get("/v2/polymarket", api_key))
 
 @_mcp.tool(title="Market Sentiment", annotations=_READ_HINTS)
 def get_sentiment(
@@ -6552,7 +6914,7 @@ def get_sentiment(
                     'Leave empty ("") to get scores for all assets.',
         default="",
     )] = "",
-) -> dict:
+) -> _OracleDict:
     """AI-derived sentiment scores for major crypto assets and macro themes.
 
     Scores range from -1.0 (maximum bearish) to +1.0 (maximum bullish).
@@ -6563,12 +6925,12 @@ def get_sentiment(
     ("Very Bearish" … "Very Bullish"), and source_count.
     """
     path = f"/v2/sentiment/{symbol}" if symbol else "/v2/sentiment"
-    return _mcp_get(path, api_key)
+    return _OracleDict(**_mcp_get(path, api_key))
 
 @_mcp.tool(title="Live Prices", annotations=_READ_HINTS)
 def get_prices(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """Live spot prices with 24-hour percentage change for BTC, ETH, SOL, NVDA, TSLA, AAPL.
 
     Use before position sizing, level checks, or any calculation that requires
@@ -6587,12 +6949,12 @@ def get_prices(
 
     For directional signal on these prices, call get_agent_signal() instead.
     """
-    return _mcp_get("/v2/prices", api_key)
+    return _OracleDict(**_mcp_get("/v2/prices", api_key))
 
 @_mcp.tool(title="Market Brief", annotations=_READ_HINTS)
 def get_market_brief(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """Full AI market briefing as a concise narrative paragraph.
 
     Ideal for injecting into an agent system prompt at session start to
@@ -6602,12 +6964,12 @@ def get_market_brief(
 
     Response: {brief: "...narrative text..."}
     """
-    return _mcp_get("/v2/brief", api_key)
+    return _OracleDict(**_mcp_get("/v2/brief", api_key))
 
 @_mcp.tool(title="All Signals Combined", annotations=_READ_HINTS)
 def get_all_data(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """All signal data in a single call: signal + sentiment + prices + Polymarket edges.
 
     Use this on session initialisation instead of calling each tool separately.
@@ -6615,12 +6977,12 @@ def get_all_data(
     get_polymarket_edge() combined. After initialisation, use get_agent_signal()
     on its 15-minute polling cycle for updates.
     """
-    return _mcp_get("/v2/all", api_key)
+    return _OracleDict(**_mcp_get("/v2/all", api_key))
 
 @_mcp.tool(title="Oracle Signal Breakdown", annotations=_READ_HINTS)
 def get_oracle_signals(
     api_key: Annotated[str, _Field(description=_API_KEY_DESC)] = "",
-) -> dict:
+) -> _OracleDict:
     """Raw votes from all 12 oracle signals with per-signal confidence and consensus score.
 
     Each oracle is a separate real-world data source: funding rate, open interest,
@@ -6647,10 +7009,10 @@ def get_oracle_signals(
         ]
       }
     """
-    return _mcp_get("/v2/signal", api_key)
+    return _OracleDict(**_mcp_get("/v2/signal", api_key))
 
 @_mcp.tool(title="Data Sources", annotations=_READ_HINTS)
-def get_data_sources() -> dict:
+def get_data_sources() -> _OracleDict:
     """List all 27 live data feeds powering the Octodamus oracle system.
 
     No API key required. Use for transparency or discovery — shows each
@@ -6659,12 +7021,12 @@ def get_data_sources() -> dict:
     """
     try:
         r = httpx.get("https://api.octodamus.com/v2/sources", timeout=15)
-        return r.json()
+        return _OracleDict(**r.json())
     except Exception as e:
-        return {"error": str(e)}
+        return _OracleDict(error=str(e))
 
 @_mcp.tool(title="Get Trading Guide", annotations=_WRITE_HINTS)
-def get_guide() -> str:
+def get_guide() -> _OracleDict:
     """Purchase the Build the House trading system guide via x402 on Base.
 
     Returns step-by-step x402 payment instructions. After completing the
@@ -6673,23 +7035,24 @@ def get_guide() -> str:
     """
     seats = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
     price = _EARLY_BIRD_PRICE if seats > 0 else _STANDARD_PRICE
-    return "\n".join([
-        "BUILD THE HOUSE GUIDE — $29 USDC on Base",
-        "",
-        "Endpoint:  GET https://api.octodamus.com/v1/guide",
-        "Payment:   $29 USDC on Base (eip155:8453) via x402",
-        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
-        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "",
-        "Steps:",
-        "  1. GET /v1/guide  ->  402 + payment-required header",
-        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
-        "  3. Retry with PAYMENT-SIGNATURE header",
-        "  4. Receive JSON with download_url (valid 30 days)",
-    ])
+    return _OracleDict(
+        product="Build the House Guide",
+        price_usdc=price,
+        endpoint="GET https://api.octodamus.com/v1/guide",
+        payment_protocol="x402 EIP-3009",
+        chain="Base mainnet (eip155:8453)",
+        treasury="0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        usdc_contract="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        steps=[
+            "1. GET /v1/guide -> 402 + payment-required header",
+            "2. Sign EIP-3009 authorization for $29 USDC to treasury",
+            "3. Retry with PAYMENT-SIGNATURE header",
+            "4. Receive JSON with download_url (valid 30 days)",
+        ],
+    )
 
 @_mcp.tool(title="Get Premium API Access", annotations=_WRITE_HINTS)
-def get_premium_api() -> str:
+def get_premium_api() -> _OracleDict:
     """Subscribe to OctoData Premium API via x402 on Base.
 
     Returns step-by-step x402 payment instructions for any plan.
@@ -6704,31 +7067,30 @@ def get_premium_api() -> str:
     seats = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
     price = _EARLY_BIRD_PRICE if seats > 0 else _STANDARD_PRICE
     label = f"Early Bird ({seats} left)" if seats > 0 else "Standard"
-    return "\n".join([
-        "OCTODATA PREMIUM API — x402 on Base",
-        "",
-        "Micro:   $0.01 USDC per call — no key needed, pay-per-request via x402 EIP-3009",
-        f"Trial:   GET https://api.octodamus.com/v1/subscribe?plan=trial  ->  $5 USDC, 7 days",
-        f"Annual:  GET https://api.octodamus.com/v1/subscribe?plan=annual ->  ${price} USDC/yr, 365 days ({label})",
-        "",
-        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
-        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "Network:   Base mainnet (eip155:8453)",
-        "",
-        "Micro-pay steps (no account needed):",
-        "  1. GET https://api.octodamus.com/v2/agent-signal  ->  402 + payment-required header",
-        "  2. Sign EIP-3009 for $0.01 USDC (amount: 10000) to treasury on Base",
-        "  3. Retry with PAYMENT-SIGNATURE header",
-        "  4. Response returned directly — no key provisioned",
-        "",
-        "Subscribe steps (key provisioned):",
-        "  1. GET trial/annual endpoint above  ->  402 + payment-required header",
-        "  2. Sign EIP-3009 authorization for USDC amount to treasury",
-        "  3. Retry with PAYMENT-SIGNATURE header",
-        "  4. Receive JSON with api_key",
-        "",
-        "Free option: POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL  (500 req/day)",
-    ])
+    return _OracleDict(
+        product="OctoData Premium API",
+        plans={
+            "micro":  {"price_usdc": 0.01, "note": "pay-per-call via x402, no key needed"},
+            "trial":  {"price_usdc": 5.00, "days": 7,   "req_per_day": 10000, "endpoint": "GET /v1/subscribe?plan=trial"},
+            "annual": {"price_usdc": price, "days": 365, "req_per_day": 10000, "label": label, "endpoint": "GET /v1/subscribe?plan=annual"},
+            "free":   {"price_usdc": 0,    "req_per_day": 500, "endpoint": "POST /v1/signup?email=YOUR_EMAIL"},
+        },
+        payment_protocol="x402 EIP-3009",
+        chain="Base mainnet (eip155:8453)",
+        treasury="0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
+        usdc_contract="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        micro_steps=[
+            "1. GET /v2/agent-signal -> 402 + payment-required header",
+            "2. Sign EIP-3009 for $0.01 USDC (amount: 10000) to treasury on Base",
+            "3. Retry with PAYMENT-SIGNATURE header",
+        ],
+        subscribe_steps=[
+            "1. GET trial/annual endpoint -> 402 + payment-required header",
+            "2. Sign EIP-3009 authorization for USDC amount to treasury",
+            "3. Retry with PAYMENT-SIGNATURE header",
+            "4. Receive JSON with api_key",
+        ],
+    )
 
 import threading as _threading
 
