@@ -2961,6 +2961,8 @@ def _load_stripe_config() -> dict:
 
 _stripe_cfg             = _load_stripe_config()
 _STRIPE_KEY             = os.environ.get("STRIPE_PRODUCTS_API_KEY", "")
+_TRANSAK_API_KEY        = os.environ.get("TRANSAK_API_KEY", "")
+_TRANSAK_WEBHOOK_SEC    = os.environ.get("TRANSAK_WEBHOOK_SECRET", "")
 _STRIPE_PRICE_ID        = os.environ.get("OCTODATA_STRIPE_PRICE_ID", "") or _stripe_cfg.get("OCTODATA_STRIPE_PRICE_ID", "")
 _STRIPE_PRODUCT_ID      = _stripe_cfg.get("OCTODATA_STRIPE_PRODUCT_ID", "prod_UHtda6fiattpWX")
 _STRIPE_WEBHOOK_SEC     = os.environ.get("OCTODATA_STRIPE_WEBHOOK_SECRET", "") or _stripe_cfg.get("OCTODATA_STRIPE_WEBHOOK_SECRET", "")
@@ -3094,6 +3096,107 @@ async def stripe_webhook(request: Request):
                 save_keys(keys)
 
     return {"received": True}
+
+
+@app.post("/v1/transak-session", tags=["Payments"])
+async def create_transak_session(
+    payment_id: str = Query(..., description="Payment intent ID from /v1/agent-checkout"),
+    email: str = Query("", description="Buyer email — pre-fills Transak widget"),
+):
+    """
+    Create a Transak secure widget session for card-to-USDC checkout.
+    Calls Transak's session API from the backend so the partner API key is never exposed.
+    Returns widget_url — open in a popup; user completes card payment there.
+    Transak sends USDC to our treasury; /webhooks/transak fulfills the payment intent.
+    """
+    if not _TRANSAK_API_KEY:
+        raise HTTPException(status_code=503, detail="Card payments not yet active.")
+
+    from octo_agent_pay import _load_payments
+    payments = _load_payments()
+    p = payments.get(payment_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment intent not found.")
+    if p.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"Payment already {p.get('status')}.")
+
+    widget_params: dict = {
+        "apiKey":                   _TRANSAK_API_KEY,
+        "referrerDomain":           "octodamus.com",
+        "cryptoCurrencyCode":       "USDC",
+        "network":                  "base",
+        "walletAddress":            p["payment_address"],
+        "fiatAmount":               str(p["amount_usdc"]),
+        "partnerOrderId":           payment_id,
+        "isAutoFillUserData":       "true",
+        "disableWalletAddressForm": "true",
+    }
+    buyer_email = email or p.get("email", "")
+    if buyer_email:
+        widget_params["email"] = buyer_email
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            "https://api-gateway.transak.com/api/v2/auth/session",
+            headers={"access-token": _TRANSAK_API_KEY, "Content-Type": "application/json"},
+            json={"widgetParams": widget_params},
+        )
+
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail=f"Transak session error: {resp.text[:300]}")
+
+    result = resp.json()
+    widget_url = result.get("data", {}).get("widgetUrl", "")
+    if not widget_url:
+        raise HTTPException(status_code=502, detail="Transak returned no widgetUrl.")
+
+    return {"widget_url": widget_url}
+
+
+@app.post("/webhooks/transak", tags=["Webhooks"])
+async def transak_webhook(request: Request):
+    """
+    Transak webhook. Point to: https://api.octodamus.com/webhooks/transak
+    Events: ORDER_COMPLETED — fulfills the matching payment intent immediately.
+    Signature: HMAC-SHA256 of raw body, key = TRANSAK_WEBHOOK_SECRET.
+    """
+    body = await request.body()
+    sig  = request.headers.get("x-transak-signature", "")
+
+    if _TRANSAK_WEBHOOK_SEC:
+        import hmac as _hmac, hashlib as _hl
+        expected = _hmac.new(_TRANSAK_WEBHOOK_SEC.encode(), body, _hl.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=400, detail="Invalid Transak signature")
+
+    try:
+        payload = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Transak sends data in webhookData or directly at root depending on version
+    wd         = payload.get("webhookData") or payload
+    status     = wd.get("status", "")
+    payment_id = wd.get("partnerOrderId", "")
+    tx_hash    = wd.get("transactionHash") or ("transak_" + secrets.token_hex(8))
+
+    if status not in ("COMPLETED", "ORDER_COMPLETED"):
+        return {"received": True, "status": status, "action": "none"}
+
+    if not payment_id:
+        return {"received": True, "error": "no_partner_order_id"}
+
+    from octo_agent_pay import _fulfill_payment, _load_payments
+    payments = _load_payments()
+    p = payments.get(payment_id)
+    if not p:
+        return {"received": True, "error": "payment_not_found", "id": payment_id}
+    if p.get("status") != "pending":
+        return {"received": True, "status": p.get("status"), "action": "already_handled"}
+
+    result = _fulfill_payment(payment_id, tx_hash, 0)
+    print(f"[Transak] Webhook fulfilled {payment_id} | status={status} | tx={tx_hash[:24]}...")
+    return {"received": True, "fulfilled": payment_id, "result": result.get("status")}
 
 
 # -- V2 Agent Endpoints -------------------------------------------------------
