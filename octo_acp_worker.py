@@ -258,18 +258,7 @@ def handle_new_job(event: dict):
         "chain_id":     chain_id,
     }
     _save_job_cache()
-    log.info(f"Job #{job_id} -- type={report_type} ticker={ticker}")
-
-    rc, out, err = _acp([
-        "provider", "set-budget",
-        "--job-id",   job_id,
-        "--amount",   str(2.0 if report_type in ("fear_crowd_divergence", "overnight_brief", "agent_market_intel_bundle", "bounty_hunter_recon") else 1.5 if report_type == "btc_bull_trap_monitor" else ACP_PRICE_USDC),
-        "--chain-id", str(chain_id),
-    ])
-    if rc == 0:
-        log.info(f"Job #{job_id} budget set to ${ACP_PRICE_USDC} USDC")
-    else:
-        log.error(f"Job #{job_id} set-budget failed (rc={rc})")
+    log.info(f"Job #{job_id} -- type={report_type} ticker={ticker} -- waiting for funding")
 
 
 def handle_funded_job(event: dict):
@@ -386,22 +375,12 @@ def process_event(line: str):
                 cached["requirements"] = reqs
                 log.info(f"Cached requirements for job #{job_id}: {reqs}")
                 # If budget not yet set, trigger now that we have requirements
-                if not cached.get("budget_set"):
+                if not cached.get("report_type"):
                     report_type = _get_report_type({**event, "requirements": reqs})
                     ticker = str(reqs.get("ticker", "BTC")).upper()
-                    cached.update({"report_type": report_type, "ticker": ticker, "budget_set": True})
-                    chain_id = event.get("chainId") or CHAIN_ID
-                    rc, _, _ = _acp([
-                        "provider", "set-budget",
-                        "--job-id",   job_id,
-                        "--amount",   str(2.0 if report_type in ("fear_crowd_divergence", "overnight_brief", "agent_market_intel_bundle", "bounty_hunter_recon") else 1.5 if report_type == "btc_bull_trap_monitor" else ACP_PRICE_USDC),
-                        "--chain-id", str(chain_id),
-                    ])
+                    cached.update({"report_type": report_type, "ticker": ticker})
                     _save_job_cache()
-                    if rc == 0:
-                        log.info(f"Job #{job_id} budget set (from requirement msg) type={report_type} ticker={ticker}")
-                    else:
-                        log.error(f"Job #{job_id} set-budget failed after requirement msg")
+                    log.info(f"Job #{job_id} requirements cached -- type={report_type} ticker={ticker}")
             except Exception as e:
                 log.error(f"Requirement message parse error: {e}")
         return
@@ -625,11 +604,16 @@ def replay_funded_jobs():
             "--job-id",      job_id,
             "--deliverable", deliverable,
             "--chain-id",    str(chain_id),
-        ], timeout=90)
+        ], timeout=180)
         if rc == 0:
             log.info(f"Replay: job #{job_id} submitted OK")
         else:
-            log.error(f"Replay: job #{job_id} submit failed (rc={rc}) -- may have expired")
+            combined = (out + err).lower()
+            if "execution reverted" in combined or "already" in combined:
+                log.error(f"Replay: job #{job_id} submit reverted -- expired on-chain")
+                _remove_pending_job(job_id)
+            else:
+                log.error(f"Replay: job #{job_id} submit failed (rc={rc}) -- may have expired")
         JOB_CACHE.pop(job_id, None)
 
     _save_job_cache()
