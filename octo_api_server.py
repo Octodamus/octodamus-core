@@ -3143,12 +3143,12 @@ async def create_transak_session(
         )
 
     if not resp.is_success:
-        raise HTTPException(status_code=502, detail=f"Transak session error: {resp.text[:300]}")
+        raise HTTPException(status_code=400, detail=f"Transak error {resp.status_code}: {resp.text[:300]}")
 
     result = resp.json()
     widget_url = result.get("data", {}).get("widgetUrl", "")
     if not widget_url:
-        raise HTTPException(status_code=502, detail="Transak returned no widgetUrl.")
+        raise HTTPException(status_code=400, detail="Transak returned no widgetUrl.")
 
     return {"widget_url": widget_url}
 
