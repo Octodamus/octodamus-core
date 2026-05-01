@@ -43,11 +43,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("Runner")
 
-# Redirect print() to log so all existing prints land in the file too
-_orig_print = print
-def print(*args, **kwargs):
+# Redirect print() globally so all modules' output lands in the log file
+import builtins as _builtins
+_orig_print = _builtins.print
+def _log_print(*args, **kwargs):
     msg = " ".join(str(a) for a in args)
     log.info(msg)
+_builtins.print = _log_print
+print = _log_print
 
 # ── Secrets — must load before any other imports that use os.environ ──────────
 from bitwarden import load_all_secrets, verify_session
@@ -337,6 +340,22 @@ def _claw_generate(system: str, user: str, max_tokens: int = 200,
     )
     return r.content[0].text.strip()
 
+def _is_post_complete(text: str) -> bool:
+    """Return False if the post looks truncated mid-sentence."""
+    t = text.strip()
+    if not t:
+        return False
+    incomplete_endings = (", and", ", but", ", so", " and", " or", " the", " that", " to", " — ")
+    last_char = t[-1]
+    if last_char not in ".!?\"'":
+        if any(t.lower().endswith(e) for e in incomplete_endings):
+            return False
+        if t.endswith("...") and not t[:-3].strip().endswith((".", "!", "?")):
+            # Trailing ... after incomplete clause (not intentional ellipsis)
+            return False
+    return True
+
+
 def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
     r = claude.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -344,6 +363,8 @@ def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    if r.stop_reason == "max_tokens":
+        print(f"[Runner] WARNING: _haiku_generate hit max_tokens ({max_tokens}) — post may be truncated")
     return r.content[0].text.strip()
 
 try:
@@ -1032,28 +1053,54 @@ def _check_smart_call():
     return results or None
 
 
-def _get_recent_posts(n: int = 5) -> str:
-    """Get last N posted texts for dedup in prompts."""
+def _get_recent_posts(n: int = 20) -> str:
+    """
+    Get last N posted texts for dedup in prompts.
+    Pulls from both octo_posted_log.json and octo_skill_log.json so nothing slips through.
+    Default 20 posts = ~4 days of content. Use this in EVERY post-generating prompt.
+    """
+    texts_with_ts = []
     try:
-        from pathlib import Path as _P
         import json as _j
+        from pathlib import Path as _P
+
+        # Source 1: posted log
         log_path = _P(__file__).parent / "octo_posted_log.json"
-        if not log_path.exists():
-            return ""
-        log = _j.loads(log_path.read_text(encoding="utf-8"))
-        # Sort by posted_at descending, get last N
-        recent = sorted(
-            log.values(),
-            key=lambda x: x.get("posted_at", ""),
-            reverse=True
-        )[:n]
-        texts = [entry.get("text", "")[:150] for entry in recent if entry.get("text")]
-        if not texts:
-            return ""
-        numbered = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(texts))
-        return f"\n\nRECENT POSTS (do NOT repeat these topics or angles — pick something DIFFERENT):\n{numbered}\n"
+        if log_path.exists():
+            log = _j.loads(log_path.read_text(encoding="utf-8"))
+            for entry in log.values():
+                t = entry.get("text", "")
+                ts = entry.get("posted_at", "")
+                if t and ts:
+                    texts_with_ts.append((ts, t))
+
+        # Source 2: skill log (catches posts logged via log_post that miss the posted_log)
+        skill_path = _P(__file__).parent / "octo_skill_log.json"
+        if skill_path.exists():
+            skill = _j.loads(skill_path.read_text(encoding="utf-8"))
+            seen = {t for _, t in texts_with_ts}
+            for entry in skill:
+                t = entry.get("text", "")
+                ts = entry.get("timestamp", "")
+                if t and ts and t not in seen:
+                    texts_with_ts.append((ts, t))
+                    seen.add(t)
+
     except Exception:
+        pass
+
+    if not texts_with_ts:
         return ""
+
+    texts_with_ts.sort(key=lambda x: x[0], reverse=True)
+    recent = [t[:160] for _, t in texts_with_ts[:n]]
+    numbered = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(recent))
+    return (
+        f"\n\nRECENT POSTS — last {len(recent)} posts (do NOT repeat these topics, angles, or data points):\n"
+        f"{numbered}\n"
+        "If any recent post already covered a specific number, asset + data combination, or narrative angle — "
+        "pick something COMPLETELY DIFFERENT. Repetition kills reach.\n"
+    )
 
 
 # ─────────────────────────────────────────────
@@ -1202,7 +1249,7 @@ def mode_monitor() -> None:
                     pass
 
                 _watchpost_prompt = f"""You are Octodamus, autonomous AI market oracle. Write a market watchpost for X (Twitter).
-
+{_get_recent_posts(n=20)}
 Current market snapshot:
 - BTC: ${_btc.get('usd',0):,.0f} ({_btc.get('usd_24h_change',0):+.1f}% 24h)
 - ETH: ${_eth.get('usd',0):,.0f} ({_eth.get('usd_24h_change',0):+.1f}% 24h)
@@ -1219,19 +1266,23 @@ Rules:
 - Dry, precise, Druckenmiller-style — zero fluff
 - Comment on what the market is doing relative to open calls, or just give a sharp read of current conditions
 - If news context above is present, you may reference a specific catalyst — but only if it's notable
+- Do NOT repeat any topic, data point, or angle from the RECENT POSTS list above
 - Do NOT mention posting the watchpost or that no signal fired
 - Do NOT say 'no new signal' or similar
 - Output only the post text, nothing else"""
 
                 _wp_text = _haiku_generate(
-                    OCTO_SYSTEM, _watchpost_prompt, max_tokens=300
+                    OCTO_SYSTEM, _watchpost_prompt, max_tokens=450
                 )
-                queue_post(_wp_text, post_type="watchpost", priority=3)
-                _wp_posted = process_queue(max_posts=1, force=True)
-                if _wp_posted:
-                    print(f"[Runner] Watchpost posted: {_wp_text[:80]}...")
+                if not _is_post_complete(_wp_text):
+                    print(f"[Runner] Watchpost appears truncated, skipping: {_wp_text[-80:]}")
                 else:
-                    print("[Runner] Watchpost queued but not posted.")
+                    queue_post(_wp_text, post_type="watchpost", priority=3)
+                    _wp_posted = process_queue(max_posts=1, force=True)
+                    if _wp_posted:
+                        print(f"[Runner] Watchpost posted: {_wp_text[:80]}...")
+                    else:
+                        print("[Runner] Watchpost queued but not posted.")
             except Exception as _wpe:
                 print(f"[Runner] Watchpost failed: {_wpe}")
 
@@ -1404,14 +1455,17 @@ def mode_daily() -> None:
             except Exception:
                 pass
 
+        recent_posts_section = _get_recent_posts(n=20)
+
         response = claude.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=350,
+            max_tokens=500,
             system=OCTO_SYSTEM,
             messages=[{
                 "role": "user",
                 "content": (
                     "Generate the morning oracle market read for @octodamusai.\n"
+                    f"{recent_posts_section}"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
                     f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
                     f"\n\nOptions Intelligence:\n{_get_deribit_context('BTC')}"
@@ -1433,14 +1487,30 @@ def mode_daily() -> None:
                     f"{(_chosen_voice_inst := get_voice_instruction())}\n"
                     "One post, under 280 chars.\n"
                     "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, $HYPE, etc.) when citing any price, percentage, or market data — never let a number float without a ticker.\n"
-                    "Lead with a specific number or fact. Then the insight. CRITICAL: Check the RECENT POSTS list above. If they mention BTC funding rates or longs/shorts, DO NOT write about those. Pick a COMPLETELY different topic: ETH ecosystem, SOL activity, macro Fear and Greed ecosystem, cross-market correlation, OI shifts, liquidation patterns, options max pain, or a contrarian take. NEVER repeat the same asset AND same data point as a recent post.\n"
-                    "If a headline reveals something ironic or contradictory — use it.\n"
-                    "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the market read."
+                    "PRIME DIRECTIVE: Every post must give the reader a clue about what the market or world is going to do next. "
+                    "Not what already happened. Not what everyone is already saying. What is COMING.\n"
+                    "Ask before writing: 'Does this tell the reader something they don't already know?' If no — do not write it.\n"
+                    "The best posts: a divergence nobody has connected yet, a leading indicator being ignored, a number that reframes the situation, the thing that will matter in 48h that nobody is talking about today.\n"
+                    "VARY THE STRUCTURE — do not always lead with a number:\n"
+                    "  - Sometimes: tension or irony first, then the data that explains it.\n"
+                    "  - Sometimes: the number first, then what it means for what's coming.\n"
+                    "  - Sometimes: a single declarative clue that stands alone.\n"
+                    "  - Sometimes: the human absurdity of the situation, grounded in one specific data point.\n"
+                    "The post that got 500 views: '27 data feeds agree on the move. Nine systems align. I size accordingly. Then retail discovers a Discord channel and everything inverts. Being right about the math and wrong about the crowd's collective psychosis is its own kind of education.' — specific, dry, grounded, real tension arc, tells you something about how markets work.\n"
+                    "CRITICAL: Check the RECENT POSTS list above. NEVER repeat the same asset AND same data point. Rotate topics: ETH ecosystem, SOL activity, macro divergence, cross-market correlation, OI shifts, liquidation patterns, options positioning, contrarian read, leading indicators.\n"
+                    "If a headline reveals something ironic, contradictory, or ahead of where the crowd is — use it.\n"
+                    "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the clue."
                 ),
             }],
         )
 
         post = response.content[0].text.strip()
+        if response.stop_reason == "max_tokens":
+            print(f"[Runner] WARNING: Daily read hit max_tokens — post truncated, skipping: {post[-100:]}")
+            return
+        if not _is_post_complete(post):
+            print(f"[Runner] WARNING: Daily read post appears truncated, skipping: {post[-100:]}")
+            return
         # Auto-record directional call from post
         if _CALLS_ACTIVE:
             try:
@@ -2536,7 +2606,7 @@ if __name__ == "__main__":
             "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot",
             "mentions", "youtube", "format", "qrt", "morning_flow",
             "strategy_monitor", "strategy_sunday", "thread", "ceo_research",
-            "liquidation_radar",
+            "liquidation_radar", "range_scout", "xengage",
         ],
         default="monitor",
     )
@@ -2621,6 +2691,15 @@ if __name__ == "__main__":
             print(f"[CEO] PHASE: {result.get('phase_assessment', '')}")
         else:
             print(f"[CEO] {result.get('raw', str(result))[:500]}")
+
+    elif args.mode == "range_scout":
+        from octo_range_scout import run_range_scout
+        targets = [args.ticker.upper()] if args.ticker and args.ticker.upper() in ("BTC", "ETH", "SOL") else None
+        run_range_scout(assets=targets, dry=False)
+
+    elif args.mode == "xengage":
+        from octo_x_engage import run_session as xengage_run
+        xengage_run(dry_run=args.force)  # --force acts as dry-run for xengage
 
     elif args.mode == "spacex":
         from octo_spacex import check_spacex_ipo
