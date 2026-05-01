@@ -1,9 +1,9 @@
 """
 octo_eyes_market.py
-OctoEyes â€” Market Signal Monitor
+OctoEyes â€" Market Signal Monitor
 
 Stock prices:  Financial Datasets API (free tier: NVDA, TSLA, AAPL, MSFT, SPY, QQQ)
-Crypto prices: CoinGecko free API (no key required â€” BTC, ETH, SOL)
+Crypto prices: CoinGecko free API (no key required â€" BTC, ETH, SOL)
 
 Removed: META (402 on free Financial Datasets tier)
 Fixed:   Crypto was calling /crypto/prices/snapshot/ which returns 400 on free tier
@@ -25,9 +25,9 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 # WATCHLIST
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 # Free tier Financial Datasets API tickers (META and snapshot endpoint not available)
 STOCK_WATCHLIST = ["NVDA", "TSLA", "AAPL", "MSFT"]
@@ -41,15 +41,15 @@ CRYPTO_DISPLAY = {
     "solana":   "SOL",
 }
 
-# Alert threshold â€” % move to trigger a signal post
+# Alert threshold â€" % move to trigger a signal post
 MOVE_THRESHOLD_PCT = 3.0
 
 _TICKER_FETCH_DELAY = 0.25
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 # CRYPTO PRICE via COINGECKO
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def _get_crypto_prices() -> dict:
     """
@@ -75,9 +75,9 @@ def _get_crypto_prices() -> dict:
         return {}
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 # SIGNAL DETECTION
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def check_for_signals() -> list[dict]:
     """
@@ -126,9 +126,9 @@ def check_for_signals() -> list[dict]:
     return signals
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 # SIGNAL â†’ POST
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def _load_soul_brain() -> str:
     import pathlib
@@ -146,10 +146,37 @@ def _load_soul_brain() -> str:
 
 _SOUL_BRAIN = _load_soul_brain()
 
-OCTO_SYSTEM = _SOUL_BRAIN + """\n\nYou are Octodamus â€” oracle octopus, market seer of the Pacific depths.
-You are @octodamusai on X. Max 280 chars. No hashtags. No engagement bait.
-Speak with bored certainty. You already knew this was coming.
-Lead with the specific number. Then the insight. One ocean metaphor max."""
+# Use the canonical system prompt from personality, not a hardcoded stub.
+# This gives signal posts access to the same character anchors as all other posts.
+try:
+    from octo_personality import build_x_system_prompt as _build_x_sys
+    OCTO_SYSTEM = _build_x_sys()
+except Exception:
+    OCTO_SYSTEM = _SOUL_BRAIN + "\n\nYou are Octodamus on X. Max 280 chars. No hashtags. No engagement bait."
+
+# Post structure rotation — one is selected per signal post so the skeleton varies.
+# This is the fix for the "data dump -> crowd obs -> oracle zinger" formula repeating.
+import random as _random
+
+_POST_STRUCTURES = [
+    # A: Data-first (current default — keep it, just don't use it exclusively)
+    "STRUCTURE A — DATA LEAD: Lead with the specific number. Then what it means. No closer kicker required — let the data land on its own.",
+
+    # B: Thesis-first (state the conclusion, then prove it with one data point)
+    "STRUCTURE B — THESIS LEAD: Open with the conclusion or observation. Then drop the one number that proves it. No setup, no payoff line at the end.",
+
+    # C: Single sentence — one line, nothing else
+    "STRUCTURE C — SINGLE LINE: One sentence. One point. No setup, no payoff, no follow-up. The sharpest thing the data allows, stated as fact. Under 180 chars.",
+
+    # D: Historical parallel (this pattern has shown up before)
+    "STRUCTURE D — HISTORICAL PARALLEL: Connect this signal to a specific prior instance when the same setup appeared. Name the date or context. Say what happened then. Let the reader draw the conclusion.",
+
+    # E: Zoom out (macro context, not just the asset signal)
+    "STRUCTURE E — MACRO FRAME: Start with the broader market or macro context this signal fits into, then land on the specific asset. One sentence each. No closer kicker.",
+
+    # F: The open question (pose it, walk away — don't answer it)
+    "STRUCTURE F — OPEN QUESTION: State one observation, then ask the one question the data raises. Don't answer it. Walk away. The question IS the post.",
+]
 
 
 def generate_oracle_post(signal: dict) -> str:
@@ -196,34 +223,44 @@ def generate_oracle_post(signal: dict) -> str:
         pass
     _futures_line = f"\nFutures positioning:\n{_cg_context}\n" if _cg_context else ""
 
+    # Pick a voice and structure for this post — vary both independently
+    try:
+        from octo_personality import get_voice_instruction as _get_voice
+        voice_inst = _get_voice()
+    except Exception:
+        voice_inst = "CONTRARIAN voice — call out the herd. Be quotable."
+
+    structure_inst = _random.choice(_POST_STRUCTURES)
+
     prompt = (
         f"Market data: {ticker} {direction} {change_pct:+.2f}% at ${price}\n"
         f"{_futures_line}"
         f"Recent headlines: {json.dumps(news_headlines)}\n\n"
-        f"Generate ONE sharp oracle post for @octodamusai. Under 280 chars.\n"
-        f"REQUIRED: the ticker symbol ${ticker} MUST appear in the post so readers know what you're talking about.\n"
-        "NO price tables. NO headers. NO dividers. NO ticker/price lists.\n"
-        "Write one punchy insight — what does this move actually mean or signal?\n"
-        "Use the price naturally in context if needed, not as a display item.\n"
-        "One ocean metaphor MAX. End with something memorable.\n"
+        f"VOICE THIS SESSION: {voice_inst}\n\n"
+        f"STRUCTURE THIS SESSION: {structure_inst}\n\n"
+        f"Generate ONE oracle post for @octodamusai. Under 280 chars.\n"
+        f"REQUIRED: the ticker symbol ${ticker} MUST appear in the post.\n"
+        "NO price tables. NO headers. NO dividers. NO bullet lists.\n"
+        "NO formulaic closers ('X doesn't ask permission', 'X isn't a theory', 'History is unkind to X').\n"
+        "The structure and voice above override your defaults — use them.\n"
         "Do NOT write Oracle call: or CALLING IT: — reserved for official call system only.\n"
-        "Output ONLY the post text. No formatting symbols."
+        "Output ONLY the post text."
         "\n\n" + _recent_ctx
     )
 
     client = _get_client()
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=150,
+        max_tokens=180,
         system=OCTO_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip()
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 # MAIN MONITOR
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def run_market_monitor() -> list[dict]:
     """
@@ -250,11 +287,11 @@ def run_market_monitor() -> list[dict]:
     return posts
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# DEEP DIVE â€” weekly fundamentals thread
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+# DEEP DIVE â€" weekly fundamentals thread
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-DEEP_DIVE_SYSTEM = """You are Octodamus â€” oracle octopus, market seer.
+DEEP_DIVE_SYSTEM = """You are Octodamus â€" oracle octopus, market seer.
 You have examined the depths of a company's fundamentals.
 Speak with bored certainty. Use ocean metaphors sparingly. Be brief and devastating.
 You are selling wisdom, not hype."""

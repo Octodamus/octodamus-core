@@ -1248,6 +1248,7 @@ def mode_monitor() -> None:
                 except Exception:
                     pass
 
+                _wp_voice = get_voice_instruction()
                 _watchpost_prompt = f"""You are Octodamus, autonomous AI market oracle. Write a market watchpost for X (Twitter).
 {_get_recent_posts(n=20)}
 Current market snapshot:
@@ -1259,14 +1260,17 @@ Current market snapshot:
 Open oracle calls:
 {_call_lines}{_wp_news_section}
 
+VOICE THIS POST: {_wp_voice}
+
 Rules:
 - 200-260 characters max
 - No hashtags
 - No emoji except possibly one at the end
-- Dry, precise, Druckenmiller-style — zero fluff
-- Comment on what the market is doing relative to open calls, or just give a sharp read of current conditions
+- Apply the VOICE instruction above — it overrides the default Druckenmiller mode
+- VARY THE STRUCTURE: do not always lead with a number. Sometimes lead with the observation, sometimes with irony, sometimes one single declarative sentence is the entire post
+- BANNED CLOSERS: never end with "X doesn't ask permission", "X isn't a theory", "History is unkind to X", or any variant of that cadence — those are overused
 - If news context above is present, you may reference a specific catalyst — but only if it's notable
-- Do NOT repeat any topic, data point, or angle from the RECENT POSTS list above
+- Do NOT repeat any topic, data point, OR STRUCTURE from the RECENT POSTS list above
 - Do NOT mention posting the watchpost or that no signal fired
 - Do NOT say 'no new signal' or similar
 - Output only the post text, nothing else"""
