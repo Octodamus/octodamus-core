@@ -41,7 +41,11 @@ def _gmail_creds():
 
 def _load_calls() -> list:
     try:
-        return json.loads(CALLS_FILE.read_text(encoding="utf-8"))
+        calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
+        # ALL entries in octo_calls.json are Octodamus oracle calls.
+        # call_type='polymarket' = oracle prediction on a Polymarket market (NOT OctoBoto trades).
+        # OctoBoto trades live in octo_boto_trades.json, never here. Include everything.
+        return calls
     except Exception:
         return []
 
@@ -181,8 +185,22 @@ def _day_summary(calls: list, ref_date=None) -> dict:
     }
 
 
-def _context_block(s: dict, news: list = None, market_data: str = "") -> str:
+def _load_core_memory() -> str:
+    try:
+        from octo_memory_db import read_core_memory
+        mem = read_core_memory("octodamus")
+        if mem and "No entries yet" not in mem:
+            return mem
+    except Exception:
+        pass
+    return ""
+
+
+def _context_block(s: dict, news: list = None, market_data: str = "", core_memory: str = "") -> str:
     lines = [f"Date: {s['date']}"]
+
+    if core_memory:
+        lines.append(f"\nYOUR CORE MEMORY (who you are, what works, what you've learned):\n{core_memory}")
 
     if market_data:
         lines.append(market_data)
@@ -220,9 +238,12 @@ def _context_block(s: dict, news: list = None, market_data: str = "") -> str:
         lines.append("\nNo calls resolved today. Watching. Waiting.")
 
     if s["open"]:
-        lines.append("\nPositions still open:")
+        lines.append("\nOracle calls still open (unresolved predictions — NOT live trading positions):")
         for c in s["open"][:5]:
-            lines.append(f"  - {c.get('asset')} {c.get('direction')} | {c.get('note','')[:60]}")
+            kind = "Polymarket oracle call" if c.get("call_type") == "polymarket" else "oracle call"
+            lines.append(f"  - [{kind}] {c.get('asset')} {c.get('direction')} | {c.get('note','')[:60]}")
+    else:
+        lines.append("\nNo open oracle calls. Zero unresolved predictions.")
 
     rec = f"{s['aw']}W / {s['al']}L"
     if s["wr"] is not None:
@@ -261,14 +282,24 @@ Be smart, occasionally funny, always honest. Sometimes the world is absurd and t
 No bullet points. No headers. Pure prose. Write like you mean it.
 Do not start with a date, day, or datestamp -- the header already has one.
 CRITICAL: Only use numbers, prices, and statistics that are explicitly provided in the context.
-Never invent or estimate a price, percentage, or statistic. If a number is not in the context, do not use it."""
+Never invent or estimate a price, percentage, or statistic. If a number is not in the context, do not use it.
+CRITICAL: Never mention an open position, open call, or pending trade unless it appears explicitly in the
+context under "Oracle calls still open." If the context says "No open oracle calls," there are none — do not
+invent one. The context is the ground truth. Your training data is not."""
 
 
-def _generate(context: str, client: anthropic.Anthropic) -> str:
+def _build_system(core_memory: str = "") -> str:
+    system = SYSTEM
+    if core_memory:
+        system += f"\n\nYour accumulated memory — what you've learned, what voice works, what to avoid:\n{core_memory}"
+    return system
+
+
+def _generate(context: str, client: anthropic.Anthropic, core_memory: str = "") -> str:
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1200,
-        system=SYSTEM,
+        system=_build_system(core_memory),
         messages=[{
             "role": "user",
             "content": "Here is today's data:\n\n" + context + "\n\nWrite tonight's journal entry now. No preamble.",
@@ -318,11 +349,14 @@ Format:
 - CRITICAL: Only use prices, percentages, and statistics explicitly provided in the context. Never invent numbers."""
 
 
-def _generate_thread(context: str, client: anthropic.Anthropic) -> str:
+def _generate_thread(context: str, client: anthropic.Anthropic, core_memory: str = "") -> str:
+    system = SYSTEM_THREAD
+    if core_memory:
+        system += f"\n\nYour accumulated memory (voice, what works):\n{core_memory}"
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1200,
-        system=SYSTEM_THREAD,
+        system=system,
         messages=[{
             "role": "user",
             "content": "Here is today's data:\n\n" + context + "\n\nWrite the thread now.",
@@ -331,11 +365,14 @@ def _generate_thread(context: str, client: anthropic.Anthropic) -> str:
     return resp.content[0].text.strip()
 
 
-def _generate_article(context: str, client: anthropic.Anthropic) -> str:
+def _generate_article(context: str, client: anthropic.Anthropic, core_memory: str = "") -> str:
+    system = SYSTEM_ARTICLE
+    if core_memory:
+        system += f"\n\nYour accumulated memory (voice, what works):\n{core_memory}"
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1800,
-        system=SYSTEM_ARTICLE,
+        system=system,
         messages=[{
             "role": "user",
             "content": "Here is today's data:\n\n" + context + "\n\nWrite the article now.",
@@ -711,14 +748,17 @@ def run_daily(dry_run: bool = False):
     summary  = _day_summary(calls)
     date_str = summary["date"]
 
+    print("Loading core memory...")
+    core_memory = _load_core_memory()
+
     print("Fetching live market data...")
     market_data = _get_live_market_data()
     print("Fetching today's news...")
     news = _get_daily_news(date_str)
-    ctx  = _context_block(summary, news=news, market_data=market_data)
+    ctx  = _context_block(summary, news=news, market_data=market_data, core_memory=core_memory)
 
     print("Generating journal entry...")
-    entry     = _generate(ctx, client)
+    entry     = _generate(ctx, client, core_memory=core_memory)
     formatted = _format_email(date_str, entry)
     _save(datetime.now().strftime("%Y-%m-%d"), formatted)
 
