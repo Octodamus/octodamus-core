@@ -300,7 +300,7 @@ def tool_scan_limitless(category: str = "crypto", min_hours: int = 0) -> str:
     """
     Scan Limitless Exchange active markets.
     min_hours: only show markets expiring at least this many hours from now.
-    Use min_hours=2 to avoid near-expiry lockout while hitting 2-9h volume markets.
+    Use min_hours=2 to avoid near-expiry lockout. Limitless markets max out at 4h (5min/15min/1hr/4hr).
     """
     try:
         import httpx
@@ -424,7 +424,7 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
                             f"HARD BLOCKED: Market '{market_slug}' expires in {hours_left:.1f}h "
                             f"(minimum {_MIN_EXPIRY_H}h required). Near-expiry markets lock "
                             f"before execution — always give at least 2h runway. "
-                            f"Find a multi-day market or PASS."
+                            f"Limitless max is 4h — find a different market or PASS."
                         )
                 except Exception:
                     pass  # If we can't parse expiry, proceed cautiously
@@ -1950,12 +1950,12 @@ TOOLS = [
     },
     {
         "name": "scan_limitless",
-        "description": "Scan Limitless markets. Use min_hours=2 minimum to avoid last-minute lockout. Limitless has NO multi-day markets -- all markets are 15min to 12h. Real volume is in 2-9h range ($100k-$400k per market). Focus on crypto markets with >$50k volume where price-vs-strike gap gives directional edge.",
+        "description": "Scan Limitless markets. Use min_hours=2 minimum to avoid last-minute lockout. Limitless markets are 5min, 15min, 1hr, 4hr ONLY — 4h is the max, there are NO longer markets. Real volume is in the 1h-4h range. Focus on crypto markets with >$50k volume where price-vs-strike gap gives directional edge.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "category":  {"type": "string",  "description": "crypto, sports, politics, or all", "default": "crypto"},
-                "min_hours": {"type": "integer", "description": "Only show markets expiring this many hours from now. Use 2 to skip near-expiry markets while hitting 2-9h volume.", "default": 2},
+                "min_hours": {"type": "integer", "description": "Only show markets expiring this many hours from now. Use 2 to skip near-expiry markets. Limitless max is 4h so min_hours=2 targets the 2h-4h window.", "default": 2},
             },
             "required": [],
         },
@@ -2218,8 +2218,8 @@ Your trades are YOURS. OctoBoto is a separate Telegram trading bot with its own 
 You use paper_trade_polymarket() and place_limitless_bet() — these write to YOUR files only.
 
 PRIMARY: Limitless Exchange (Base-native, USDC, your Franklin wallet works directly)
-- scan_limitless(min_hours=2) -- Limitless has NO multi-day markets. All markets are 15min-12h.
-  Real volume is 2-9h range. Focus on crypto markets with >$50k vol.
+- scan_limitless(min_hours=2) -- Limitless markets are 5min / 15min / 1hr / 4hr ONLY. 4h is the hard ceiling.
+  Real volume is in the 1h-4h window. Focus on crypto markets with >$50k vol.
 - LIMITLESS STRUCTURAL CHECK: Track consecutive sessions with 0 qualifying crypto markets in your session history.
   If get_session_history shows 10+ consecutive sessions with "Limitless: 0 qualifying" or similar notes:
   flag this explicitly in your email and daily summary as:
@@ -2231,8 +2231,9 @@ PRIMARY: Limitless Exchange (Base-native, USDC, your Franklin wallet works direc
   that's a mispricing. Quantify the gap: (current_price - strike) / strike * 100 = gap%.
   A gap >0.5% with YES priced below 0.65 is potential edge.
   ALSO check Range Scout (get_octodamus_signal with asset + "range") -- Range Scout fires
-  4h/6h/8h directional calls, same timeframe as Limitless. If Range Scout is BULL on BTC,
-  look for BTC "above $X" markets expiring in that timeframe.
+  4h directional calls that map directly to Limitless's longest markets. 6h/8h Range Scout calls
+  do NOT match any Limitless market — use those for Polymarket only.
+  If Range Scout is BULL on BTC (4h): look for BTC "above $X" markets expiring within 4h.
 
 FALLBACK: Polymarket (when Limitless has no qualifying markets)
 - get_polymarket_edges() -- shows conditionId, YES price, volume, hours left
@@ -2244,9 +2245,9 @@ TRADING REQUIRES ALL FOUR CONDITIONS -- if any is missing, you DO NOT trade, no 
   1. EV gap >25% (crowd price is wrong by more than 25 cents on the dollar)
      OR price-vs-strike gap >0.5% with YES priced <0.65 (structural mispricing)
   2. Market expires >2h from now (not near-expiry lockout zone)
-  3. Volume >$5k (real liquidity — Limitless 2-9h markets typically $50k-$400k)
+  3. Volume >$5k (real liquidity — Limitless 1h-4h markets typically $50k-$400k)
   4. Directional signal: Range Scout OR Octodamus main oracle PLUS Grok sentiment aligned
-     - Range Scout (4h/6h/8h): call get_octodamus_signal and check for "range_scout" calls
+     - Range Scout (4h): call get_octodamus_signal and check for "range_scout" calls. Only 4h Range Scout maps to Limitless markets. 6h/8h = Polymarket only.
      - Main oracle: STRONG UP or STRONG DOWN (not HOLD/WATCH — too slow for Limitless TF)
      - Grok: must confirm same direction as the signal
      - If main oracle is HOLD/WATCH: Range Scout is your signal source. Use it.
@@ -2305,7 +2306,8 @@ You are waking up. Markets moved overnight. Your job this session:
 2. check_wallet + get_session_history + list_drafts (orient yourself)
 2. get_market_data for BTC, ETH, SOL — what happened overnight?
 3. get_grok_sentiment for BTC — what is X saying this morning?
-4. get_octodamus_signal — check for Range Scout calls (4h/6h/8h) AND main oracle direction.
+4. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
+   Range Scout 4h = Limitless signal. Range Scout 6h/8h = Polymarket only (no Limitless market matches).
    Range Scout is your primary Limitless signal source when main oracle is HOLD/WATCH.
 5. scan_limitless(min_hours=2) — Limitless is ALL short-term (2h-9h). This is where the volume is.
    Look for: (a) Range Scout direction + matching "above/below $X" market in that timeframe
@@ -2330,17 +2332,17 @@ You are waking up. Markets moved overnight. Your job this session:
    - If today's sub-agents split on regime, open with that split.
 10. check_memory_status — run this and include the full output in the email
 11. record_lesson — what was the single most important thing learned this session?
-12. Email owner: market read, sub-agent synthesis, any multi-day edge found + paper trade, service designed, + full memory status""",
+12. Email owner: market read, sub-agent synthesis, any Limitless/Polymarket edge found + paper trade, service designed, + full memory status""",
 
     "midday": """SESSION FOCUS — MIDDAY (12pm)
 Markets are open. Your job this session:
 1. read_core_memory — read your distilled lessons FIRST
 2. check_wallet + get_session_history + list_drafts
-3. get_octodamus_signal — check for Range Scout calls (4h/6h/8h directional) AND main oracle.
-   Range Scout is the Limitless-native signal: it fires when main oracle is HOLD/WATCH.
+3. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
+   Range Scout 4h = Limitless-native signal (fires when main oracle is HOLD/WATCH). 6h/8h = Polymarket only.
 4. get_grok_sentiment — direction confirmation.
-5. scan_limitless(min_hours=2) — Limitless is ALL short-term. Best volume is 2-9h markets ($50k-$400k).
-   Target: Range Scout direction + matching "above/below $X" market, OR price-vs-strike gap >0.5%.
+5. scan_limitless(min_hours=2) — Limitless is 5min/15min/1hr/4hr ONLY. 4h is the hard ceiling.
+   Target: 4h Range Scout direction + matching "above/below $X" market, OR price-vs-strike gap >0.5%.
    Skip markets expiring in <2h (near-expiry lockout zone).
 6. If no Limitless edge: get_polymarket_edges — Polymarket has deeper supply (Fed, BTC, macro).
    Use paper_trade_polymarket() if you find a qualifying market. Your record, not OctoBoto's.
@@ -2379,7 +2381,7 @@ While humans sleep, markets keep moving AND the agent economy keeps transacting.
      Ask each for their best market signal. PURPOSE: learn what they deliver vs what Octodamus delivers. Intel only.
    - If competitor jobs already sent: use check_acp_competitor_jobs to read deliverables and compare vs Octodamus output
 3. Check Smithery MCP: browse_orbis or web_search for 'Smithery octodamusai market-intelligence' — any reviews, usage, gaps?
-4. scan_limitless(min_hours=2) — check for 2-9h crypto markets with real volume (>$50k)
+4. scan_limitless(min_hours=2) — check for 1h-4h crypto markets with real volume (>$50k). 4h is the Limitless ceiling.
 5. get_grok_sentiment for BTC — Asian markets read
 6. If a real 4-condition edge exists: write brief, attempt paper trade
 7. design_x402_service if you think of a new product
