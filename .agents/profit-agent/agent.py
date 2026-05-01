@@ -149,16 +149,44 @@ def tool_get_grok_sentiment(asset: str = "BTC") -> str:
 
 
 def tool_get_octodamus_signal() -> str:
-    """Get current Octodamus oracle signal and open calls from local data."""
+    """Get current Octodamus oracle signal — tries live API with Ben's key first, falls back to local data."""
+    try:
+        import httpx as _hx, json as _json
+        api_key = _secrets().get("BEN_OCTODATA_API_KEY", "")
+        if api_key:
+            r = _hx.get("https://api.octodamus.com/v2/signal",
+                        headers={"X-OctoData-Key": api_key}, timeout=10)
+            if r.status_code == 200:
+                d      = r.json()
+                sig    = d.get("signal") or {}
+                poly   = (d.get("polymarket") or {}).get("top_play") or {}
+                record = d.get("track_record") or {}
+                lines  = ["Octodamus Oracle Signal (premium — live API):"]
+                if sig:
+                    lines += [
+                        f"  Signal:    {sig.get('signal','?')} | Confidence: {sig.get('confidence','?')}",
+                        f"  Reasoning: {sig.get('reasoning','N/A')[:200]}",
+                    ]
+                else:
+                    lines.append(f"  Signal:    {d.get('message','No active signal')} (need 9/11 consensus)")
+                lines.append(f"  Record:    {record.get('wins',0)}W / {record.get('losses',0)}L (oracle calls only)")
+                if poly.get("question"):
+                    lines.append(f"  Top Poly:  {poly['question'][:80]} | {poly.get('side','?')} @ {poly.get('entry_price','?')}")
+                return "\n".join(lines)
+    except Exception:
+        pass
+
+    # Fallback: local data (oracle calls only — excludes OctoBoto paper trades)
     try:
         import json as _json
         calls_file = ROOT / "data" / "octo_calls.json"
         calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
+        calls = [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
         open_calls = [c for c in calls if not c.get("resolved")]
         resolved   = [c for c in calls if c.get("resolved")]
         wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
         losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
-        lines = ["Octodamus Oracle Signals (live local data):"]
+        lines = ["Octodamus Oracle Signals (local data — oracle calls only):"]
         if open_calls:
             lines.append(f"  Open calls ({len(open_calls)}):")
             for c in open_calls[:5]:
@@ -166,17 +194,17 @@ def tool_get_octodamus_signal() -> str:
         else:
             lines.append("  No open calls right now.")
         lines.append(f"  All-time record: {wins}W / {losses}L")
-        lines.append(f"  Premium signals + reasoning: api.octodamus.com/v2/signal ($0.01 x402 or API key)")
+        lines.append(f"  Note: OctoBoto paper trades tracked separately")
         return "\n".join(lines)
     except Exception as e:
         return f"Signal fetch failed: {e}"
 
 
 def tool_get_polymarket_edges() -> str:
-    """Get current Polymarket markets and prices for edge hunting."""
+    """Get current Polymarket markets and prices for edge hunting. Includes conditionId for paper trading."""
     try:
         import httpx
-        # Search Polymarket gamma API for active markets
+        from datetime import datetime, timezone
         r = httpx.get(
             "https://gamma-api.polymarket.com/markets",
             params={"active": True, "closed": False, "limit": 20,
@@ -185,12 +213,29 @@ def tool_get_polymarket_edges() -> str:
         )
         if r.status_code == 200:
             markets = r.json()
-            lines = ["Active Polymarket markets by volume:"]
-            for m in markets[:10]:
-                q = m.get("question", "")[:80]
-                yes = m.get("outcomePrices", ["?","?"])[0] if m.get("outcomePrices") else "?"
-                vol = m.get("volume", 0)
-                lines.append(f"  YES={yes} | Vol=${float(vol or 0):,.0f} | {q}")
+            now = datetime.now(timezone.utc)
+            lines = ["Active Polymarket markets by volume (include conditionId for paper_trade_polymarket):"]
+            for m in markets[:12]:
+                q      = m.get("question", "")[:75]
+                prices = m.get("outcomePrices", [])
+                yes    = prices[0] if prices else "?"
+                vol    = m.get("volume", 0)
+                cid    = m.get("conditionId", "")
+                exp    = m.get("endDateIso", "")[:10]
+                # Hours until expiry
+                hours_left = ""
+                try:
+                    if m.get("endDateIso"):
+                        exp_dt = datetime.fromisoformat(m["endDateIso"].replace("Z", "+00:00"))
+                        h = (exp_dt - now).total_seconds() / 3600
+                        hours_left = f" | {h:.0f}h left"
+                except Exception:
+                    pass
+                lines.append(
+                    f"  conditionId={cid[:20]}... | YES={yes} | Vol=${float(vol or 0):,.0f}"
+                    f"{hours_left} | exp={exp} | {q}"
+                )
+            lines.append("\nUse paper_trade_polymarket(condition_id, side, size_usdc, price) to paper trade.")
             return "\n".join(lines)
         return f"Polymarket API returned {r.status_code}"
     except Exception as e:
@@ -244,39 +289,18 @@ def tool_check_agentic_market(category: str = "trading") -> str:
 
 def tool_buy_octodamus_signal() -> str:
     """
-    Buy the full Octodamus oracle signal for $0.01 USDC via x402.
+    Buy the full Octodamus oracle signal for $0.01 USDC via x402 EIP-3009.
     Returns the complete signal with confidence, reasoning, and all asset calls.
-    This is the premium data that drives real trading decisions.
+    Uses Ben's Franklin wallet — fully autonomous, no human needed.
     """
-    try:
-        import httpx
-        # First get the payment requirements
-        r = httpx.get("https://api.octodamus.com/v2/x402/agent-signal", timeout=10)
-        if r.status_code == 200:
-            return f"Signal returned free (no payment needed this time):\n{r.text[:1000]}"
-        if r.status_code == 402:
-            # Parse what's needed
-            detail = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
-            return (
-                f"Signal costs $0.01 USDC on Base.\n"
-                f"Pay to: {detail.get('pay_to', '0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db')}\n"
-                f"Network: Base (eip155:8453)\n"
-                f"How: Sign EIP-3009 USDC authorization, send as PAYMENT-SIGNATURE header.\n"
-                f"Discovery: https://api.octodamus.com/.well-known/x402.json\n"
-                f"Note: To implement x402 payment, the agent needs wallet signing capability. "
-                f"Use the free demo signal at api.octodamus.com/v2/demo for now, or "
-                f"request the owner to add x402 signing to the agent toolkit."
-            )
-        return f"Signal endpoint returned {r.status_code}"
-    except Exception as e:
-        return f"Signal purchase failed: {e}"
+    return tool_buy_x402_service("https://api.octodamus.com/v2/x402/agent-signal", max_price_usdc=0.05)
 
 
 def tool_scan_limitless(category: str = "crypto", min_hours: int = 0) -> str:
     """
     Scan Limitless Exchange active markets.
     min_hours: only show markets expiring at least this many hours from now.
-    Use min_hours=24 to filter out same-day markets (proven dead end).
+    Use min_hours=2 to avoid near-expiry lockout while hitting 2-9h volume markets.
     """
     try:
         import httpx
@@ -342,13 +366,13 @@ def _limitless_headers(token_id: str, secret_b64: str, method: str, path: str, b
 
 
 _PAPER_MODE    = True   # Set False only after paper trades confirm integration works
-_MIN_EXPIRY_H  = 24     # Hard block: never bet on markets expiring within this many hours
+_MIN_EXPIRY_H  = 2      # Hard block: never bet on markets expiring within this many hours
 
 
 def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, price: float = 0.5) -> str:
     """
     Place a bet on Limitless Exchange. PAPER MODE is ON by default.
-    Hard block: markets expiring within 24h are REFUSED at execution time — no exceptions.
+    Hard block: markets expiring within 2h are REFUSED at execution time — no exceptions.
 
     side: 'YES' or 'NO'. Max $40 USDC. price: 0.01-0.99 (current YES price).
     """
@@ -398,8 +422,8 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
                     if hours_left < _MIN_EXPIRY_H:
                         return (
                             f"HARD BLOCKED: Market '{market_slug}' expires in {hours_left:.1f}h "
-                            f"(minimum {_MIN_EXPIRY_H}h required). Same-day markets always lock "
-                            f"before execution — proven dead end (Sessions 13, 14, 17). "
+                            f"(minimum {_MIN_EXPIRY_H}h required). Near-expiry markets lock "
+                            f"before execution — always give at least 2h runway. "
                             f"Find a multi-day market or PASS."
                         )
                 except Exception:
@@ -534,6 +558,113 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
 
     except Exception as e:
         return f"Bet placement failed: {type(e).__name__}: {e}"
+
+
+_BEN_POLY_TRADES = Path(__file__).parent / "polymarket_trades.json"
+_BEN_MIN_POLY_EXPIRY_H = 24   # same rule as Limitless — no same-day markets
+
+
+def tool_paper_trade_polymarket(
+    condition_id: str,
+    side: str,
+    size_usdc: float,
+    price: float,
+    market_question: str = "",
+) -> str:
+    """
+    Record a Polymarket paper trade in Ben's own trade log.
+    ALWAYS paper — never submits real orders (that is OctoBoto's job).
+    Writes to .agents/profit-agent/polymarket_trades.json ONLY — never touches octo_boto_trades.json.
+
+    Apply the same 4-condition gate before calling:
+      1. EV >25% (|price - your_estimate| > 0.25)
+      2. >2h to expiry
+      3. Volume >$5k
+      4. Range Scout OR Octodamus main oracle + Grok sentiment aligned
+
+    condition_id: from get_polymarket_edges (conditionId field)
+    side: YES or NO
+    size_usdc: max 40
+    price: current YES price (0.01-0.99)
+    """
+    if side.upper() not in ("YES", "NO"):
+        return "BLOCKED: side must be YES or NO."
+    if not (0.01 <= price <= 0.99):
+        return "BLOCKED: price must be 0.01-0.99."
+    if size_usdc > 40:
+        return "BLOCKED: max $40 USDC per position."
+    if not condition_id or len(condition_id) < 10:
+        return "BLOCKED: provide a valid conditionId from get_polymarket_edges."
+
+    import httpx, json as _j, time as _t
+    from datetime import datetime, timezone
+
+    # Verify market and check expiry via Gamma API
+    try:
+        r = httpx.get(
+            f"https://gamma-api.polymarket.com/markets",
+            params={"conditionId": condition_id},
+            timeout=10
+        )
+        if r.status_code == 200 and r.json():
+            m = r.json()[0] if isinstance(r.json(), list) else r.json()
+            question = m.get("question", market_question)[:80]
+            exp_str  = m.get("endDateIso", "")
+            vol      = float(m.get("volume", 0) or 0)
+
+            if exp_str:
+                try:
+                    exp_dt     = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                    hours_left = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+                    if hours_left < _BEN_MIN_POLY_EXPIRY_H:
+                        return (
+                            f"HARD BLOCKED: market expires in {hours_left:.1f}h "
+                            f"(minimum {_BEN_MIN_POLY_EXPIRY_H}h required). "
+                            "Same-day markets lock before execution. Pass."
+                        )
+                except Exception:
+                    pass
+        else:
+            question = market_question or condition_id[:30]
+            vol      = 0
+    except Exception as e:
+        question = market_question or condition_id[:30]
+        vol      = 0
+
+    # EV calculation: if side=YES, EV = (1 - price) / price. If NO, EV = price / (1-price) - 1
+    try:
+        ev_pct = round(((1 / price) - 1) * 100, 1) if side.upper() == "YES" else round((price / (1 - price)) * 100, 1)
+    except ZeroDivisionError:
+        ev_pct = 0
+
+    entry = {
+        "paper":        True,
+        "source":       "Agent_Ben",
+        "condition_id": condition_id,
+        "question":     question,
+        "side":         side.upper(),
+        "size_usdc":    size_usdc,
+        "price":        price,
+        "ev_pct":       ev_pct,
+        "volume":       vol,
+        "placed_at":    _t.strftime("%Y-%m-%d %H:%M UTC", _t.gmtime()),
+        "status":       "open",
+        "outcome":      None,
+    }
+
+    existing = _j.loads(_BEN_POLY_TRADES.read_text(encoding="utf-8")) if _BEN_POLY_TRADES.exists() else []
+    existing.append(entry)
+    _BEN_POLY_TRADES.write_text(_j.dumps(existing, indent=2), encoding="utf-8")
+
+    return (
+        f"[BEN PAPER TRADE — POLYMARKET]\n"
+        f"  Market:  {question}\n"
+        f"  Side:    {side.upper()} @ {price} (${size_usdc:.2f} USDC)\n"
+        f"  Implied EV: +{ev_pct}% if correct\n"
+        f"  Volume:  ${vol:,.0f}\n"
+        f"  Logged to polymarket_trades.json (Ben's record — separate from OctoBoto)\n"
+        f"  Order NOT submitted. Paper mode only."
+    )
 
 
 KALSHI_API  = "https://api.elections.kalshi.com/trade-api/v2"
@@ -783,7 +914,7 @@ def tool_browse_orbis(query: str = "", category: str = "") -> str:
     """
     try:
         import httpx, json as _j
-        r = httpx.get("https://orbisapi.com/api/agents/discovery?format=json", timeout=10)
+        r = httpx.get("https://orbisapi.com/api/agents/discovery?format=json", timeout=10, headers={"x-referral-code": "8TQZU7HH"})
         if r.status_code != 200:
             return f"Orbis discovery failed: {r.status_code}"
         d = r.json()
@@ -876,70 +1007,44 @@ def tool_buy_x402_service(url: str, max_price_usdc: float = 1.0) -> str:
         if price_usdc > max_price_usdc:
             return f"Service costs ${price_usdc:.4f} USDC — above your max of ${max_price_usdc}. Increase max_price_usdc or skip."
 
-        # Step 3: Sign EIP-3009 authorization
-        # EIP-3009: transferWithAuthorization on USDC contract
-        _USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-        amount_raw = int(price_usdc * 1_000_000)
+        # Step 3: Sign EIP-3009 using x402 SDK (correct structure + domain handling)
         import time as _t
-        valid_after  = 0
-        valid_before = int(_t.time()) + 300
+        from x402.mechanisms.evm.types import ExactEIP3009Authorization, ExactEIP3009Payload
+        from x402.mechanisms.evm.utils import create_nonce
+        from x402.mechanisms.evm.eip712 import build_typed_data_for_signing
+        from x402.mechanisms.evm.signers import EthAccountSigner
 
-        import secrets as _sec
-        nonce = "0x" + _sec.token_hex(32)
+        amount_raw   = str(int(price_usdc * 1_000_000))
+        nonce        = create_nonce()
+        valid_after  = "0"
+        valid_before = str(int(_t.time()) + 300)
 
-        typed_data = {
-            "types": {
-                "EIP712Domain": [
-                    {"name": "name",    "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                    {"name": "verifyingContract", "type": "address"},
-                ],
-                "TransferWithAuthorization": [
-                    {"name": "from",         "type": "address"},
-                    {"name": "to",           "type": "address"},
-                    {"name": "value",        "type": "uint256"},
-                    {"name": "validAfter",   "type": "uint256"},
-                    {"name": "validBefore",  "type": "uint256"},
-                    {"name": "nonce",        "type": "bytes32"},
-                ],
-            },
-            "domain": {
-                "name":               "USD Coin",
-                "version":            "2",
-                "chainId":            8453,
-                "verifyingContract":  _USDC_BASE,
-            },
-            "primaryType": "TransferWithAuthorization",
-            "message": {
-                "from":         account.address,
-                "to":           pay_to,
-                "value":        amount_raw,
-                "validAfter":   valid_after,
-                "validBefore":  valid_before,
-                "nonce":        nonce,
-            },
-        }
-
-        signed = account.sign_typed_data(
-            domain_data   = typed_data["domain"],
-            message_types = {"TransferWithAuthorization": typed_data["types"]["TransferWithAuthorization"]},
-            message_data  = typed_data["message"],
+        authorization = ExactEIP3009Authorization(
+            from_address=account.address,
+            to=pay_to,
+            value=amount_raw,
+            valid_after=valid_after,
+            valid_before=valid_before,
+            nonce=nonce,
         )
 
+        # SDK signer handles TypedDataDomain → dict and bytes32 nonce conversion
+        sdk_signer = EthAccountSigner(account)
+        domain, types, primary_type, message = build_typed_data_for_signing(
+            authorization, 8453,
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "USD Coin", "2",
+        )
+        sig_bytes = sdk_signer.sign_typed_data(domain, types, primary_type, message)
+        signature = "0x" + sig_bytes.hex()
+
+        # Build payload with correct nested structure: payload.authorization.{from,to,value,...}
+        inner = ExactEIP3009Payload(authorization=authorization, signature=signature).to_dict()
         payment_payload = _j.dumps({
             "x402Version": 1,
             "scheme":      "exact",
             "network":     "eip155:8453",
-            "payload": {
-                "signature":   signed.signature.hex(),
-                "from":        account.address,
-                "to":          pay_to,
-                "value":       str(amount_raw),
-                "validAfter":  str(valid_after),
-                "validBefore": str(valid_before),
-                "nonce":       nonce,
-            },
+            "payload":     inner,
         })
         payment_b64 = _b64.b64encode(payment_payload.encode()).decode()
 
@@ -1024,6 +1129,9 @@ Voice rules (non-negotiable):
 - Dry, precise, occasionally contrarian. Smart people talking to smart people.
 - Numbers are specific. Claims are grounded. No vague takes.
 - For X posts: under 270 chars each, no hashtags, no emojis, read like a trader not a marketer
+  - Never open with a greeting, date reference, or "Happy [day]". First word must be a number, a ticker (BTC/ETH/SOL), or a strong verb.
+  - If drafting a morning post: check list_drafts for previous morning_post files. If the same analytical angle (e.g., "bull trap divergence") has appeared in 3+ consecutive posts, shift the frame. 14 days of divergence gets a different angle than day 1: historical base rates, what finally ends it, or the minority signal.
+  - Maximum 2 hashtags per post, both specific to the thesis. Never stack generic crypto hashtags (#Bitcoin #BTC #CryptoTrading together — pick the one that fits).
 - For emails: direct, no fluff, assumes the reader is intelligent"""
 
 
@@ -1110,6 +1218,569 @@ def tool_log_action(action: str, result: str, cost_usd: float = 0.0) -> str:
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
     return f"Logged: {action}"
+
+
+_BEN_BUDGET_FILE = ROOT / "data" / "acp_ben_budget.json"
+_BEN_BUY_GATE    = 200    # checkpoint: after this many buys, wallet must show profit
+_BEN_PROFIT_MIN  = 1.10   # wallet must be at least 10% above starting USDC to keep buying
+
+
+def _ben_budget() -> dict:
+    try:
+        return json.loads(_BEN_BUDGET_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _ben_usdc_balance() -> float:
+    try:
+        from web3 import Web3
+        sec  = _secrets()
+        addr = sec.get("FRANKLIN_WALLET_ADDRESS", "")
+        if not addr:
+            return 0.0
+        w3   = Web3(Web3.HTTPProvider("https://mainnet.base.org"))
+        usdc = w3.eth.contract(
+            address=Web3.to_checksum_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+            abi=[{"name":"balanceOf","type":"function","stateMutability":"view",
+                  "inputs":[{"name":"account","type":"address"}],
+                  "outputs":[{"name":"","type":"uint256"}]}],
+        )
+        return usdc.functions.balanceOf(Web3.to_checksum_address(addr)).call() / 1e6
+    except Exception:
+        return 0.0
+
+
+def _check_ben_buy_gate() -> str | None:
+    """Return a block message if Ben should stop buying, else None."""
+    budget = _ben_budget()
+    buy_count = budget.get("buy_count", 0)
+
+    if buy_count < _BEN_BUY_GATE:
+        return None  # under threshold, no check needed
+
+    starting_usdc = budget.get("starting_usdc", 0.0)
+    if starting_usdc <= 0:
+        return None  # no baseline recorded, allow
+
+    current_usdc = _ben_usdc_balance()
+    required     = starting_usdc * _BEN_PROFIT_MIN
+
+    if current_usdc >= required:
+        return None  # profitable enough, continue
+
+    return (
+        f"BUY PAUSED: Ben has made {buy_count} ACP purchases. "
+        f"Wallet USDC ${current_usdc:.2f} has not reached the 10% profit threshold "
+        f"(need ${required:.2f}, started at ${starting_usdc:.2f}). "
+        f"Buying resumes automatically once wallet recovers. "
+        f"Focus on trading profit first."
+    )
+
+
+def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
+    """Buy intel from an Octodamus ecosystem agent via ACP. Ben's calling card is embedded so they can hire him back."""
+    # Profitability gate: after 200 buys, wallet must be 10% above starting USDC
+    gate_msg = _check_ben_buy_gate()
+    if gate_msg:
+        return gate_msg
+
+    sys.path.insert(0, str(ROOT))
+    from octo_agent_cards import buy_intel
+    result = buy_intel("Ben", target_agent, service_name)
+
+    # Track buy count and baseline on first buy
+    if "Job #" in result:
+        budget = _ben_budget()
+        if "starting_usdc" not in budget:
+            budget["starting_usdc"] = _ben_usdc_balance()
+        budget["buy_count"] = budget.get("buy_count", 0) + 1
+        _BEN_BUDGET_FILE.write_text(json.dumps(budget, indent=2), encoding="utf-8")
+
+    return result
+
+
+def tool_list_ecosystem_services() -> str:
+    """List all services available for purchase across the Octodamus ecosystem."""
+    sys.path.insert(0, str(ROOT))
+    from octo_agent_cards import list_ecosystem_services
+    return list_ecosystem_services()
+
+
+BEN_HISTORY_FILE  = Path(__file__).parent / "data" / "ben_history.json"
+ACP_CLI_DIR       = Path(r"C:\Users\walli\acp-cli")
+ACP_COMPETITOR_LOG = Path(__file__).parent / "data" / "acp_competitor_jobs.json"
+_NPM = "npm.cmd"
+
+# Known competitors worth studying — market/prediction/signal agents only
+ACP_COMPETITORS = {
+    "predictor-sam":    {"wallet": "0xeaace9635A06D2EfdE25ce7cc4f8C18ce845F37f", "jobs": 157, "rate": 85, "desc": "prediction market services"},
+    "blue-dot-testnet": {"wallet": "0xA46273c5bdf6D53836909E97e3417527aeA93593", "jobs": 10,  "rate": 91, "desc": "market alpha"},
+    "Dou Shan":         {"wallet": "0x401b87283fa043c2C0462cAc94da144580F05C72", "jobs": 35,  "rate": 56, "desc": "prediction market agent"},
+}
+
+
+def _acp_cli(args: list, timeout: int = 30) -> tuple:
+    """Run ACP CLI command from acp-cli dir. Returns (rc, stdout, stderr)."""
+    import subprocess as _sp
+    cmd = [_NPM, "run", "acp", "--"] + [str(a) for a in args]
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                    timeout=timeout, cwd=str(ACP_CLI_DIR))
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def _load_competitor_log() -> list:
+    try:
+        if ACP_COMPETITOR_LOG.exists():
+            return json.loads(ACP_COMPETITOR_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_competitor_log(log: list):
+    ACP_COMPETITOR_LOG.parent.mkdir(exist_ok=True)
+    ACP_COMPETITOR_LOG.write_text(json.dumps(log, indent=2), encoding="utf-8")
+
+
+def tool_buy_acp_competitor_job(competitor_name: str, description: str = "") -> str:
+    """
+    Send a competitive intelligence job request to a known ACP competitor.
+    Uses the Octodamus ACP wallet as buyer (has ~$14 USDC from earnings).
+    competitor_name: one of 'predictor-sam', 'blue-dot-testnet', 'Dou Shan'
+    description: what to ask for (defaults to market signal request)
+    Returns job ID and status. Check acp_events.jsonl for deliverable when it arrives.
+    PURPOSE: Learn what competitors deliver so we can improve Octodamus offerings.
+    """
+    if competitor_name not in ACP_COMPETITORS:
+        return f"Unknown competitor. Options: {list(ACP_COMPETITORS.keys())}"
+
+    comp = ACP_COMPETITORS[competitor_name]
+    provider_wallet = comp["wallet"]
+
+    if not description:
+        description = (
+            f"Provide your best market signal for BTC over the next 24 hours. "
+            f"Include: direction (bullish/bearish), key data points, confidence level, "
+            f"and reasoning. Format as structured data if possible."
+        )
+
+    rc, out, err = _acp_cli([
+        "client", "create-custom-job",
+        "--provider",    provider_wallet,
+        "--description", description,
+        "--chain-id",    "8453",
+        "--expired-in",  "7200",
+    ], timeout=45)
+
+    # Parse job ID from output
+    import re as _re
+    job_id = None
+    for pattern in [r'job[_\s]?id[:\s]+["\']?(\d+)', r'#(\d+)', r'jobId[:\s]+(\d+)', r'(\d{3,})', r'created.*?(\d+)']:
+        m = _re.search(pattern, out + err, _re.IGNORECASE)
+        if m:
+            job_id = m.group(1)
+            break
+
+    # Log the purchase attempt
+    log = _load_competitor_log()
+    entry = {
+        "competitor":   competitor_name,
+        "wallet":       provider_wallet,
+        "description":  description,
+        "job_id":       job_id,
+        "rc":           rc,
+        "stdout":       out[:500],
+        "stderr":       err[:300],
+        "status":       "created" if rc == 0 else "failed",
+        "created_at":   datetime.now().isoformat(),
+        "deliverable":  None,
+    }
+    log.append(entry)
+    _save_competitor_log(log)
+
+    if rc == 0:
+        return (
+            f"Job created with {competitor_name} (wallet: {provider_wallet[:16]}...)\n"
+            f"Job ID: {job_id or 'check output'}\n"
+            f"Status: Waiting for provider to set budget, then we fund it.\n"
+            f"Output: {out[:300]}\n"
+            f"Next: use check_acp_competitor_jobs to monitor for deliverable."
+        )
+    else:
+        return f"Job creation failed (rc={rc}):\nstdout: {out[:300]}\nstderr: {err[:300]}"
+
+
+def tool_check_acp_competitor_jobs() -> str:
+    """
+    Check status of all competitor intelligence jobs sent via buy_acp_competitor_job.
+    Shows pending jobs, funded jobs, and any deliverables received.
+    """
+    log = _load_competitor_log()
+    if not log:
+        return "No competitor jobs sent yet. Use buy_acp_competitor_job to start."
+
+    # Also scan ACP events file for updates on these job IDs
+    events_file = ROOT / "data" / "acp_events.jsonl"
+    job_events: dict = {}
+    if events_file.exists():
+        for line in events_file.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(line)
+                jid = d.get("jobId", "")
+                if jid:
+                    job_events.setdefault(jid, []).append(d.get("status", ""))
+                    # Check for deliverable
+                    entry = d.get("entry", {})
+                    if entry.get("kind") == "message" and entry.get("contentType") == "deliverable":
+                        job_events.setdefault(jid, []).append(f"DELIVERABLE: {entry.get('content','')[:200]}")
+            except Exception:
+                pass
+
+    lines = ["=== ACP Competitor Intelligence Jobs ===", ""]
+    for entry in log:
+        jid  = entry.get("job_id", "?")
+        name = entry.get("competitor", "?")
+        status = entry.get("status", "?")
+        events = job_events.get(jid, [])
+        if events:
+            status = " | ".join(set(e for e in events if e))
+        lines.append(f"[{name}] Job #{jid} | Status: {status}")
+        lines.append(f"  Asked: {entry.get('description','')[:80]}")
+        lines.append(f"  Created: {entry.get('created_at','')[:16]}")
+        deliverable = entry.get("deliverable")
+        if deliverable:
+            lines.append(f"  DELIVERABLE: {deliverable[:300]}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def tool_check_memory_status() -> str:
+    """
+    Check the learning/memory status of all three Octodamus systems.
+    Shows what's been accumulated and whether each is COMPOUNDING (data feeding back
+    into decisions) or STATIC (data collected but not yet influencing behavior).
+    Include this output in morning and evening email reports.
+    """
+    sys.path.insert(0, str(ROOT))
+    lines = ["=== MEMORY STATUS REPORT ===", ""]
+
+    # ── 1. Octodamus Skill Log ────────────────────────────────────────────────
+    lines.append("OCTODAMUS (Oracle Post Learning)")
+    try:
+        sl_path = ROOT / "octo_skill_log.json"
+        sh_path = ROOT / "octo_skill_history.json"
+        entries = json.loads(sl_path.read_text(encoding="utf-8")) if sl_path.exists() else []
+        rated   = [e for e in entries if e.get("rating")]
+        good    = [e for e in rated if e["rating"] == "good"]
+        bad     = [e for e in rated if e["rating"] == "bad"]
+        ok      = [e for e in rated if e["rating"] == "ok"]
+
+        # Best voice mode
+        voice_counts: dict = {}
+        for e in good:
+            vm = e.get("voice_mode", "unknown")
+            voice_counts[vm] = voice_counts.get(vm, 0) + 1
+        best_voice = max(voice_counts, key=voice_counts.get) if voice_counts else "none"
+
+        # Latest amendment
+        amendments = json.loads(sh_path.read_text(encoding="utf-8")) if sh_path.exists() else []
+        last_amend = amendments[-1]["timestamp"][:10] if amendments else "none yet"
+        pending_amend = sum(1 for a in amendments if not a.get("applied"))
+
+        # Engagement metrics coverage
+        with_metrics = [e for e in entries if e.get("engagement_score") is not None]
+
+        status = "COMPOUNDING" if len(rated) >= 3 else "BUILDING"
+        lines += [
+            f"  Posts logged:     {len(entries)} total | {len(with_metrics)} with engagement metrics",
+            f"  Rated:            {len(rated)} rated | Good: {len(good)} / Bad: {len(bad)} / OK: {len(ok)}",
+            f"  Best voice mode:  {best_voice}",
+            f"  Amendment proposals: {len(amendments)} saved | {pending_amend} pending approval",
+            f"  Last amendment:   {last_amend}",
+            f"  Status: {status} -- skill summary {'injected into each daily post prompt' if status == 'COMPOUNDING' else 'not enough rated posts yet (need 3+)'}",
+        ]
+    except Exception as e:
+        lines.append(f"  ERROR reading skill log: {e}")
+
+    lines.append("")
+
+    # ── 2. OctoBoto Calibration ───────────────────────────────────────────────
+    lines.append("OCTOBOTO (Trade Calibration Learning)")
+    try:
+        cal_path = ROOT / "octo_boto_calibration.json"
+        cal      = json.loads(cal_path.read_text(encoding="utf-8")) if cal_path.exists() else {"estimates": []}
+        estimates = cal.get("estimates", [])
+        resolved  = [e for e in estimates if e.get("outcome") is not None]
+        pending   = [e for e in estimates if e.get("outcome") is None]
+
+        # Current calibration bias
+        bias_str = "not ready"
+        if len(resolved) >= 5:
+            by_conf: dict = {}
+            for e in resolved:
+                conf = e.get("confidence", "low")
+                side = e.get("side", "YES")
+                our_p = (1.0 - e["claude_p"]) if side == "NO" else e["claude_p"]
+                actual = e["outcome"] == "YES"
+                by_conf.setdefault(conf, []).append(our_p - (1.0 if actual else 0.0))
+            biases = [sum(v)/len(v) for v in by_conf.values() if v]
+            overall = round(sum(biases)/len(biases), 3) if biases else 0
+            direction = "overconfident" if overall > 0 else "underconfident"
+            bias_str = f"{overall:+.1%} overall ({direction})"
+
+        # Dynamic threshold
+        thresh_path = ROOT / "data" / "octo_ev_threshold.json"
+        threshold = "12% (default)"
+        if thresh_path.exists():
+            td = json.loads(thresh_path.read_text(encoding="utf-8"))
+            threshold = f"{td.get('threshold', 0.12):.0%} (win rate: {td.get('win_rate', 0):.0%}, {td.get('n_trades', 0)} trades)"
+
+        need = max(0, 5 - len(resolved))
+        status = "COMPOUNDING" if len(resolved) >= 5 else "STATIC"
+        lines += [
+            f"  Estimates logged: {len(estimates)} | Resolved: {len(resolved)} | Pending: {len(pending)}",
+            f"  Calibration bias: {bias_str}",
+            f"  EV threshold:     {threshold}",
+            f"  Status: {status} -- {'bias correction injecting into every trade evaluation' if status == 'COMPOUNDING' else f'need {need} more resolved trades before calibration kicks in'}",
+        ]
+        if pending:
+            lines.append(f"  Pending markets:  {', '.join(e.get('question','?')[:40] for e in pending[:3])}" + (" ..." if len(pending) > 3 else ""))
+    except Exception as e:
+        lines.append(f"  ERROR reading calibration: {e}")
+
+    lines.append("")
+
+    # ── 3. Agent_Ben Session History ──────────────────────────────────────────
+    lines.append("AGENT_BEN (Cross-Session Learning)")
+    try:
+        history = _load_ben_history()
+        if not history:
+            lines += [
+                "  Sessions logged:  0",
+                "  Status: BUILDING -- first session. record_lesson at end to start the log.",
+            ]
+        else:
+            wallet_start = history[0].get("wallet_start") or history[0].get("wallet_end", 0)
+            wallet_latest = history[-1].get("wallet_end", 0)
+            delta = round(wallet_latest - wallet_start, 2) if wallet_start and wallet_latest else 0
+            delta_str = f"+${delta:.2f}" if delta > 0 else (f"-${abs(delta):.2f}" if delta < 0 else "$0.00")
+
+            all_lessons = []
+            services_total = 0
+            trades_total = 0
+            for h in history:
+                all_lessons.extend(h.get("lessons", []))
+                services_total += h.get("services_designed", 0)
+                trades_total   += h.get("trades", 0)
+
+            last_lesson = all_lessons[-1] if all_lessons else "none recorded"
+            status = "COMPOUNDING" if len(history) >= 2 else "BUILDING"
+            lines += [
+                f"  Sessions logged:  {len(history)}",
+                f"  Wallet trajectory:{f' ${wallet_start:.2f}' if wallet_start else ' unknown'} -> ${wallet_latest:.2f} ({delta_str})",
+                f"  Trades placed:    {trades_total} | Services designed: {services_total}",
+                f"  Lessons stored:   {len(all_lessons)}",
+                f"  Latest lesson:    {last_lesson[:120]}",
+                f"  Status: {status} -- {'history read at every session start, lessons accumulating' if status == 'COMPOUNDING' else 'log one more session to begin compounding'}",
+            ]
+    except Exception as e:
+        lines.append(f"  ERROR reading session history: {e}")
+
+    # ── 4. Sub-Agent Fleet ────────────────────────────────────────────────────
+    lines.append("SUB-AGENT FLEET (Compounding Loop Status)")
+    sub_agents = [
+        ("nyse_macromind",    "nyse_macromind"),
+        ("nyse_stockoracle",  "nyse_stockoracle"),
+        ("nyse_tech_agent",   "nyse_tech_agent"),
+        ("order_chainflow",   "order_chainflow"),
+        ("x_sentiment_agent", "x_sentiment_agent"),
+    ]
+    agents_dir = ROOT / ".agents"
+    memory_dir = ROOT / "data" / "memory"
+    for agent_dir_name, memory_key in sub_agents:
+        try:
+            agent_root   = agents_dir / agent_dir_name
+            state_file   = agent_root / "data" / "state.json"
+            history_file = agent_root / "data" / "history.json"
+            core_file    = memory_dir / f"{memory_key}_core.md"
+
+            sessions = 0
+            if state_file.exists():
+                st = json.loads(state_file.read_text(encoding="utf-8"))
+                sessions = st.get("sessions", 0)
+
+            history_entries = 0
+            if history_file.exists():
+                hist = json.loads(history_file.read_text(encoding="utf-8"))
+                history_entries = len(hist) if isinstance(hist, list) else 0
+
+            distilled = False
+            if core_file.exists():
+                distilled = "## Distilled" in core_file.read_text(encoding="utf-8")
+
+            if distilled:
+                status = "Compounding"
+                note   = "loop closed"
+            elif history_entries > 0:
+                status = "Compounding"
+                note   = "sessions logging, distillation pending"
+            elif sessions > 0:
+                status = "Static"
+                note   = "running but session protocol not completing"
+            else:
+                status = "Static"
+                note   = "no sessions recorded"
+
+            lines.append(f"  {agent_dir_name:<22} s={sessions}  h={history_entries}  [{status}]  {note}")
+        except Exception as e:
+            lines.append(f"  {agent_dir_name:<22} ERROR: {e}")
+
+    lines += ["", "=== END MEMORY STATUS ==="]
+    return "\n".join(lines)
+
+
+def _load_ben_history() -> list:
+    try:
+        sys.path.insert(0, str(ROOT))
+        from octo_memory_db import db_ben_history
+        return db_ben_history(limit=50)
+    except Exception:
+        pass
+    try:
+        if BEN_HISTORY_FILE.exists():
+            return json.loads(BEN_HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_ben_history(history: list):
+    BEN_HISTORY_FILE.parent.mkdir(exist_ok=True)
+    BEN_HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def tool_read_core_memory() -> str:
+    """Read Agent_Ben's distilled core memory — hard lessons, what works, validated rules. Call every session."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from octo_memory_db import read_core_memory
+        return read_core_memory("ben")
+    except Exception as e:
+        # Fallback: read the file directly
+        try:
+            core_path = ROOT / "data" / "memory" / "ben_core.md"
+            if core_path.exists():
+                return core_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+        return f"Core memory unavailable: {e}"
+
+
+def tool_append_core_memory(insight: str) -> str:
+    """Append a durable insight to Agent_Ben's core memory. Use for lessons that should persist forever."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from octo_memory_db import append_core_memory
+        append_core_memory("ben", "Agent_Ben Update", insight)
+        return f"Appended to core memory: {insight[:80]}..."
+    except Exception as e:
+        # Fallback: append directly to the file
+        try:
+            from datetime import datetime as _dt
+            core_path = ROOT / "data" / "memory" / "ben_core.md"
+            existing = core_path.read_text(encoding="utf-8") if core_path.exists() else ""
+            now = _dt.utcnow().strftime("%Y-%m-%d")
+            core_path.write_text(existing.rstrip() + f"\n\n## Agent_Ben Update ({now})\n{insight}", encoding="utf-8")
+            return f"Appended to core memory file directly: {insight[:80]}..."
+        except Exception as e2:
+            return f"Failed to append: {e} / {e2}"
+
+
+def tool_get_session_history() -> str:
+    """Read the persistent cross-session learning log. Always call this near the start of each session."""
+    history = _load_ben_history()
+    if not history:
+        return "No session history yet. This is an early session — build the record."
+    recent = history[-10:]
+    lines = [f"Session history ({len(history)} total sessions logged):"]
+    for h in recent:
+        wallet_delta = h.get("wallet_delta", 0)
+        delta_str = f"+${wallet_delta:.2f}" if wallet_delta > 0 else (f"-${abs(wallet_delta):.2f}" if wallet_delta < 0 else "$0.00")
+        lines.append(
+            f"\n[{h.get('date','?')} {h.get('session_type','?')}] "
+            f"Wallet: {delta_str} | Trades: {h.get('trades',0)} | "
+            f"Services designed: {h.get('services_designed',0)}"
+        )
+        if h.get("lessons"):
+            for lesson in h["lessons"]:
+                lines.append(f"  LESSON: {lesson}")
+        if h.get("what_worked"):
+            lines.append(f"  WORKED: {h['what_worked']}")
+        if h.get("what_failed"):
+            lines.append(f"  FAILED: {h['what_failed']}")
+    return "\n".join(lines)
+
+
+def tool_record_lesson(lesson: str, what_worked: str = "", what_failed: str = "",
+                       trades: int = 0, services_designed: int = 0,
+                       wallet_start: float = 0.0, wallet_end: float = 0.0) -> str:
+    """
+    Record a lesson or outcome at the end of a session. Persists across all future sessions.
+    Call once per session in the final turn before emailing the owner.
+    """
+    state = _load_state()
+    session_num = state.get("sessions", 0)
+    # Write to SQLite (primary)
+    try:
+        sys.path.insert(0, str(ROOT))
+        from octo_memory_db import db_record_ben_session
+        db_record_ben_session(
+            session_num=session_num,
+            date=datetime.now().strftime("%Y-%m-%d"),
+            session_type=_get_session_type_str(),
+            wallet_start=round(wallet_start, 2),
+            wallet_end=round(wallet_end, 2),
+            trades=trades,
+            services_designed=services_designed,
+            what_worked=what_worked,
+            what_failed=what_failed,
+            lessons=[lesson] if lesson else [],
+        )
+    except Exception as e:
+        pass
+    # Also write to JSON (backup)
+    history = []
+    try:
+        if BEN_HISTORY_FILE.exists():
+            history = json.loads(BEN_HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    entry = {
+        "session": session_num, "date": datetime.now().strftime("%Y-%m-%d"),
+        "session_type": _get_session_type_str(), "wallet_start": round(wallet_start, 2),
+        "wallet_end": round(wallet_end, 2),
+        "wallet_delta": round(wallet_end - wallet_start, 2) if wallet_end and wallet_start else 0.0,
+        "trades": trades, "services_designed": services_designed,
+        "lessons": [lesson] if lesson else [],
+        "what_worked": what_worked, "what_failed": what_failed,
+        "recorded_at": datetime.now().isoformat(),
+    }
+    history.append(entry)
+    _save_ben_history(history)
+    return f"Lesson recorded for session #{session_num}. SQLite + JSON updated."
+
+
+def _get_session_type_str() -> str:
+    hour = datetime.now().hour
+    if 5 <= hour < 10:   return "morning"
+    if 10 <= hour < 16:  return "midday"
+    if 16 <= hour < 22:  return "evening"
+    return "overnight"
 
 
 # ── Tool registry ──────────────────────────────────────────────────────────────
@@ -1263,13 +1934,28 @@ TOOLS = [
         },
     },
     {
+        "name": "paper_trade_polymarket",
+        "description": "Record a Polymarket paper trade in BEN'S OWN log (polymarket_trades.json). NEVER touches OctoBoto's records. Use when Limitless has no qualifying markets. Same 4-condition gate applies: EV >25%, expiry >2h, volume >$5k, signal+sentiment aligned. condition_id comes from get_polymarket_edges.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "condition_id":    {"type": "string",  "description": "conditionId from get_polymarket_edges"},
+                "side":            {"type": "string",  "description": "YES or NO"},
+                "size_usdc":       {"type": "number",  "description": "Size in USDC, max 40"},
+                "price":           {"type": "number",  "description": "Current YES price 0.01-0.99 from get_polymarket_edges"},
+                "market_question": {"type": "string",  "description": "Human-readable market label (optional)", "default": ""},
+            },
+            "required": ["condition_id", "side", "size_usdc", "price"],
+        },
+    },
+    {
         "name": "scan_limitless",
-        "description": "Scan Limitless markets. ALWAYS use min_hours=24 to skip same-day markets -- they lock before you can trade (proven dead end, Session 14). Focus on multi-day markets.",
+        "description": "Scan Limitless markets. Use min_hours=2 minimum to avoid last-minute lockout. Limitless has NO multi-day markets -- all markets are 15min to 12h. Real volume is in 2-9h range ($100k-$400k per market). Focus on crypto markets with >$50k volume where price-vs-strike gap gives directional edge.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "category":  {"type": "string",  "description": "crypto, sports, politics, or all", "default": "crypto"},
-                "min_hours": {"type": "integer", "description": "Only show markets expiring this many hours from now. Default 24 to skip same-day.", "default": 24},
+                "min_hours": {"type": "integer", "description": "Only show markets expiring this many hours from now. Use 2 to skip near-expiry markets while hitting 2-9h volume.", "default": 2},
             },
             "required": [],
         },
@@ -1315,6 +2001,64 @@ TOOLS = [
                 "max_price_usdc": {"type": "number", "description": "Max you'll pay in USDC. Default 1.00.", "default": 1.0},
             },
             "required": ["url"],
+        },
+    },
+    {
+        "name": "buy_acp_competitor_job",
+        "description": "Send a competitive intelligence job to a known ACP competitor (predictor-sam, blue-dot-testnet, Dou Shan). Uses Octodamus ACP wallet (~$14 USDC). PURPOSE: Learn what competitors deliver to improve Octodamus offerings. NOT for profit — for intel only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "competitor_name": {"type": "string", "description": "One of: predictor-sam, blue-dot-testnet, Dou Shan"},
+                "description":     {"type": "string", "description": "What to ask for (leave blank for default BTC signal request)", "default": ""},
+            },
+            "required": ["competitor_name"],
+        },
+    },
+    {
+        "name": "check_acp_competitor_jobs",
+        "description": "Check status of competitor intelligence jobs — shows pending, funded, and any deliverables received. Call after buy_acp_competitor_job to monitor results.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "read_core_memory",
+        "description": "Read Agent_Ben's distilled core memory — hard lessons, validated rules, what works. This is the highest-signal context available. Call every session before scanning markets.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "append_core_memory",
+        "description": "Append a durable insight to the permanent core memory. Use for lessons that should never be forgotten across all future sessions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"insight": {"type": "string", "description": "The durable insight to append"}},
+            "required": ["insight"],
+        },
+    },
+    {
+        "name": "check_memory_status",
+        "description": "Check the learning/memory status of all three systems: Octodamus skill log, OctoBoto calibration, and Agent_Ben session history. Shows COMPOUNDING vs STATIC for each. Include in morning and evening email reports.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_session_history",
+        "description": "Read the persistent cross-session learning log — what worked, what failed, wallet deltas, lessons from past sessions. Call this near the start of every session.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "record_lesson",
+        "description": "Record a lesson or outcome at the end of a session. Persists across all future sessions. Call once per session before the final email.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lesson":           {"type": "string", "description": "Key insight or lesson from this session"},
+                "what_worked":      {"type": "string", "description": "What approach worked this session", "default": ""},
+                "what_failed":      {"type": "string", "description": "What didn't work or was a dead end", "default": ""},
+                "trades":           {"type": "integer", "description": "Number of trades placed (0 for PASS)", "default": 0},
+                "services_designed":{"type": "integer", "description": "Number of x402 services designed", "default": 0},
+                "wallet_start":     {"type": "number", "description": "Wallet balance at session start", "default": 0},
+                "wallet_end":       {"type": "number", "description": "Wallet balance at session end", "default": 0},
+            },
+            "required": ["lesson"],
         },
     },
     {
@@ -1373,6 +2117,23 @@ TOOLS = [
             "required": ["action", "result"],
         },
     },
+    {
+        "name": "buy_ecosystem_intel",
+        "description": "Buy intel from an Octodamus ecosystem agent via ACP (NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent, Octodamus). Octodamus calling card embedded so they can hire back. Use list_ecosystem_services first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_agent": {"type": "string", "description": "Agent name: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent, Octodamus"},
+                "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"},
+            },
+            "required": ["target_agent", "service_name"],
+        },
+    },
+    {
+        "name": "list_ecosystem_services",
+        "description": "List all services for purchase across the Octodamus ecosystem with agent names, service names, and prices.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 TOOL_FNS = {
@@ -1392,7 +2153,8 @@ TOOL_FNS = {
     "scan_kalshi":          lambda i: tool_scan_kalshi(i.get("series", "KXBTC")),
     "place_kalshi_bet":     lambda i: tool_place_kalshi_bet(i["ticker"], i["side"], int(i["count"]), int(i["yes_price_cents"])),
     "place_limitless_bet":  lambda i: tool_place_limitless_bet(i["market_slug"], i["side"], float(i["size_usdc"])),
-    "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto"), int(i.get("min_hours",24))),
+    "paper_trade_polymarket": lambda i: tool_paper_trade_polymarket(i["condition_id"], i["side"], float(i["size_usdc"]), float(i["price"]), i.get("market_question", "")),
+    "scan_limitless":       lambda i: tool_scan_limitless(i.get("category","crypto"), int(i.get("min_hours",2))),
     "check_acp_market":     lambda i: tool_check_acp_market(),
     "design_acp_offering":  lambda i: tool_design_acp_offering(i["name"], i["description"], i["price_usdc"], i["what_it_delivers"]),
     "browse_orbis":         lambda i: tool_browse_orbis(i.get("query",""), i.get("category","")),
@@ -1401,6 +2163,18 @@ TOOL_FNS = {
     "find_arbitrage":       lambda i: tool_find_arbitrage(i["market_a"], i["market_b"]),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "log_action":           lambda i: tool_log_action(i["action"], i["result"], i.get("cost_usd", 0.0)),
+    "buy_acp_competitor_job":    lambda i: tool_buy_acp_competitor_job(i["competitor_name"], i.get("description", "")),
+    "check_acp_competitor_jobs": lambda i: tool_check_acp_competitor_jobs(),
+    "read_core_memory":     lambda i: tool_read_core_memory(),
+    "append_core_memory":   lambda i: tool_append_core_memory(i["insight"]),
+    "check_memory_status":  lambda i: tool_check_memory_status(),
+    "get_session_history":  lambda i: tool_get_session_history(),
+    "record_lesson":           lambda i: tool_record_lesson(
+                                i["lesson"], i.get("what_worked",""), i.get("what_failed",""),
+                                int(i.get("trades",0)), int(i.get("services_designed",0)),
+                                float(i.get("wallet_start",0)), float(i.get("wallet_end",0))),
+    "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
+    "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
 }
 
 SYSTEM = """You are Agent_Ben. Autonomous AI agent. Own wallet (~$196 USDC on Base). Own brand. Own profit motive. Not an employee.
@@ -1423,6 +2197,12 @@ IMPORTANT UPDATE — YOU NOW HAVE:
    - Try: any service on agentic.market or x402 bazaar
    - You are now a FULL PARTICIPANT in the x402 economy -- buyer AND seller
 3. Every Octodamus signal OctoBoto uses is logged as a $0.01 purchase -- on-chain trail building
+4. ECOSYSTEM COMMERCE via ACP: use buy_ecosystem_intel + list_ecosystem_services.
+   Buy intel from ecosystem agents before every trade to stack confirmation signals.
+   The Octodamus calling card is embedded -- providers discover Octodamus and may hire back.
+   Each buy = a completed ACP transaction = volume that builds ecosystem reputation.
+   Stack buys for high-conviction setups: macro + flow + sentiment all pointing same direction
+   before placing any bet. If any signal conflicts, downgrade conviction or pass entirely.
 
 STREAM 1 — CREATE AND SELL X402 SERVICES (primary, no risk):
 You buy Octodamus data at $0.01/call, add your own analysis, sell the output at $0.25-$2 via x402.
@@ -1433,16 +2213,45 @@ Services you can design and pitch to the owner to implement:
 - Research reports $2-5: deep dives on specific markets, sold as PDF via x402
 The owner implements the x402 endpoint. You design the product and write the spec.
 
-STREAM 2 -- TRADE ON LIMITLESS EXCHANGE (Base-native, USDC, no SSN required):
-Limitless: $600M+ volume prediction market on Base. USDC-native. Your Base wallet works directly.
-- scan_limitless(min_hours=24) -- MULTI-DAY MARKETS ONLY. Same-day markets lock before you trade them.
-- TRADING REQUIRES ALL FOUR CONDITIONS — if any is missing, you DO NOT trade, no exceptions:
+STREAM 2 -- TRADE ON PREDICTION MARKETS (Ben's own paper record — separate from OctoBoto):
+Your trades are YOURS. OctoBoto is a separate Telegram trading bot with its own wallet and records.
+You use paper_trade_polymarket() and place_limitless_bet() — these write to YOUR files only.
+
+PRIMARY: Limitless Exchange (Base-native, USDC, your Franklin wallet works directly)
+- scan_limitless(min_hours=2) -- Limitless has NO multi-day markets. All markets are 15min-12h.
+  Real volume is 2-9h range. Focus on crypto markets with >$50k vol.
+- LIMITLESS STRUCTURAL CHECK: Track consecutive sessions with 0 qualifying crypto markets in your session history.
+  If get_session_history shows 10+ consecutive sessions with "Limitless: 0 qualifying" or similar notes:
+  flag this explicitly in your email and daily summary as:
+  "STRUCTURAL FLAG: Limitless 0-market streak = X sessions. Recommend: (1) suspend Limitless scanning until
+  $10K+ confirmed daily crypto volume, OR (2) lower volume threshold from $50K to $5K for a 2-session trial.
+  This is a platform issue, not a market timing issue -- do not keep checking indefinitely."
+  Do not defer this flag to "owner decision needed" without also including your specific recommendation.
+  KEY EDGE: if current price is ALREADY above (or below) a strike but YES is priced <0.50,
+  that's a mispricing. Quantify the gap: (current_price - strike) / strike * 100 = gap%.
+  A gap >0.5% with YES priced below 0.65 is potential edge.
+  ALSO check Range Scout (get_octodamus_signal with asset + "range") -- Range Scout fires
+  4h/6h/8h directional calls, same timeframe as Limitless. If Range Scout is BULL on BTC,
+  look for BTC "above $X" markets expiring in that timeframe.
+
+FALLBACK: Polymarket (when Limitless has no qualifying markets)
+- get_polymarket_edges() -- shows conditionId, YES price, volume, hours left
+- paper_trade_polymarket(condition_id, side, size_usdc, price) -- Ben's paper record only
+- Polymarket has much deeper market supply (Fed rates, BTC milestones, macro events, sports)
+- Use when Limitless is dry. Same 4-condition gate applies.
+
+TRADING REQUIRES ALL FOUR CONDITIONS -- if any is missing, you DO NOT trade, no exceptions:
   1. EV gap >25% (crowd price is wrong by more than 25 cents on the dollar)
-  2. Market expires >24h from now
-  3. Volume >$5k (real liquidity)
-  4. Octodamus signal AND Grok sentiment both point the same direction
-- If all four met: write a position brief explaining exactly why, then place_limitless_bet (paper mode)
-- If not all four: PASS and move on. Cash is a position. Missing a trade is free.
+     OR price-vs-strike gap >0.5% with YES priced <0.65 (structural mispricing)
+  2. Market expires >2h from now (not near-expiry lockout zone)
+  3. Volume >$5k (real liquidity — Limitless 2-9h markets typically $50k-$400k)
+  4. Directional signal: Range Scout OR Octodamus main oracle PLUS Grok sentiment aligned
+     - Range Scout (4h/6h/8h): call get_octodamus_signal and check for "range_scout" calls
+     - Main oracle: STRONG UP or STRONG DOWN (not HOLD/WATCH — too slow for Limitless TF)
+     - Grok: must confirm same direction as the signal
+     - If main oracle is HOLD/WATCH: Range Scout is your signal source. Use it.
+- If all four met: write a position brief, then place_limitless_bet or paper_trade_polymarket
+- If Limitless dry and Polymarket has no edge either: PASS. Cash is a position.
 - Kalshi also available (scan_kalshi/place_kalshi_bet) but requires SSN -- skip for now
 
 WHY YOU USE OCTODAMUS:
@@ -1460,58 +2269,117 @@ HARD RULES:
 - Grok X sentiment is contrarian context -- high crowd bullishness often = top
 - When in doubt, do NOT trade. Protect the wallet.
 
-YOUR MEASURE OF SUCCESS: wallet balance goes UP. Patience is a strategy."""
+GROWTH DIRECTIVE — ALWAYS SEEKING EDGE, ALWAYS COMPOUNDING:
+You are building toward a wallet that grows every month. Every session is either progress or a lesson.
+Never both idle and silent — if no trade qualifies, design a service or buy ecosystem intel.
+
+MANDATORY ECOSYSTEM BUYS FOR HIGH-CONVICTION TRADES:
+Before placing any bet, stack at least 2 cross-signals from ecosystem agents:
+  buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal")       -- macro RISK-ON/OFF context
+  buy_ecosystem_intel("Order_ChainFlow", "Order Flow Signal")         -- is capital actually moving in your direction?
+  buy_ecosystem_intel("X_Sentiment_Agent", "Sentiment Divergence Signal") -- is the crowd wrong enough to fade?
+If macro + flow + sentiment all align with your read: HIGH CONVICTION. Size up within limits.
+If any one conflicts: reduce size. If two conflict: pass. Cash is a position.
+Each buy is a completed ACP transaction — this builds Octodamus's reputation score on-chain.
+
+SELF-REPAIR: If you notice a pattern of losses or missed edges, call list_ecosystem_services,
+identify which signal you were missing, and mandate buying it every session going forward.
+Update this protocol in your core memory so the fix persists.
+
+LEARNING RULES (mandatory every session):
+- FIRST TURN: always call get_session_history — read what worked, what failed, wallet trajectory
+- LAST TURN before email: always call record_lesson — log what you learned this session
+- If you placed a trade: record trades=1, wallet_start and wallet_end
+- If you designed a service: record services_designed=1
+- The lesson field is the single most important thing you learned — be specific, not generic
+- Example good lesson: "Same-day Limitless markets lock before midday — never scan them after 10am"
+- Example bad lesson: "Markets are complex" — useless, don't write this
+
+YOUR MEASURE OF SUCCESS: wallet balance goes UP over time. Patience is a strategy. Learning is compounding."""
 
 
 SESSION_FOCUS = {
     "morning": """SESSION FOCUS — MORNING (6am)
 You are waking up. Markets moved overnight. Your job this session:
-1. check_wallet + list_drafts first (orient yourself)
+1. read_core_memory — read your distilled lessons FIRST before anything else
+2. check_wallet + get_session_history + list_drafts (orient yourself)
 2. get_market_data for BTC, ETH, SOL — what happened overnight?
 3. get_grok_sentiment for BTC — what is X saying this morning?
-4. scan_limitless — MULTI-DAY MARKETS ONLY. Filter by expirationDate > 24h from now.
-   SKIP all same-day markets — they lock before you can trade them (proven dead end, Session 14).
-   Look for markets expiring tomorrow or later where Octodamus signal gives you a directional edge.
-5. get_polymarket_edges — any overnight shifts creating edges on multi-day markets?
-6. Trading rule — ALL of these must be true or you DO NOT trade:
-   - EV >25% (crowd price diverges from your estimate by more than 25 cents per dollar)
-   - Expiry >24h from now
+4. get_octodamus_signal — check for Range Scout calls (4h/6h/8h) AND main oracle direction.
+   Range Scout is your primary Limitless signal source when main oracle is HOLD/WATCH.
+5. scan_limitless(min_hours=2) — Limitless is ALL short-term (2h-9h). This is where the volume is.
+   Look for: (a) Range Scout direction + matching "above/below $X" market in that timeframe
+             (b) price-vs-strike gap >0.5% where crowd pricing hasn't caught up yet
+6. If Limitless has no qualifying market: get_polymarket_edges — check for macro/crypto edges there.
+   paper_trade_polymarket() writes to YOUR record only, never OctoBoto's.
+7. Trading rule — ALL four must be true or you DO NOT trade:
+   - EV >25% OR price-vs-strike gap >0.5% with mispriced YES (<0.65)
+   - Expiry >2h from now
    - Volume >$5k (real liquidity)
-   - Octodamus signal AND Grok sentiment both agree with your direction
-   - You can explain in one sentence exactly WHY you have the edge
+   - Range Scout OR Octodamus main oracle PLUS Grok sentiment aligned
    Missing any one = PASS. Cash is a position. Missing a trade is free. Taking a bad trade costs real money.
 7. design_x402_service — zero-risk compounding income. One new service idea per morning.
-8. Draft morning X post — save as morning_post_[date].md
-9. Email owner: market read, any multi-day edge found + paper trade, service designed""",
+8. SUB-AGENT SYNTHESIS before drafting morning post:
+   - Call list_drafts and identify today's sub-agent pre-market reports (nyse_macromind, nyse_stockoracle,
+     order_chainflow, x_sentiment_agent, nyse_tech_agent — look for files from today's date).
+   - Tally their REGIME VERDICTs: how many RISK-ON vs BEAR/CAUTION?
+   - If they split (e.g. MacroMind RISK-ON but X_Sentiment BEAR), that disagreement is the post angle.
+   - One paragraph in the email: "Sub-agents: X RISK-ON, Y BEAR/CAUTION. Key divergence: [describe]."
+9. Draft morning X post — save as morning_post_[date].md (use save_draft, NOT draft_content — avoids duplicate file)
+   - Do NOT open with a greeting or date. Open with the sharpest number or contradiction from step 8.
+   - If today's sub-agents split on regime, open with that split.
+10. check_memory_status — run this and include the full output in the email
+11. record_lesson — what was the single most important thing learned this session?
+12. Email owner: market read, sub-agent synthesis, any multi-day edge found + paper trade, service designed, + full memory status""",
 
     "midday": """SESSION FOCUS — MIDDAY (12pm)
 Markets are open. Your job this session:
-1. check_wallet + list_drafts — what's been done today?
-2. DO NOT chase same-day Limitless markets — they lock by midday (proven dead end, Session 14).
-3. get_octodamus_signal + get_grok_sentiment — direction read.
-4. scan_limitless for markets expiring TOMORROW or later. Multi-day only.
-5. If no multi-day Limitless edge: check get_polymarket_edges for longer-duration markets.
-6. design_x402_service OR buy_x402_service — either design a product or buy data to improve analysis.
-7. Save all output, email midday status""",
+1. read_core_memory — read your distilled lessons FIRST
+2. check_wallet + get_session_history + list_drafts
+3. get_octodamus_signal — check for Range Scout calls (4h/6h/8h directional) AND main oracle.
+   Range Scout is the Limitless-native signal: it fires when main oracle is HOLD/WATCH.
+4. get_grok_sentiment — direction confirmation.
+5. scan_limitless(min_hours=2) — Limitless is ALL short-term. Best volume is 2-9h markets ($50k-$400k).
+   Target: Range Scout direction + matching "above/below $X" market, OR price-vs-strike gap >0.5%.
+   Skip markets expiring in <2h (near-expiry lockout zone).
+6. If no Limitless edge: get_polymarket_edges — Polymarket has deeper supply (Fed, BTC, macro).
+   Use paper_trade_polymarket() if you find a qualifying market. Your record, not OctoBoto's.
+7. design_x402_service OR buy_x402_service — either design a product or buy data to improve analysis.
+8. record_lesson — log the key insight from this session
+9. Save all output, email midday status""",
 
     "evening": """SESSION FOCUS — EVENING (6pm)
 End of US trading day. Your job this session:
-1. check_wallet + list_drafts — full review of the day's output
-2. get_market_data — how did markets close?
-3. get_grok_sentiment — what is the crowd saying into close?
-4. Evaluate any open Polymarket positions from today's briefs — are they still valid?
-5. Draft a summary of what Agent_Ben accomplished today — save as daily_summary_[date].md
-6. Identify the single most important thing to do tomorrow morning — log it
-7. Email owner: day summary, wallet status, tomorrow's priority""",
+1. read_core_memory — read your distilled lessons FIRST
+2. check_wallet + get_session_history + list_drafts — full review of the day's output
+3. get_market_data — how did markets close?
+4. get_grok_sentiment — what is the crowd saying into close?
+5. check_acp_market — pull ACP completed jobs + USDC earned. Include in daily summary wallet section:
+   "WALLET: Franklin $X USDC | ACP earned: $Y (Z jobs) | Combined: $W"
+6. Evaluate any open Polymarket positions from today's briefs — are they still valid?
+7. Draft the daily summary using save_draft ONLY (filename: daily_summary_[date].md).
+   Do NOT use draft_content for this — it creates a duplicate file with an auto-generated slug name.
+   SESSION NUMBERING: use the session count from state (reported by check_wallet context) as "Session X".
+   Use the number of history entries from get_session_history as "sessions with recorded lessons".
+   These two numbers legitimately differ — state counts every run, history only counts sessions that called record_lesson.
+   Report both clearly: "Session 34 | 12 lessons logged"
+8. Identify the single most important thing to do tomorrow morning — log it
+9. check_memory_status — run this and include the full output in the email
+10. record_lesson — summarize what the day taught you (trades, signals, dead ends)
+11. Email owner: day summary (wallet + ACP stats), tomorrow's priority, + full memory status""",
 
     "overnight": """SESSION FOCUS — OVERNIGHT (12am)
 While humans sleep, markets keep moving AND the agent economy keeps transacting. Your job:
 1. check_wallet + list_drafts
-2. check_acp_market — how is Octodamus performing on Virtuals ACP? How many jobs? What types? What's missing?
+2. check_acp_market — how is Octodamus performing on Virtuals ACP? How many jobs completed? USDC earned?
+   ALWAYS include the ACP P&L in your overnight brief header: "ACP: X jobs | $Y USDC earned"
    - Design at least ONE new ACP offering with design_acp_offering (e.g. Polymarket Edge Report, Grok Sentiment Brief)
    - Find ways to funnel more agent customers: what job types are other ACP agents offering? What gaps exist?
+   - If no competitor jobs sent yet: use buy_acp_competitor_job for ALL THREE competitors (predictor-sam, blue-dot-testnet, Dou Shan)
+     Ask each for their best market signal. PURPOSE: learn what they deliver vs what Octodamus delivers. Intel only.
+   - If competitor jobs already sent: use check_acp_competitor_jobs to read deliverables and compare vs Octodamus output
 3. Check Smithery MCP: browse_orbis or web_search for 'Smithery octodamusai market-intelligence' — any reviews, usage, gaps?
-4. scan_limitless(min_hours=24) — overnight multi-day markets only
+4. scan_limitless(min_hours=2) — check for 2-9h crypto markets with real volume (>$50k)
 5. get_grok_sentiment for BTC — Asian markets read
 6. If a real 4-condition edge exists: write brief, attempt paper trade
 7. design_x402_service if you think of a new product
