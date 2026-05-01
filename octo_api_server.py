@@ -3112,7 +3112,7 @@ async def create_transak_session(
     if not _TRANSAK_API_KEY:
         raise HTTPException(status_code=503, detail="Card payments not yet active.")
 
-    from octo_agent_pay import _load_payments
+    from octo_agent_pay import _load_payments, TREASURY
     payments = _load_payments()
     p = payments.get(payment_id)
     if not p:
@@ -3125,8 +3125,8 @@ async def create_transak_session(
         "referrerDomain":           "octodamus.com",
         "cryptoCurrencyCode":       "USDC",
         "network":                  "base",
-        "walletAddress":            p["payment_address"],
-        "cryptoAmount":             str(p["amount_usdc"]),
+        "walletAddress":            TREASURY,
+        "cryptoAmount":             str(p.get("amount_usdc", 29)),
         "partnerOrderId":           payment_id,
         "isAutoFillUserData":       "true",
         "disableWalletAddressForm": "true",
