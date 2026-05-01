@@ -451,6 +451,17 @@ def run_health_check(auto_restart: bool = True, context: str = "manual") -> int:
   print(f" Context: {context.upper()}")
   print(f"{'='*52}")
 
+  # Kill duplicates at the top of every health check before any other check runs
+  try:
+      dedup = dedup_processes(silent=True)
+      killed = sum(dedup.get("deduped", {}).values())
+      if killed:
+          _warn(f"Dedup: killed {killed} duplicate process(es) — {dedup['deduped']}")
+      else:
+          _ok("Dedup: no duplicate processes found")
+  except Exception as e:
+      _warn(f"Dedup check error: {e}")
+
   _check_python_processes()
   _check_cloudflared()
 

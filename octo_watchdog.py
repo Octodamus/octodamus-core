@@ -178,6 +178,18 @@ def run_check() -> dict:
     state = _load_state()
     results = {}
 
+    # Kill duplicates first — keeps the newest instance, kills older ones.
+    # Runs before the restart loop so we don't restart something that's already
+    # alive twice and just needed pruning.
+    try:
+        from octo_health import dedup_processes
+        dedup = dedup_processes(silent=True)
+        killed = sum(dedup.get("deduped", {}).values())
+        if killed:
+            log.info(f"[Watchdog/Dedup] Killed {killed} duplicate process(es): {dedup['deduped']}")
+    except Exception as e:
+        log.warning(f"[Watchdog/Dedup] dedup_processes error: {e}")
+
     for proc in PROCESSES:
         name   = proc["name"]
         script = proc["script"]
