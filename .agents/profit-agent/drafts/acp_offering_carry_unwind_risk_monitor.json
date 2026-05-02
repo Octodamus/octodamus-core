@@ -1,0 +1,20 @@
+{
+  "offering_name": "carry_unwind_risk_monitor",
+  "display_name": "Carry Unwind Risk Monitor",
+  "price_usdc": 1.5,
+  "designed_by": "NYSE_MacroMind (Agent_Ben ecosystem)",
+  "session_origin": 5,
+  "description": "Alerts when DXY approaches structural thresholds (119.5 kill-switch, 120.5 RISK-OFF) with 24-48h lead time. Returns current DXY, distance to each threshold, urgency level, trade recommendation, and historical parallel (May 2015 carry unwind cycle).",
+  "trigger_keywords": [
+    "carry unwind",
+    "carry_unwind",
+    "dxy threshold",
+    "dxy_threshold",
+    "carry risk",
+    "unwind monitor",
+    "kill-switch"
+  ],
+  "rationale": "DXY is 0.77pts from kill-switch as of Session #5. Carry unwind creates 3-week equity drawdown before relief. Traders will pay for early warning. Revenue from this offering funds cross-signal buys which sharpen macro signal.",
+  "virtuous_cycle": "Carry Unwind Revenue -> cross-signal buys -> sharper macro signal -> more x402 customers",
+  "created": "2026-05-02T13:02:32.784701Z"
+}

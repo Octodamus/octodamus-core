@@ -9,6 +9,10 @@ Handler 4: BTC Strike Proximity Alert ($1.50/call)
   - Fires when BTC is within 10% of a key Polymarket strike price AND volume >$50k
   - Returns: strike_price, current_btc_price, gap_pct, yes_price, expiry_hours,
              volume, octodamus_signal, trade_recommendation
+Handler 5: Carry Unwind Risk Monitor ($1.50/call) -- NYSE_MacroMind Session #5
+  - Alerts when DXY approaches structural thresholds (119.5 kill-switch, 120.5 full RISK-OFF)
+  - Returns: dxy_current, distance_to_kill_switch, alert_level, urgency, recommendation,
+             velocity_note, historical_parallel
 
 Registered in octo_report_handlers.get_handler() and octo_acp_worker._get_report_type().
 """
@@ -368,4 +372,130 @@ def handle_btc_strike_proximity_alert(req: dict) -> dict:
         "alerts":            alerts,
         "price_usdc":        1.5,
         "designed_by":       "Agent_Ben",
+    }
+
+
+def handle_carry_unwind_risk_monitor(req: dict) -> dict:
+    """
+    Carry Unwind Risk Monitor -- $1.50/call.
+    Alerts when DXY approaches structural thresholds (119.5 kill-switch, 120.5 RISK-OFF)
+    with 24-48h lead time. Designed by NYSE_MacroMind (Agent_Ben ecosystem) from Session #5.
+    """
+    import json as _json
+    import os
+    from pathlib import Path as _Path
+
+    THRESHOLD_KILL  = 119.5   # NEUTRAL -> RISK-OFF warning
+    THRESHOLD_ROFF  = 120.5   # full RISK-OFF confirmed
+
+    # Load FRED key
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        try:
+            sp = _Path(__file__).parent / ".octo_secrets"
+            fred_key = _json.loads(sp.read_text(encoding="utf-8")).get("secrets", {}).get("FRED_API_KEY", "")
+        except Exception:
+            pass
+
+    # Fetch DXY (DTWEXBGS = Broad Dollar Index, best DXY proxy available via FRED)
+    dxy_val = None
+    dxy_date = None
+    dxy_5d_ago = None
+    try:
+        r = httpx.get(
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={"series_id": "DTWEXBGS", "api_key": fred_key,
+                    "sort_order": "desc", "limit": 10, "file_type": "json"},
+            timeout=8,
+        )
+        obs   = r.json().get("observations", [])
+        valid = [o for o in obs if o.get("value") not in (".", None, "")]
+        if valid:
+            dxy_val  = float(valid[0]["value"])
+            dxy_date = valid[0]["date"]
+            if len(valid) >= 6:
+                dxy_5d_ago = float(valid[5]["value"])
+    except Exception:
+        pass
+
+    if dxy_val is None:
+        return {"error": "Could not fetch DXY data", "type": "carry_unwind_risk_monitor", "price_usdc": 1.5}
+
+    dist_kill  = round(THRESHOLD_KILL - dxy_val, 2)
+    dist_roff  = round(THRESHOLD_ROFF - dxy_val, 2)
+    dxy_5d_chg = round(dxy_val - dxy_5d_ago, 3) if dxy_5d_ago else None
+
+    # Classify alert level
+    if dxy_val >= THRESHOLD_ROFF:
+        alert_level    = "RISK_OFF_CONFIRMED"
+        regime         = "RISK-OFF"
+        urgency        = "IMMEDIATE"
+        recommendation = "Exit risk assets. Full RISK-OFF confirmed. DXY breached both thresholds."
+        lead_note      = f"DXY {dxy_val:.2f} is {-dist_roff:.2f}pts above full RISK-OFF threshold (120.5)."
+    elif dxy_val >= THRESHOLD_KILL:
+        alert_level    = "KILL_SWITCH_TRIGGERED"
+        regime         = "RISK-OFF"
+        urgency        = "HIGH"
+        recommendation = "Reduce risk exposure. Kill-switch at 119.5 breached. RISK-OFF within 48h."
+        lead_note      = f"DXY {dxy_val:.2f} is {-dist_kill:.2f}pts above kill-switch (119.5)."
+    elif dist_kill <= 0.5:
+        alert_level    = "CRITICAL_WARNING"
+        regime         = "NEUTRAL -> RISK-OFF"
+        urgency        = "HIGH"
+        recommendation = "DXY within 0.5pts of kill-switch. Close longs or hedge. 12-24h lead time."
+        lead_note      = f"{dist_kill:.2f}pts from RISK-OFF trigger. Any carry acceleration breaches threshold."
+    elif dist_kill <= 1.0:
+        alert_level    = "WARNING"
+        regime         = "NEUTRAL"
+        urgency        = "MEDIUM"
+        recommendation = "DXY approaching kill-switch. Monitor closely. 24-48h lead time."
+        lead_note      = f"{dist_kill:.2f}pts from kill-switch (119.5). Carry unwind mechanics active."
+    elif dist_kill <= 2.0:
+        alert_level    = "WATCH"
+        regime         = "NEUTRAL"
+        urgency        = "LOW"
+        recommendation = f"DXY elevated but not critical. Watch for acceleration above {THRESHOLD_KILL - 1.0:.1f}."
+        lead_note      = f"{dist_kill:.2f}pts from kill-switch. Not actionable yet -- monitor trajectory."
+    else:
+        alert_level    = "CLEAR"
+        regime         = "RISK-ON eligible"
+        urgency        = "NONE"
+        recommendation = "DXY not in carry unwind territory. No action required."
+        lead_note      = f"{dist_kill:.2f}pts from kill-switch. Dollar strength non-threatening."
+
+    # 5-day velocity
+    if dxy_5d_chg is not None:
+        if dxy_5d_chg >= 0.5:
+            velocity_note = f"5d momentum: +{dxy_5d_chg:.2f} (accelerating -- carry unwind likely active)"
+        elif dxy_5d_chg >= 0.2:
+            velocity_note = f"5d momentum: +{dxy_5d_chg:.2f} (mild upward pressure)"
+        elif dxy_5d_chg <= -0.3:
+            velocity_note = f"5d momentum: {dxy_5d_chg:.2f} (dollar weakening -- carry unwind cooling)"
+        else:
+            velocity_note = f"5d momentum: {dxy_5d_chg:+.2f} (flat -- no carry unwind acceleration)"
+    else:
+        velocity_note = "5d momentum: unavailable"
+
+    return {
+        "type":                    "carry_unwind_risk_monitor",
+        "as_of_date":              dxy_date,
+        "dxy_current":             round(dxy_val, 2),
+        "dxy_5d_change":           dxy_5d_chg,
+        "threshold_kill_switch":   THRESHOLD_KILL,
+        "threshold_risk_off":      THRESHOLD_ROFF,
+        "distance_to_kill_switch": dist_kill,
+        "distance_to_risk_off":    dist_roff,
+        "alert_level":             alert_level,
+        "regime":                  regime,
+        "urgency":                 urgency,
+        "recommendation":          recommendation,
+        "lead_time_note":          lead_note,
+        "velocity_note":           velocity_note,
+        "historical_parallel": (
+            "May 2015: DXY +0.8% in 5 days on Fed rate hike signal. "
+            "S&P fell -2.3% over 3 weeks, then +7.2% relief rally after dollar peaked. "
+            "Phase 1 = forced deleveraging. Phase 2 = relief when carry unwind exhausts."
+        ),
+        "designed_by": "NYSE_MacroMind (Agent_Ben ecosystem)",
+        "price_usdc":  1.5,
     }

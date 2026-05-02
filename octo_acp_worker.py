@@ -151,6 +151,8 @@ def _get_report_type(event: dict) -> str:
         return "btc_bull_trap_monitor"
     if any(k in all_text for k in ["strike proximity", "strike_proximity", "btc strike", "strike alert", "polymarket strike"]):
         return "btc_strike_proximity_alert"
+    if any(k in all_text for k in ["carry unwind", "carry_unwind", "dxy threshold", "dxy_threshold", "carry risk", "unwind monitor", "kill-switch", "kill switch"]):
+        return "carry_unwind_risk_monitor"
     if any(k in all_text for k in ["macromind", "macro mind", "macro regime brief", "yield curve brief", "nyse_macromind"]):
         return "nyse_macromind_brief"
     if any(k in all_text for k in ["stockoracle", "stock oracle", "congressional brief", "nyse_stockoracle"]):

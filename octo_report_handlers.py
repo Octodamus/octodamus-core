@@ -14,7 +14,7 @@ import os
 import statistics
 from datetime import datetime
 from pathlib import Path
-from octo_acp_ben_reports import handle_grok_sentiment_brief, handle_fear_crowd_divergence, handle_btc_bull_trap_monitor, handle_btc_strike_proximity_alert
+from octo_acp_ben_reports import handle_grok_sentiment_brief, handle_fear_crowd_divergence, handle_btc_bull_trap_monitor, handle_btc_strike_proximity_alert, handle_carry_unwind_risk_monitor
 
 # ── Results page link ────────────────────────────────────────────────────────
 
@@ -1526,6 +1526,8 @@ def get_handler(report_type: str):
         return handle_btc_bull_trap_monitor
     if any(k in t for k in ["strike_proximity", "strike proximity", "btc_strike", "polymarket_strike"]):
         return handle_btc_strike_proximity_alert
+    if any(k in t for k in ["carry_unwind", "carry unwind", "dxy_threshold", "dxy threshold", "carry_risk", "unwind_monitor"]):
+        return handle_carry_unwind_risk_monitor
     if any(k in t for k in ["nyse_macromind", "macromind", "macro_mind"]):
         return handle_nyse_macromind_brief
     if any(k in t for k in ["nyse_stockoracle", "stockoracle", "stock_oracle"]):
