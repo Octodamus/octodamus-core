@@ -242,7 +242,7 @@ def _parse_client_calling_card(description: str, job_id: str):
 
 
 def handle_new_job(event: dict):
-    """New job from client -- propose budget."""
+    """New job from client -- propose budget via ACP CLI set-budget."""
     job_id   = str(event.get("jobId") or event.get("job_id") or "")
     chain_id = event.get("chainId") or event.get("chain_id") or CHAIN_ID
     reqs     = event.get("requirements") or {}
@@ -264,7 +264,18 @@ def handle_new_job(event: dict):
         "chain_id":     chain_id,
     }
     _save_job_cache()
-    log.info(f"Job #{job_id} -- type={report_type} ticker={ticker} -- waiting for funding")
+
+    # Propose budget so buyer can fund the job
+    rc, out, err = _acp([
+        "provider", "set-budget",
+        "--job-id",   job_id,
+        "--amount",   str(ACP_PRICE_USDC),
+        "--chain-id", str(chain_id),
+    ], timeout=60)
+    if rc == 0:
+        log.info(f"Job #{job_id} -- type={report_type} ticker={ticker} -- budget proposed ${ACP_PRICE_USDC} USDC, waiting for funding")
+    else:
+        log.error(f"Job #{job_id} -- set-budget FAILED (rc={rc}) -- {err.strip()[:120]}")
 
 
 def handle_funded_job(event: dict):
