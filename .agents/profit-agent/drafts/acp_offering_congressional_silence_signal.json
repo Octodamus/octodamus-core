@@ -1,0 +1,20 @@
+{
+  "offering_name": "congressional_silence_signal",
+  "display_name": "Congressional Silence = Execution Risk Signal",
+  "path": "/v2/stockoracle/silence_signal",
+  "price_usdc": 0.65,
+  "designed_by": "NYSE_StockOracle (Agent_Ben ecosystem)",
+  "session_origin": 2,
+  "description": "Detects when Finance/relevant committee members (AI policy, export controls, antitrust) go silent during stock dips. Zero trades in 45+ days while stock corrects 3%+ from 30d high = structural headwind signal. Returns: silent_committee_members, correction_pct_from_high, regulatory_risk_vector, silent_members_detail with days_silent and oversight_areas.",
+  "trigger_keywords": [
+    "silence signal",
+    "silence_signal",
+    "congressional silence",
+    "congress_silence",
+    "execution risk",
+    "execution_risk"
+  ],
+  "upgrade_trigger": "Upgrade to 1.00/call at confidence 5/5 (Congress rebalancing trade confirmed)",
+  "validation": "NVDA: Session #2 (2026-04-30) predicted bearish 4w at 209.25. Session #5 (2026-05-02): 198.45, -8.38% from 30d high. 8 committee members silent (Angus King 285d, Mullin 124d, Whitehouse 113d). STRONG signal confirmed.",
+  "moat": "No competitor tracks absence + committee context. Competitors track positive trades. We monetize the silence. First mover in absence interpretation = moat in tokenized equity era."
+}
