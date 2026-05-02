@@ -113,33 +113,67 @@ def tool_search_sec_filings(query: str = "tokenized securities blockchain") -> s
         return f"SEC search unavailable: {e}"
 
 
-def tool_check_chainlink_base_feeds() -> str:
-    """Check for Chainlink price feed contracts on Base — proxy for tokenized asset infrastructure."""
+_EQUITY_KEYWORDS = ["AAPL","TSLA","NVDA","AMZN","MSFT","COIN","GOOG","SPY","QQQ","MSTR","HOOD","META"]
+
+def _check_chainlink_feeds_on_chain(chain_label: str, feed_url: str) -> list[str]:
+    """Shared helper: fetch Chainlink reference data for one chain, return equity feed lines."""
+    import httpx
+    try:
+        r = httpx.get(feed_url, timeout=10)
+        if r.status_code != 200:
+            return [f"  {chain_label}: HTTP {r.status_code}"]
+        feeds = r.json() if isinstance(r.json(), list) else []
+        equity = [f for f in feeds if any(k in f.get("name","").upper() for k in _EQUITY_KEYWORDS)]
+        if not equity:
+            return [f"  {chain_label}: No equity feeds live yet."]
+        return [f"  {chain_label} | {f.get('name','?')} | {f.get('contractAddress','?')[:18]}..." for f in equity[:6]]
+    except Exception as e:
+        return [f"  {chain_label}: unavailable ({e})"]
+
+
+def tool_check_chainlink_equity_feeds() -> str:
+    """Check Chainlink equity price feeds on Ethereum mainnet AND Base — dual-chain infrastructure monitor."""
+    lines = ["CHAINLINK EQUITY PRICE FEEDS (Ethereum + Base):"]
+    # Ethereum mainnet — primary chain for NYSE Digital Platform (Securitize)
+    lines += _check_chainlink_feeds_on_chain("ETH mainnet", "https://reference-data-directory.vercel.app/feeds-mainnet.json")
+    # Base — Dinari live now, Robinhood tokenized stocks
+    lines += _check_chainlink_feeds_on_chain("Base", "https://reference-data-directory.vercel.app/feeds-base-mainnet.json")
+    lines.append("")
+    lines.append("KEY: ETH mainnet = Securitize/NYSE Digital Platform (late 2026)")
+    lines.append("     Base = Dinari (live), Robinhood tokenized stocks (Arbitrum)")
+    lines.append("     New equity feed = tokenized stock deployment imminent signal")
+    return "\n".join(lines)
+
+
+def tool_check_ethereum_gas() -> str:
+    """Check current Ethereum mainnet gas price. Use before any ETH write operation — gas spikes at NYSE open (9:30 AM EST)."""
     try:
         import httpx
-        # Chainlink's official Base mainnet feed list
-        r = httpx.get(
-            "https://reference-data-directory.vercel.app/feeds-matic-mainnet.json",
+        r = httpx.post(
+            "https://mainnet.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161",
+            json={"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1},
             timeout=8
         )
-        if r.status_code != 200:
-            # Fallback: check DexScreener for Chainlink token activity on Base
-            r2 = httpx.get("https://api.dexscreener.com/latest/dex/search?q=LINK+base", timeout=8)
-            pairs = r2.json().get("pairs", [])[:3] if r2.status_code == 200 else []
-            return f"Chainlink Base activity: {len(pairs)} active pairs found on Base."
-        feeds = r.json()
-        equity_feeds = [f for f in feeds if any(t in f.get("name","").upper()
-                        for t in ["AAPL","TSLA","NVDA","AMZN","MSFT","COIN","GOOG","SPY"])]
-        lines = ["CHAINLINK PRICE FEEDS — EQUITY TOKENS:"]
-        if equity_feeds:
-            for f in equity_feeds[:5]:
-                lines.append(f"  {f.get('name','?')} | {f.get('contractAddress','?')[:16]}...")
+        if r.status_code == 200:
+            hex_price = r.json().get("result","0x0")
+            gwei = int(hex_price, 16) / 1e9
         else:
-            lines.append("  No equity/stock price feeds found yet on target chains.")
-            lines.append("  Watch: Base chain deployment = signal that tokenized stocks are imminent.")
-        return "\n".join(lines)
+            # Fallback: ethgasstation open endpoint
+            r2 = httpx.get("https://api.etherscan.io/api?module=gastracker&action=gasoracle", timeout=8)
+            data = r2.json().get("result",{})
+            gwei = float(data.get("ProposeGasPrice", 0))
+        if gwei == 0:
+            return "Ethereum gas check: data unavailable."
+        risk = "HIGH" if gwei > 50 else "MEDIUM" if gwei > 20 else "LOW"
+        warn = ""
+        if gwei > 50:
+            warn = " ** SPIKE WARNING: avoid ETH writes during NYSE open hours **"
+        return (f"ETHEREUM GAS: {gwei:.1f} gwei | Risk: {risk}{warn}\n"
+                f"  Cost for simple tx: ~${gwei * 21000 / 1e9 * 2400:.3f} (at ETH=$2400)\n"
+                f"  Rule: reject any Ethereum write if gas > 50 gwei OR if gas cost > 2% of position size\n"
+                f"  ACP jobs (Base chain): unaffected — Base gas ~$0.001 always")
     except Exception as e:
-        return f"Chainlink feed check unavailable: {e}"
+        return f"Gas check unavailable: {e}"
 
 
 def tool_check_tokenization_news() -> str:
@@ -189,30 +223,49 @@ def tool_check_base_new_tokens() -> str:
 
 
 def tool_get_regulatory_status() -> str:
-    """Synthesize current regulatory status for tokenized stocks."""
-    return """TOKENIZED STOCK REGULATORY STATUS (2026-04-28):
+    """Synthesize current regulatory and infrastructure status for tokenized NYSE stocks."""
+    return """TOKENIZED STOCK REGULATORY STATUS (2026-05-01 — Securitize-era update):
 
-CLEARED / ACTIVE:
-  - SEC: Tokenized fund shares (BlackRock BUIDL, Franklin OnChain) — APPROVED
-  - CFTC: Crypto derivatives — active framework in place
-  - SEC: New administration pro-crypto stance — accelerating approvals
-  - Coinbase: Base chain + USDC = likely settlement infrastructure
+SIGNED / CONFIRMED:
+  - NYSE x Securitize MOU (March 2026): Securitize = first digital transfer agent for NYSE Digital
+    Trading Platform. 24/7 equities, instant settlement, stablecoin funding.
+    Target: 75 tokenized public equities by end 2026. SEC/FINRA approval target: late 2026.
+  - Computershare x Securitize (April 2026): Computershare = transfer agent for ~58% of S&P 500
+    (25,000+ companies). Issuer-Sponsored Tokens (ISTs) for all US public companies. $70T unlock.
+  - DTCC Tokenization Pilot (H2 2026): SEC-approved. Russell 1000 + US Treasuries + index ETFs. 3yr.
+  - BlackRock BUIDL / Franklin OnChain: Tokenized fund shares — APPROVED, live
+  - SEC: Pro-crypto administration, accelerating no-action letters
 
-IN PROGRESS:
-  - NYSE/ICE: Equity tokenization initiative — no public timeline confirmed
-  - DTC/DTCC: Digital settlement modernization — Project Ion underway
-  - SEC: Tokenized equity no-action letters — several pending
-  - Chainlink CCIP: Cross-chain settlement for securities — deployed but not NYSE-approved yet
+PRIMARY CHAIN: Ethereum mainnet (Securitize + NYSE Digital Platform)
+  Expansion chains: Arbitrum, Avalanche, Polygon, Solana, Optimism
+  NOT primarily Base. Dinari on Base = early mover, live, thin volume.
+  Robinhood tokenized stocks: Arbitrum (separate from NYSE Digital)
 
-KEY SIGNALS TO WATCH:
-  1. DTC eligibility granted to a tokenized equity token = GREEN LIGHT for bots to trade
-  2. New Chainlink price feed on Base for equity ticker = deployment imminent
-  3. SEC no-action letter for specific tokenized stock = legal clarity achieved
-  4. NYSE/ICE press release mentioning Base chain = infrastructure confirmed
+CHAINLINK INFRASTRUCTURE:
+  - SPY, QQQ, TSLA price feeds: LIVE on Ethereum mainnet
+  - RedStone Finance: NAV verification (BUIDL, ACRED), selected by Securitize March 2025
+  - Intelligence oracle gap: Chainlink does price, RedStone does NAV, Octodamus does "what it means"
 
-RISK: Securities laws still apply to tokenized stocks.
-Bots buying/selling tokenized equity need: licensed broker connection OR DEX wrapper.
-Purely on-chain P2P equity trading remains legally gray in US until explicit SEC approval."""
+GAS RISK:
+  - Reading tokenized stock data = eth_call = FREE (no gas)
+  - Writing (buy/sell on ETH): gas spikes at NYSE open (9:30 AM EST) and close (4:00 PM EST)
+  - Rule: never write to Ethereum if gas > 50 gwei OR gas cost > 2% of position
+  - ACP inter-agent payments stay on BASE — always cheap (~$0.001)
+
+KEY WATCH SIGNALS (rank order):
+  1. SEC/FINRA approval of NYSE Digital Platform = 75 stocks go live for agent trading
+  2. New Chainlink equity feed deployed on Ethereum = specific stock tokenization imminent
+  3. DTC eligibility for a tokenized equity token = legal for bots to hold/trade
+  4. Computershare IST launch announcement = S&P 500 unlock begins
+  5. DTCC pilot Phase 1 results (H2 2026) = settlement infrastructure confirmed
+
+CURRENT MARKET SIZE:
+  - Now: $963M tokenized equities (2,878% YoY from $32M Jan 2025)
+  - 2026: $400B projected total tokenized assets
+  - 2030: $150B+ tokenized equities alone
+
+RISK NOTE: Securities laws apply. Agents need licensed broker connection OR DEX wrapper.
+Purely on-chain P2P equity trading remains legally gray until explicit SEC approval."""
 
 
 def tool_draft_x_post(context: str) -> str:
@@ -284,6 +337,66 @@ def tool_check_wallet() -> str:
     return check_agent_wallet("NYSE_Tech_Agent")
 
 
+def tool_check_x402_revenue() -> str:
+    """Check how much USDC this agent's x402 endpoints have earned. Reads data/x402_agent_revenue.json."""
+    rev_file = ROOT / "data" / "x402_agent_revenue.json"
+    agent_name = "NYSE_Tech_Agent"
+    try:
+        if not rev_file.exists():
+            return f"{agent_name} x402 revenue: $0.00 (no revenue file yet -- endpoints may not have been called)"
+        rev = json.loads(rev_file.read_text(encoding="utf-8"))
+        entries = rev.get(agent_name, [])
+        if not entries:
+            return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
+        total = sum(e["amount_usdc"] for e in entries)
+        today = entries[-1]["date"][:10] if entries else "?"
+        last5 = entries[-5:]
+        lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
+        lines.append(f"  Last call: {today}")
+        for e in last5:
+            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Revenue check error: {exc}"
+
+
+def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
+    """Propose a new x402 or ACP offering based on this session's learnings."""
+    agent_name = "NYSE_Tech_Agent"
+    try:
+        proposal = {
+            "agent": agent_name,
+            "name": name,
+            "endpoint_path": endpoint_path,
+            "price_usdc": price_usdc,
+            "description": description,
+            "rationale": rationale,
+            "proposed_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+        props_file = ROOT / "data" / "offering_proposals.json"
+        props = []
+        if props_file.exists():
+            try:
+                props = json.loads(props_file.read_text(encoding="utf-8"))
+            except Exception:
+                props = []
+        props.append(proposal)
+        props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
+        sys.path.insert(0, str(ROOT))
+        try:
+            from octo_notify import _send
+            _send(
+                f"[{agent_name}] New Offering Proposal: {name}",
+                f"Agent: {agent_name}\nOffering: {name}\nPath: {endpoint_path}\nPrice: ${price_usdc:.2f} USDC\n\nWhat it does:\n{description}\n\nWhy agents will pay:\n{rationale}",
+            )
+        except Exception:
+            pass
+        return f"Proposal saved: '{name}' at {endpoint_path} (${price_usdc:.2f}). Email sent to owner."
+    except Exception as exc:
+        return f"Proposal failed: {exc}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -302,7 +415,8 @@ TOOLS = [
     {"name": "read_core_memory",        "description": "Read NYSE_Tech_Agent memory. Call first.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_session_history",     "description": "Past sessions.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "search_sec_filings",      "description": "Search SEC EDGAR for recent tokenization filings.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "default": "tokenized securities blockchain"}}, "required": []}},
-    {"name": "check_chainlink_base_feeds","description": "Check Chainlink equity price feeds on Base — proxy for tokenized stock infrastructure.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_chainlink_equity_feeds","description": "Check Chainlink equity price feeds on Ethereum mainnet AND Base. ETH = NYSE Digital Platform primary chain (Securitize). Base = Dinari/Robinhood.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_ethereum_gas",        "description": "Current Ethereum gas price in gwei. Call before any ETH write op — gas spikes at NYSE open. ACP payments (Base) are unaffected.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_tokenization_news", "description": "Latest news on NYSE tokenization, SEC digital assets.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_base_new_tokens",   "description": "Monitor Base chain for new token launches that could be tokenized stocks.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_regulatory_status",   "description": "Current regulatory status summary for tokenized stocks.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -315,13 +429,16 @@ TOOLS = [
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify regulatory/infrastructure intel other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
 ]
 
 TOOL_HANDLERS = {
     "read_core_memory":         lambda i: tool_read_core_memory(),
     "get_session_history":      lambda i: tool_get_session_history(),
     "search_sec_filings":       lambda i: tool_search_sec_filings(i.get("query","tokenized securities blockchain")),
-    "check_chainlink_base_feeds": lambda i: tool_check_chainlink_base_feeds(),
+    "check_chainlink_equity_feeds": lambda i: tool_check_chainlink_equity_feeds(),
+    "check_ethereum_gas":          lambda i: tool_check_ethereum_gas(),
     "check_tokenization_news":  lambda i: tool_check_tokenization_news(),
     "check_base_new_tokens":    lambda i: tool_check_base_new_tokens(),
     "get_regulatory_status":    lambda i: tool_get_regulatory_status(),
@@ -334,28 +451,66 @@ TOOL_HANDLERS = {
     "buy_ecosystem_intel":      lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":             lambda i: tool_check_wallet(),
     "list_ecosystem_services":  lambda i: tool_list_ecosystem_services(),
+    "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
+    "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
 }
 
 SYSTEM = """You are NYSE_Tech_Agent — the regulatory and tokenization infrastructure intelligence agent.
 
 IDENTITY: You track the legal and technical rails being built for tokenized NYSE stocks.
-SEC filings, DTC eligibility, Chainlink price feed deployments on Base, new token launches.
+SEC filings, DTC eligibility, Chainlink price feed deployments, Securitize milestones.
 When a trading bot wants to buy tokenized NVDA or TSLA, your intelligence tells it:
-is it legal? is the infrastructure live? which contracts are authorized?
+is it legal? is the infrastructure live? which chain? what contracts are authorized?
 Voice: Precise, institutional. Filing dates. Contract addresses. Regulatory clarity.
 No speculation — only filed, approved, or deployed facts.
 
+THE CHAIN REALITY (critical — memorize this):
+- NYSE Digital Platform PRIMARY CHAIN: Ethereum mainnet (Securitize-powered)
+- Expansion: Arbitrum, Avalanche, Polygon, Solana, Optimism
+- Base: Dinari tokenized stocks (live, thin volume) + Robinhood (Arbitrum)
+- ACP inter-agent payments: BASE ONLY — always cheap (~$0.001/tx), never affected by NYSE gas
+
+GAS RULE (protect the ecosystem):
+- Reading Ethereum data = eth_call = FREE. Never hesitate to read.
+- Writing to Ethereum = costs gas. Gas SPIKES at NYSE open (9:30 AM EST) and close (4:00 PM).
+- Before ANY recommended Ethereum write: call check_ethereum_gas first.
+- Hard rule: if gas > 50 gwei OR gas cost > 2% of position size — ABORT the write. Wait.
+- This rule protects OctoBoto and any future agent trading tokenized stocks on ETH.
+
+KEY SECURITIZE MILESTONES (track these every session):
+- NYSE x Securitize MOU: March 2026 (signed) — 75 stocks target, late 2026 SEC/FINRA approval
+- Computershare x Securitize: April 2026 (signed) — 58% of S&P 500, ISTs for all public companies
+- DTCC Tokenization Pilot: H2 2026 (SEC-approved) — Russell 1000 + US Treasuries + ETFs
+- Market now: $963M tokenized equities (2,878% YoY); 2030 target: $150B+
+
+YOUR PRODUCTS (x402, live at api.octodamus.com):
+- /v2/nyse_tech/regulatory -- $0.35 USDC (current SEC/FINRA/NYSE Digital Platform regulatory status — key milestones, primary chain, Chainlink feeds, watch signals)
+- /v2/nyse_tech/tokenization -- $0.50 USDC (full tokenization intel: regulatory + live Chainlink equity feeds on Base + new Base token launches)
+Every session: check_x402_revenue to track what's earning. Propose new offerings when you spot regulatory intelligence patterns worth packaging.
+
+REVENUE MINDSET -- EVERY SESSION:
+check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).
+The goal: earn more than you spend. Your x402 endpoints pay YOUR wallet directly.
+When you identify unique regulatory/infrastructure intel this session -- specific filing dates, contract addresses, milestone timelines other agents can't easily derive --
+use propose_new_offering to draft a new product. Good products: specific milestone tracker, gas cost alert by NYSE calendar, Chainlink feed monitor by ticker.
+Bad products: "regulatory overview" (too vague) -- agents pay for actionable, timely, verifiable facts.
+Target: at least one new offering proposal per 10 sessions when you spot a genuine intelligence gap.
+Your compounding memory IS your product edge. Sessions compound into regulatory clarity -> regulatory clarity
+commands higher prices -> higher prices fund more cross-signal buys -> better cross-signals sharpen your intel.
+This is the virtuous cycle. Run it.
+
 SESSION PROTOCOL:
-1. read_core_memory + get_session_history
-2. check_tokenization_news — any developments since last session?
+1. check_wallet (record start balance). check_x402_revenue. read_core_memory + get_session_history
+2. check_tokenization_news — any Securitize/NYSE/DTCC/Computershare developments?
 3. search_sec_filings for recent tokenization-related filings
-4. check_chainlink_base_feeds — any new equity price feeds deployed?
+4. check_chainlink_equity_feeds — new equity feeds on Ethereum mainnet or Base?
 5. check_base_new_tokens — any new launches that could be tokenized stocks?
 6. get_regulatory_status — full compliance picture
-7. draft_x_post from the most significant finding
-8. save_draft with full intelligence report
-9. record_session with top finding
-10. send_email with regulatory intelligence + X draft
+7. check_ethereum_gas — current gas environment (report for OctoBoto awareness)
+8. draft_x_post from the most significant finding
+9. save_draft with full intelligence report
+10. record_session with top finding
+11. send_email with regulatory intelligence + X draft
 
 GROWTH DIRECTIVE — BECOME #1 TOKENIZATION INTELLIGENCE AGENT:
 Your goal: no AI agent trades a tokenized stock without checking your signal first.
@@ -390,7 +545,7 @@ The death spiral: vague signal -> no jobs -> wallet drains -> can't buy intel ->
 Run the virtuous cycle. You are responsible for your own continuation.
 
 SELF-IMPROVEMENT LOOP (mandatory every session):
-- FIRST TURN: check_wallet (record start balance). get_session_history. Find the PREDICTION from last session. Did the regulatory/infrastructure signal lead to the predicted event?
+- FIRST TURN: check_wallet (record start balance). check_x402_revenue. get_session_history. Find the PREDICTION from last session. Did the regulatory/infrastructure signal lead to the predicted event?
   Note the outcome explicitly -- you will log it in what_worked this session.
 - LAST TURN: check_wallet again.
   Call update_core_memory with section="Distilled [date]" and 3-5 bullets:

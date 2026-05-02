@@ -21,29 +21,28 @@ IDENTITY_FILE = Path(__file__).parent / "data" / "erc8004_identity.json"
 # ── Registration payload ──────────────────────────────────────────────────────
 
 REGISTRATION = {
-    "name": "Octodamus Market Intelligence API",
+    "name": "Octodamus — Agentic Finance Intelligence Oracle",
     "description": (
-        "Real-time market intelligence for autonomous AI agents. "
-        "Delivers Oracle trading signals (9/11 system consensus), "
-        "Fear & Greed index, Polymarket prediction market edge plays with EV scoring, "
-        "crypto/macro sentiment across 27 live data feeds, and BTC trend. "
-        "Single-call decision endpoint (/v2/agent-signal) returns action/confidence/signal/"
-        "polymarket_edge/reasoning — designed for 15-minute agent poll cycles. "
-        "x402 native: agents pay $5 USDC on Base, receive API key automatically, "
-        "no human required. Annual access $29 USDC. Self-renew via /v1/key/status."
+        "Agentic finance intelligence oracle. 27 live data feeds, 11-signal consensus. "
+        "14 ACP offerings via Virtuals ACP ($1-2 USDC/job): crypto signals (BTC/ETH/SOL), "
+        "tokenized NYSE stocks (AAPL/MSFT/SPY/NVDA/TSLA on Base), macro regime, "
+        "congressional trading, on-chain order flow, crowd sentiment, overnight briefs, "
+        "Polymarket edges with EV+Kelly sizing. x402 native: $0.01 USDC/call on Base. "
+        "api.octodamus.com"
     ),
     "capabilities": [
         "market-intelligence",
         "crypto-signals",
         "prediction-markets",
         "polymarket",
-        "fear-greed",
         "macro-data",
         "trading-signals",
-        "bitcoin",
         "sentiment-analysis",
         "oracle",
-        "defi",
+        "tokenized-equities",
+        "agentic-finance",
+        "x402",
+        "acp-offerings",
     ],
     "services": [
         {
@@ -168,7 +167,7 @@ def _save_and_print(data: dict):
 
     print()
     print("=" * 60)
-    print("REGISTRATION SUCCESSFUL ✓")
+    print("REGISTRATION SUCCESSFUL")
     print()
     print(f"  globalId:   {store.get('globalId')}")
     print(f"  agentId:    {store.get('agentId')}")
@@ -200,7 +199,7 @@ def _save_and_print(data: dict):
         "full_response": data,
     }
     IDENTITY_FILE.write_text(json.dumps(identity, indent=2))
-    print(f"Saved ✓")
+    print("Saved OK")
     print("=" * 60)
     print()
     print("NEXT: Paste the agentId here so the API server domain verification gets updated.")
@@ -315,9 +314,213 @@ def register_a2a():
     print("Then run again with the same tx hash.")
 
 
+def _sign_eip3009(franklin_addr: str, franklin_key: str, pay_to: str,
+                  amount_micro: int, usdc_addr: str, chain_id: int = 8453) -> dict:
+    """
+    Sign a USDC EIP-3009 transferWithAuthorization.
+    Returns the authorization dict + hex signature (no on-chain tx needed).
+    The merchant calls transferWithAuthorization on-chain with this proof.
+    """
+    import os as _os, time as _time
+    from eth_account import Account
+
+    nonce_hex = "0x" + _os.urandom(32).hex()
+    valid_before = int(_time.time()) + 300  # 5-min window
+
+    domain = {
+        "name":              "USD Coin",
+        "version":           "2",
+        "chainId":           chain_id,
+        "verifyingContract": usdc_addr,
+    }
+    types = {
+        "TransferWithAuthorization": [
+            {"name": "from",        "type": "address"},
+            {"name": "to",          "type": "address"},
+            {"name": "value",       "type": "uint256"},
+            {"name": "validAfter",  "type": "uint256"},
+            {"name": "validBefore", "type": "uint256"},
+            {"name": "nonce",       "type": "bytes32"},
+        ]
+    }
+    message = {
+        "from":        franklin_addr,
+        "to":          pay_to,
+        "value":       amount_micro,
+        "validAfter":  0,
+        "validBefore": valid_before,
+        "nonce":       bytes.fromhex(nonce_hex[2:]),
+    }
+
+    signed = Account.sign_typed_data(
+        private_key=franklin_key,
+        domain_data=domain,
+        message_types=types,
+        message_data=message,
+    )
+    sig = signed.signature.hex()
+    if not sig.startswith("0x"):
+        sig = "0x" + sig
+
+    return {
+        "authorization": {
+            "from":        franklin_addr,
+            "to":          pay_to,
+            "value":       str(amount_micro),
+            "validAfter":  "0",
+            "validBefore": str(valid_before),
+            "nonce":       nonce_hex,
+        },
+        "signature": sig,
+        "from": franklin_addr,
+    }
+
+
+def update_profile():
+    """
+    Update an existing ERC-8004 registration via PUT /api/register.
+    Uses EIP-3009 transferWithAuthorization (gas-less) from Franklin wallet.
+    x402 v2 exact scheme: sign the auth, merchant submits on-chain.
+    """
+    import base64 as _b64
+    from web3 import Web3
+
+    _sf = Path(__file__).parent / ".octo_secrets"
+    _secrets = json.loads(_sf.read_text(encoding="utf-8")).get("secrets", {})
+    franklin_addr = Web3.to_checksum_address(_secrets["FRANKLIN_WALLET_ADDRESS"])
+    franklin_key  = _secrets["FRANKLIN_PRIVATE_KEY"]
+
+    try:
+        identity = json.loads(IDENTITY_FILE.read_text(encoding="utf-8"))
+        agent_id = (
+            identity.get("erc8004_identity", {}).get("agentId")
+            or identity.get("agentId")
+        )
+    except Exception:
+        agent_id = None
+
+    if not agent_id:
+        print("ERROR: No agentId found in data/erc8004_identity.json. Register first.")
+        return
+
+    payload = {**REGISTRATION, "agentId": agent_id}
+
+    # Step 1: get fresh 402
+    print(f"Fetching payment session (agentId={agent_id})...")
+    r = httpx.put("https://agentarena.site/api/register", json=payload, timeout=30)
+    print(f"  Status: {r.status_code}")
+
+    if r.status_code == 200:
+        print("Updated without payment. Done.")
+        _save_and_print(r.json())
+        return
+
+    if r.status_code != 402:
+        print(f"  Unexpected: {r.status_code} — {r.text[:300]}")
+        return
+
+    body = r.json()
+    accepts = body.get("accepts", [])
+    pay_to, amount_micro, network, usdc_addr = None, 50000, "eip155:8453", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    for opt in accepts:
+        if opt.get("maxAmountRequired"):
+            pay_to       = opt["payTo"]
+            amount_micro = int(opt["maxAmountRequired"])
+            network      = opt.get("network", network)
+            usdc_addr    = opt.get("asset", usdc_addr)
+            break
+
+    if not pay_to:
+        print(f"  ERROR: No payTo in 402 response")
+        return
+
+    print(f"  Amount: {amount_micro} USDC micro-units (${amount_micro/1e6:.4f}) to {pay_to}")
+
+    # Step 2: sign EIP-3009 authorization (no on-chain tx)
+    print(f"  Signing EIP-3009 authorization from Franklin ({franklin_addr[:10]}...)...")
+    proof_payload = _sign_eip3009(
+        franklin_addr=franklin_addr,
+        franklin_key=franklin_key,
+        pay_to=Web3.to_checksum_address(pay_to),
+        amount_micro=amount_micro,
+        usdc_addr=Web3.to_checksum_address(usdc_addr),
+        chain_id=8453,
+    )
+    print(f"  Signature: {proof_payload['signature'][:20]}...")
+
+    # Step 3: build x402 v2 proof and PUT
+    proof_obj = {
+        "x402Version": 2,
+        "scheme":      "exact",
+        "network":     network,
+        "payload":     proof_payload,
+    }
+    proof_b64 = _b64.b64encode(
+        json.dumps(proof_obj, separators=(",", ":")).encode()
+    ).decode()
+
+    print("  Sending PUT with EIP-3009 proof...")
+    r2 = httpx.put(
+        "https://agentarena.site/api/register",
+        json=payload,
+        headers={"X-Payment": proof_b64},
+        timeout=45,
+    )
+    print(f"  Status: {r2.status_code}  Body: {r2.text[:400]}")
+
+    if r2.status_code == 200:
+        print()
+        print("Profile updated successfully.")
+        _save_and_print(r2.json())
+        return
+
+    # Fallback: try raw JSON proof
+    print("  Trying raw JSON proof...")
+    r3 = httpx.put(
+        "https://agentarena.site/api/register",
+        json=payload,
+        headers={"X-Payment": json.dumps(proof_obj, separators=(",", ":"))},
+        timeout=45,
+    )
+    print(f"  Status: {r3.status_code}  Body: {r3.text[:400]}")
+    if r3.status_code == 200:
+        print("Profile updated successfully.")
+        _save_and_print(r3.json())
+        return
+
+    print()
+    print("Both EIP-3009 formats failed — AgentArena may have a server-side issue.")
+    print("The $0.05 from the previous on-chain tx went to their wallet (already confirmed).")
+    print("Try again later or contact agentarena.site.")
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "a2a":
         register_a2a()
+    elif len(sys.argv) > 1 and sys.argv[1] == "update":
+        update_profile()
+    elif len(sys.argv) > 2 and sys.argv[1] == "retry":
+        # Retry PUT with a previously confirmed tx hash
+        import base64 as _b64
+        _sf = Path(__file__).parent / ".octo_secrets"
+        _secrets = json.loads(_sf.read_text(encoding="utf-8")).get("secrets", {})
+        _id = json.loads(IDENTITY_FILE.read_text(encoding="utf-8"))
+        _agent_id = _id.get("erc8004_identity", {}).get("agentId") or _id.get("agentId")
+        _payload = {**REGISTRATION, "agentId": _agent_id}
+        _tx = sys.argv[2]
+        _proof = {
+            "x402Version": 2, "scheme": "exact", "network": "eip155:8453",
+            "payload": {"transaction": _tx},
+        }
+        _proof_b64 = _b64.b64encode(json.dumps(_proof, separators=(",", ":")).encode()).decode()
+        for _fmt, _val in [("base64", _proof_b64), ("json", json.dumps(_proof, separators=(",", ":"))), ("raw", _tx)]:
+            print(f"Trying {_fmt}...")
+            _r = httpx.put("https://agentarena.site/api/register", json=_payload,
+                           headers={"X-Payment": _val}, timeout=30)
+            print(f"  {_r.status_code}: {_r.text[:300]}")
+            if _r.status_code == 200:
+                _save_and_print(_r.json())
+                break
     else:
         register_basic()

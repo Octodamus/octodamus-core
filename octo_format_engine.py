@@ -432,7 +432,7 @@ def generate_format_post(fmt: str = None, context: str = "", live_data: dict = N
     try:
         text = _fmt_generate(prompt, max_tokens=120)
 
-        if text.upper() == "SKIP" or len(text) < 20:
+        if text.strip().upper().startswith("SKIP") or len(text) < 20:
             print(f"[FormatEngine] Claude returned SKIP for {fmt}.")
             return None
 
@@ -476,7 +476,21 @@ def generate_qrt(headline: str, source: str = "", tweet_url: str = "", live_data
     try:
         text = _fmt_generate(prompt, max_tokens=100)
 
-        if text.upper() == "SKIP" or len(text) < 15:
+        t = text.strip()
+        # Catch all SKIP variants and reasoning-block responses before they reach the queue
+        _skip = (
+            t.upper().startswith("SKIP")
+            or "SKIP" in t.upper()[:30]
+            or t.startswith("(")           # parenthetical reasoning dump
+            or t.startswith("{")           # JSON reasoning dump
+            or any(p in t.lower() for p in [
+                "article is about", "no connection to", "asset assignment",
+                "no valid angle", "headline mentions", "not relevant",
+                "i don't have", "i cannot", "i can't",
+            ])
+            or len(t) < 15
+        )
+        if _skip:
             print(f"[FormatEngine] QRT SKIP for: {headline[:60]}")
             return None
 
@@ -573,8 +587,8 @@ def scan_for_breaking_news() -> list[dict]:
             > cutoff}
 
     queries = ["bitcoin OR crypto market", "federal reserve interest rate",
-               "stock market breaking", "NVIDIA OR Tesla OR Apple earnings",
-               "Trump tariff OR sanction", "inflation CPI"]
+               "stock market breaking", "NVDA OR TSLA OR AAPL OR MSFT earnings",
+               "Trump tariff OR sanction", "inflation CPI OR jobs report"]
 
     results = []
     try:
@@ -599,6 +613,18 @@ def scan_for_breaking_news() -> list[dict]:
                 source = article.get("source", {}).get("name", "")
                 url    = article.get("url", "")
                 if not title or title in seen:
+                    continue
+                # Require at least one tracked asset/keyword in the headline itself
+                tl = title.lower()
+                _tracked = [
+                    "bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto",
+                    "fed", "federal reserve", "rate", "inflation", "cpi", "tariff",
+                    "nvidia", "nvda", "tesla", "tsla", "apple", "aapl", "microsoft",
+                    "msft", "trump", "nasdaq", "s&p", "dow", "recession", "ipo",
+                    "coinbase", "blackrock", "jpmorgan", "binance",
+                ]
+                if not any(kw in tl for kw in _tracked):
+                    print(f"[FormatEngine] QRT skip — no tracked asset in headline: {title[:60]}")
                     continue
                 score = _score_headline(title)
                 if score >= _NEWS_SCORE_THRESHOLD:

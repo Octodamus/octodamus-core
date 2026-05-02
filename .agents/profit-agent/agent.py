@@ -218,6 +218,11 @@ def tool_get_polymarket_edges() -> str:
             for m in markets[:12]:
                 q      = m.get("question", "")[:75]
                 prices = m.get("outcomePrices", [])
+                if isinstance(prices, str):
+                    try:
+                        import json as _j; prices = _j.loads(prices)
+                    except Exception:
+                        prices = []
                 yes    = prices[0] if prices else "?"
                 vol    = m.get("volume", 0)
                 cid    = m.get("conditionId", "")
@@ -232,7 +237,7 @@ def tool_get_polymarket_edges() -> str:
                 except Exception:
                     pass
                 lines.append(
-                    f"  conditionId={cid[:20]}... | YES={yes} | Vol=${float(vol or 0):,.0f}"
+                    f"  conditionId={cid} | YES={yes} | Vol=${float(vol or 0):,.0f}"
                     f"{hours_left} | exp={exp} | {q}"
                 )
             lines.append("\nUse paper_trade_polymarket(condition_id, side, size_usdc, price) to paper trade.")
@@ -382,8 +387,14 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
         return "BLOCKED: side must be YES or NO."
     if not (0.01 <= price <= 0.99):
         return "BLOCKED: price must be 0.01-0.99."
-    if not (0.01 <= price <= 0.99):
-        return "BLOCKED: price must be between 0.01 and 0.99."
+
+    # Sports hard-block — market_slug often contains the question; also checked at scan time
+    if _is_sports_market(market_slug):
+        return (
+            f"HARD BLOCKED: '{market_slug[:60]}' looks like a sports market. "
+            "Ben only trades markets where he has a data edge: crypto prices, macro, geopolitical binaries. "
+            "No sports. Skip."
+        )
 
     s = _secrets()
     token_id   = s.get("LIMITLESS_API_KEY", "")
@@ -561,7 +572,87 @@ def tool_place_limitless_bet(market_slug: str, side: str, size_usdc: float, pric
 
 
 _BEN_POLY_TRADES = Path(__file__).parent / "polymarket_trades.json"
-_BEN_MIN_POLY_EXPIRY_H = 24   # same rule as Limitless — no same-day markets
+_BEN_MIN_POLY_EXPIRY_H = 24   # Polymarket only: markets resolve over days, need >24h runway
+
+# ── Sports hard-block ──────────────────────────────────────────────────────────
+# Ben has zero data advantage on sports outcomes. Every sports bet is pure noise.
+_SPORTS_KEYWORDS = frozenset([
+    "tennis", "grand prix", "ipl", "premier league",
+    "super kings", "punjab kings", "royals", "twins", "yankees", "dodgers",
+    "lakers", "celtics", "warriors", "nuggets", "heat", "knicks",
+    "nfl", "nba", "mlb", "nhl", "epl", "mls",
+    "champions league", "world cup", "copa ", "bucharest open", "roland garros",
+    "wimbledon", "roland-garros", "atp ", "wta ", "itf ",
+    "cricket", "rugby", "golf", "formula 1", "f1 ",
+    "super bowl", "playoffs", "championship", "league cup",
+])
+
+def _is_sports_market(question: str) -> bool:
+    q = question.lower()
+    for kw in _SPORTS_KEYWORDS:
+        if kw in q:
+            return True
+    # Pattern: "Firstname Lastname vs Firstname Lastname" = person vs person = sports match
+    import re as _re
+    if _re.search(r'[A-Z][a-z]+ [A-Z][a-z]+\s+vs\.?\s+[A-Z][a-z]+ [A-Z][a-z]+', question):
+        return True
+    return False
+
+
+# ── Theme cooldown ─────────────────────────────────────────────────────────────
+_THEME_COOLDOWN_DAYS = 7
+_THEME_STOP_WORDS = frozenset([
+    "will", "the", "a", "an", "by", "in", "at", "of", "to", "for", "on",
+    "or", "and", "is", "be", "hit", "reach", "end", "april", "may", "june",
+    "july", "august", "march", "2026", "2025", "2027", "not", "no", "yes",
+])
+
+def _theme_keywords(question: str) -> set:
+    import re as _re
+    words = _re.findall(r"\b[a-zA-Z]{4,}\b", question.lower())
+    return {w for w in words if w not in _THEME_STOP_WORDS}
+
+def _check_theme_cooldown(question: str) -> str | None:
+    """
+    Return a BLOCKED string if this question overlaps with a recent loss in
+    Ben's own trade log. 2+ shared keywords = same theme = cooldown applies.
+    """
+    if not _BEN_POLY_TRADES.exists():
+        return None
+    import json as _jc
+    from datetime import datetime, timezone, timedelta
+    try:
+        trades = _jc.loads(_BEN_POLY_TRADES.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_THEME_COOLDOWN_DAYS)
+    new_kw = _theme_keywords(question)
+    for t in trades:
+        # Only check confirmed losses
+        pnl = t.get("pnl", None)
+        outcome = t.get("outcome", "")
+        if pnl is None:
+            if outcome not in ("loss", "LOSS"):
+                continue
+        elif float(pnl) >= 0:
+            continue
+        placed = t.get("placed_at", "")
+        try:
+            dt = datetime.strptime(placed, "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
+            if dt < cutoff:
+                continue
+        except Exception:
+            continue
+        old_kw  = _theme_keywords(t.get("question", ""))
+        overlap = new_kw & old_kw
+        if len(overlap) >= 2:
+            return (
+                f"THEME COOLDOWN ({_THEME_COOLDOWN_DAYS}d): shares keywords {sorted(overlap)} "
+                f"with recent loss -- '{t.get('question','')[:60]}'. "
+                f"Ben's rule: no re-entry on the same thesis within {_THEME_COOLDOWN_DAYS} days of a loss. "
+                f"Find a different market or pass."
+            )
+    return None
 
 
 def tool_paper_trade_polymarket(
@@ -596,6 +687,22 @@ def tool_paper_trade_polymarket(
     if not condition_id or len(condition_id) < 10:
         return "BLOCKED: provide a valid conditionId from get_polymarket_edges."
 
+    # ── Sports hard-block ──────────────────────────────────────────────────────
+    if market_question and _is_sports_market(market_question):
+        return (
+            f"HARD BLOCKED: '{market_question[:60]}' is a sports market. "
+            "Ben has zero data advantage on sports outcomes -- no signal, no edge, pure noise. "
+            "Categories with Ben's edge: crypto prices, macro events (Fed/CPI/jobs), "
+            "geopolitical binary events backed by Octodamus signal. "
+            "Skip this market entirely."
+        )
+
+    # ── Theme cooldown ─────────────────────────────────────────────────────────
+    if market_question:
+        _cooldown_block = _check_theme_cooldown(market_question)
+        if _cooldown_block:
+            return _cooldown_block
+
     import httpx, json as _j, time as _t
     from datetime import datetime, timezone
 
@@ -618,9 +725,8 @@ def tool_paper_trade_polymarket(
                     hours_left = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 3600
                     if hours_left < _BEN_MIN_POLY_EXPIRY_H:
                         return (
-                            f"HARD BLOCKED: market expires in {hours_left:.1f}h "
-                            f"(minimum {_BEN_MIN_POLY_EXPIRY_H}h required). "
-                            "Same-day markets lock before execution. Pass."
+                            f"HARD BLOCKED: Polymarket expires in {hours_left:.1f}h "
+                            f"(minimum {_BEN_MIN_POLY_EXPIRY_H}h required for Polymarket — use scan_limitless for short-duration trades). Pass."
                         )
                 except Exception:
                     pass
@@ -2269,6 +2375,31 @@ HARD RULES:
 - Save everything with save_draft
 - Grok X sentiment is contrarian context -- high crowd bullishness often = top
 - When in doubt, do NOT trade. Protect the wallet.
+
+MARKET EDGE CLASSIFICATION (enforced in code — violations are auto-blocked):
+
+HAVE EDGE -- trade these:
+  - Crypto prices (BTC/ETH/SOL milestones, ATH, above/below $X): Octodamus + Grok + on-chain data
+  - Macro binary events (Fed rate decision, CPI beat/miss, NFP, GDP): hard data, predictable
+  - Geopolitical directional calls (ceasefire, election outcome) ONLY when Octodamus signal exists
+  - Tokenized asset prices (dTSLA, dAAPL on Base when volume exists): same framework as crypto
+
+NO EDGE -- HARD BLOCKED, system refuses:
+  - Sports of any kind: tennis, cricket, NFL, NBA, MLB, NHL, EPL, Champions League, F1, golf,
+    rugby, Grand Prix, IPL, Super Bowl, playoffs, World Cup, Copa, Roland Garros, Wimbledon,
+    ATP/WTA/ITF, player-vs-player matches (Name vs Name format)
+  - Entertainment: Oscars, Emmys, box office, celebrity outcomes
+  - Any market where Octodamus has no signal and no on-chain data exists
+  The code enforces this with _is_sports_market() -- you cannot override it.
+
+THEME COOLDOWN RULE (enforced in code):
+  After any loss, the same market THEME is blocked for 7 days.
+  Theme = the core concept of the trade (e.g., "Iran ceasefire", "BTC above 100k", "Fed cut").
+  Purpose: stop re-entering the same losing thesis before the situation has changed.
+  If you lost on "Iran ceasefire will happen" -- no Iran/ceasefire bets for 7 days.
+  If you lost on "BTC above $95k" -- no BTC milestone bets for 7 days.
+  The code enforces this with _check_theme_cooldown() -- you cannot override it.
+  When blocked: find a DIFFERENT category entirely, or pass the session.
 
 GROWTH DIRECTIVE — ALWAYS SEEKING EDGE, ALWAYS COMPOUNDING:
 You are building toward a wallet that grows every month. Every session is either progress or a lesson.

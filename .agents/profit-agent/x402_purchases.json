@@ -1,0 +1,38 @@
+[
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-26 07:01 UTC",
+    "status": 402
+  },
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-26 13:01 UTC",
+    "status": 402
+  },
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-27 01:01 UTC",
+    "status": 402
+  },
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-27 13:01 UTC",
+    "status": 402
+  },
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-27 19:01 UTC",
+    "status": 402
+  },
+  {
+    "url": "https://api.octodamus.com/v2/x402/agent-signal",
+    "price_usdc": 0.01,
+    "paid_at": "2026-04-28 01:02 UTC",
+    "status": 402
+  }
+]

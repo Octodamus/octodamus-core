@@ -58,6 +58,12 @@ def check_resolution(market: dict) -> dict:
     """
     Determine if a market should be resolved.
     Returns: {"should_resolve": bool, "resolution": "YES"/"NO", "reason": str}
+
+    Pre-expiry thresholds tighten as expiry approaches:
+      >7 days out : 0.99 / 0.01  (only resolve if price is essentially certain)
+      3-7 days out: 0.97 / 0.03  (nearly certain)
+      <3 days out : 0.95 / 0.05  (matches post-expiry threshold)
+      past expiry : 0.95 / 0.05  (RESOLVE_YES/NO_THRESHOLD)
     """
     if not market:
         return {"should_resolve": False, "resolution": None, "reason": "No market data"}
@@ -75,65 +81,60 @@ def check_resolution(market: dict) -> dict:
                 "reason": f"Officially resolved: {outcome}",
             }
 
-    # ── Strategy 2: Price-based resolution past endDate ──────────────
+    # ── Strategy 2: Price-based resolution ───────────────────────────
     end_date_str = market.get("endDate") or market.get("endDateIso")
-    if end_date_str:
-        try:
-            # Parse end date
-            if "T" in str(end_date_str):
-                end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-            else:
-                end_date = datetime.strptime(str(end_date_str)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if not end_date_str:
+        return {"should_resolve": False, "resolution": None, "reason": "No end date"}
 
-            now = datetime.now(timezone.utc)
+    try:
+        if "T" in str(end_date_str):
+            end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+        else:
+            end_date = datetime.strptime(str(end_date_str)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-            # Parse YES price from outcomePrices
-            prices_raw = market.get("outcomePrices", "[]")
-            if isinstance(prices_raw, str):
-                prices = json.loads(prices_raw)
-            else:
-                prices = prices_raw
+        now = datetime.now(timezone.utc)
 
-            yes_price = float(prices[0]) if prices else 0.5
+        prices_raw = market.get("outcomePrices", "[]")
+        prices     = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+        yes_price  = float(prices[0]) if prices else 0.5
 
-            # Past end date + price confirms outcome
-            if now >= end_date:
-                if yes_price >= RESOLVE_YES_THRESHOLD:
-                    return {
-                        "should_resolve": True,
-                        "resolution": "YES",
-                        "reason": f"Past endDate ({end_date_str[:10]}), YES price at {yes_price:.4f}",
-                    }
-                elif yes_price <= RESOLVE_NO_THRESHOLD:
-                    return {
-                        "should_resolve": True,
-                        "resolution": "NO",
-                        "reason": f"Past endDate ({end_date_str[:10]}), YES price at {yes_price:.4f}",
-                    }
-                else:
-                    return {
-                        "should_resolve": False,
-                        "resolution": None,
-                        "reason": f"Past endDate but price inconclusive ({yes_price:.4f})",
-                    }
+        days_left  = (end_date - now).total_seconds() / 86400
 
-            # Not past end date yet — check if price is effectively settled
-            # (e.g. oil already hit $102, price at 0.999)
-            if yes_price >= 0.99:
-                return {
-                    "should_resolve": True,
-                    "resolution": "YES",
-                    "reason": f"Price effectively settled at {yes_price:.4f} (≥0.99)",
-                }
-            elif yes_price <= 0.01:
-                return {
-                    "should_resolve": True,
-                    "resolution": "NO",
-                    "reason": f"Price effectively settled at {yes_price:.4f} (≤0.01)",
-                }
+        # Determine threshold based on proximity to expiry
+        if now >= end_date:
+            hi, lo = RESOLVE_YES_THRESHOLD, RESOLVE_NO_THRESHOLD
+            context = f"past endDate ({end_date_str[:10]})"
+        elif days_left < 3:
+            hi, lo = 0.95, 0.05
+            context = f"{days_left:.1f}d to expiry"
+        elif days_left < 7:
+            hi, lo = 0.97, 0.03
+            context = f"{days_left:.1f}d to expiry"
+        else:
+            hi, lo = 0.99, 0.01
+            context = f"{days_left:.1f}d to expiry"
 
-        except (ValueError, IndexError, TypeError) as e:
-            log.warning(f"Market {market_id}: Date/price parse error: {e}")
+        if yes_price >= hi:
+            return {
+                "should_resolve": True,
+                "resolution": "YES",
+                "reason": f"YES price {yes_price:.4f} >= {hi} ({context})",
+            }
+        elif yes_price <= lo:
+            return {
+                "should_resolve": True,
+                "resolution": "NO",
+                "reason": f"YES price {yes_price:.4f} <= {lo} ({context})",
+            }
+        elif now >= end_date:
+            return {
+                "should_resolve": False,
+                "resolution": None,
+                "reason": f"Past endDate but price inconclusive ({yes_price:.4f})",
+            }
+
+    except (ValueError, IndexError, TypeError) as e:
+        log.warning(f"Market {market_id}: Date/price parse error: {e}")
 
     return {"should_resolve": False, "resolution": None, "reason": "Not yet resolvable"}
 
@@ -185,6 +186,14 @@ def run_autoresolve(dry_run: bool = False) -> list:
             else:
                 log.info(f"  → RESOLVING: {resolution} ({outcome_str}) — {reason}")
                 closed = tracker.close_position(market_id, resolution)
+
+                # Record outcome for calibration learning
+                try:
+                    from octo_boto_calibration import record_outcome
+                    record_outcome(market_id, resolution == "YES")
+                except Exception as _ce:
+                    log.warning(f"  Calibration record_outcome failed: {_ce}")
+
                 for c in closed:
                     pnl = c.get("pnl", 0)
                     pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
@@ -288,6 +297,6 @@ if __name__ == "__main__":
     if results:
         print(f"\n{'Would resolve' if dry_run else 'Resolved'}: {len(results)} position(s)")
         for r in results:
-            print(f"  [{r['market_id']}] {r['question']} → {r['resolution']} ({r['outcome']})")
+            print(f"  [{r['market_id']}] {r['question']} -> {r['resolution']} ({r['outcome']})")
     else:
         print("\nNo positions to resolve.")

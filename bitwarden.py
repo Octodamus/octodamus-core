@@ -66,6 +66,8 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Domain - Cloudflare":          "CLOUDFLARE_API_KEY",
     "AGENT - Octodamus - Payments - Stripe - Products": "STRIPE_PRODUCTS_API_KEY",
     "AGENT - Octodamus - Payments - Stripe - Readonly": "STRIPE_READONLY_API_KEY",
+    "AGENT - Octodamus - Payments - Transak - API Key":     "TRANSAK_API_KEY",
+    "AGENT - Octodamus - Payments - Transak - Webhook":     "TRANSAK_WEBHOOK_SECRET",
     "AGENT - Octodamus - Social - Moltbook":            "MOLTBOOK_API_KEY",
     "AGENT - Octodamus - Data - NewsAPI":               "NEWSAPI_API_KEY",
     "AGENT - Octodamus - OpenRouter":                   "OPENROUTER_API_KEY",
@@ -91,6 +93,9 @@ OCTODAMUS_SECRETS = {
 OCTODAMUS_OPTIONAL_SECRETS = {
     "AGENT - Octodamus - Finance - Bankr":          "BANKR_API_KEY",
     "AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",  # wins if both exist — user keeps this one updated
+    "AGENT - Octodamus - Payments - Whop - API Key":     "WHOP_API_KEY",
+    "AGENT - Octodamus - Payments - Whop - Webhook":     "WHOP_WEBHOOK_SECRET",
+    "AGENT - Octodamus - Payments - Whop - Plan ID":     "WHOP_PLAN_ID",
 }
 
 FRANKLIN_BW_ITEM   = "Franklin Agent_Ben"
@@ -277,6 +282,33 @@ def _load_kalshi_from_bw() -> dict:
     return secrets
 
 
+def _load_wallet_from_bw(item_name: str, address_key: str, privkey_key: str) -> dict:
+    """Generic loader: username=address, password=private key."""
+    secrets = {}
+    try:
+        item  = _get_item(item_name)
+        login = item.get("login", {})
+        address = login.get("username", "").strip()
+        pk      = login.get("password", "").strip()
+        if address:
+            secrets[address_key] = address
+        if pk:
+            secrets[privkey_key] = pk
+    except Exception as e:
+        pass
+    return secrets
+
+
+_AGENT_WALLETS = [
+    ("AGENT - OctoBoto - Wallet",           "OCTOBOTO_WALLET_ADDRESS",        "OCTOBOTO_PRIVATE_KEY"),
+    ("AGENT - NYSE_MacroMind - Wallet",     "NYSE_MACROMIND_ADDRESS",         "NYSE_MACROMIND_PRIVATE_KEY"),
+    ("AGENT - NYSE_StockOracle - Wallet",   "NYSE_STOCKORACLE_ADDRESS",       "NYSE_STOCKORACLE_PRIVATE_KEY"),
+    ("AGENT - Order_ChainFlow - Wallet",    "ORDER_CHAINFLOW_ADDRESS",        "ORDER_CHAINFLOW_PRIVATE_KEY"),
+    ("AGENT - X_Sentiment_Agent - Wallet",  "X_SENTIMENT_ADDRESS",            "X_SENTIMENT_PRIVATE_KEY"),
+    ("AGENT - NYSE_Tech_Agent - Wallet",    "NYSE_TECH_ADDRESS",              "NYSE_TECH_PRIVATE_KEY"),
+]
+
+
 def _load_limitless_from_bw() -> dict:
     """
     Limitless Exchange API item layout:
@@ -434,13 +466,31 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
         # Key ID = UUID or short string (≤50 chars), Private Key = PEM or long string (>50 chars)
         cdp_id     = ""
         cdp_secret = ""
+
+        # Handle blob format: "CDP_API_KEY_ID: xxx\nCDP_API_KEY_SECRET: yyy"
         for v in all_values:
             if not v:
                 continue
-            if len(v) <= 50 and not cdp_id:        # UUID / short key ID
-                cdp_id = v
-            elif len(v) > 50 and not cdp_secret:   # PEM private key or long secret
-                cdp_secret = v
+            if "CDP_API_KEY_ID:" in v and "CDP_API_KEY_SECRET:" in v:
+                for line in v.splitlines():
+                    line = line.strip()
+                    if line.startswith("CDP_API_KEY_ID:") and not cdp_id:
+                        cdp_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("CDP_API_KEY_SECRET:") and not cdp_secret:
+                        cdp_secret = line.split(":", 1)[1].strip()
+                break
+
+        # Fallback: Key ID = UUID or short string (≤50 chars), Private Key = long string (>50 chars)
+        if not cdp_id or not cdp_secret:
+            for v in all_values:
+                if not v:
+                    continue
+                if "CDP_API_KEY_ID:" in v or "CDP_API_KEY_SECRET:" in v:
+                    continue  # skip blobs already handled
+                if len(v) <= 50 and not cdp_id:
+                    cdp_id = v
+                elif len(v) > 50 and not cdp_secret:
+                    cdp_secret = v
 
         # Also check notes for PEM key block
         if not cdp_secret and "-----BEGIN" in notes:
@@ -513,6 +563,16 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
             loaded[env_var] = value
     if franklin.get("FRANKLIN_WALLET_ADDRESS") and verbose:
         print(f"[Bitwarden] Franklin wallet loaded ({franklin.get('FRANKLIN_WALLET_ADDRESS','')})")
+
+    # Agent wallets (OctoBoto + 5 sub-agents): username=address, password=private key
+    for item_name, addr_key, pk_key in _AGENT_WALLETS:
+        wallet = _load_wallet_from_bw(item_name, addr_key, pk_key)
+        for env_var, value in wallet.items():
+            if value:
+                os.environ[env_var] = value
+                loaded[env_var] = value
+        if wallet.get(pk_key) and verbose:
+            print(f"[Bitwarden] {item_name} loaded")
 
     # Fallback: try existing cache for any critical keys that BW failed to load
     if missing_critical:

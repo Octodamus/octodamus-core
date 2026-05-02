@@ -438,7 +438,7 @@ def get_geopolitical_context(cache_hours: float = 2.0) -> str:
     lines = ["GEOPOLITICAL MACRO BRIEFING (serial escalation — each event raises odds of next):"]
     for r in results[:4]:
         title = r.get("title", "").strip()
-        desc  = r.get("description", "")[:120].strip()
+        desc  = r.get("description", "")[:200].strip()
         if title:
             lines.append(f"- {title}" + (f": {desc}" if desc else ""))
     return "\n".join(lines)

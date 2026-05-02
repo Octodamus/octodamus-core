@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "orbis": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://orbisapi.com/api/mcp?key=ORBIS_API_KEY_HERE"]
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "mcp-remote", "https://orbisapi.com/api/mcp?key=orbis_89874c7edb727ba684b66b09d21998ad408fb99d849b8adb9aaf5c70d77f9f95"]
     }
   }
 }

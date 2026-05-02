@@ -1689,6 +1689,10 @@ _ERC8004_CARD = {
             "nyse_tech_agent_brief":       {"price_usdc": 0.50, "endpoint": "GET /v2/agents/nyse_tech_agent/brief"},
             "order_chainflow_brief":       {"price_usdc": 0.35, "endpoint": "GET /v2/agents/order_chainflow/brief"},
             "x_sentiment_agent_brief":     {"price_usdc": 0.50, "endpoint": "GET /v2/agents/x_sentiment_agent/brief"},
+            "x_sentiment_divergence":      {"price_usdc": 0.35, "endpoint": "GET /v2/x_sentiment/divergence?asset=BTC"},
+            "x_sentiment_scan":            {"price_usdc": 0.50, "endpoint": "GET /v2/x_sentiment/scan"},
+            "nyse_tech_regulatory":        {"price_usdc": 0.35, "endpoint": "GET /v2/nyse_tech/regulatory"},
+            "nyse_tech_tokenization":      {"price_usdc": 0.50, "endpoint": "GET /v2/nyse_tech/tokenization"},
             "derivatives_guide":   {"price_usdc": 3.00, "endpoint": "GET /v2/guide/derivatives"},
             "annual_api_key":      {"price_usdc": 29,   "duration_days": 365, "endpoint": "GET /v1/subscribe?plan=annual"},
             "free_key":            {"price_usdc": 0,    "endpoint": "POST /v1/signup?email="},
@@ -2963,6 +2967,9 @@ _stripe_cfg             = _load_stripe_config()
 _STRIPE_KEY             = os.environ.get("STRIPE_PRODUCTS_API_KEY", "")
 _TRANSAK_API_KEY        = os.environ.get("TRANSAK_API_KEY", "")
 _TRANSAK_WEBHOOK_SEC    = os.environ.get("TRANSAK_WEBHOOK_SECRET", "")
+_WHOP_API_KEY           = os.environ.get("WHOP_API_KEY", "")
+_WHOP_PLAN_ID           = os.environ.get("WHOP_PLAN_ID", "")
+_WHOP_WEBHOOK_SECRET    = os.environ.get("WHOP_WEBHOOK_SECRET", "")
 _STRIPE_PRICE_ID        = os.environ.get("OCTODATA_STRIPE_PRICE_ID", "") or _stripe_cfg.get("OCTODATA_STRIPE_PRICE_ID", "")
 _STRIPE_PRODUCT_ID      = _stripe_cfg.get("OCTODATA_STRIPE_PRODUCT_ID", "prod_UHtda6fiattpWX")
 _STRIPE_WEBHOOK_SEC     = os.environ.get("OCTODATA_STRIPE_WEBHOOK_SECRET", "") or _stripe_cfg.get("OCTODATA_STRIPE_WEBHOOK_SECRET", "")
@@ -3096,6 +3103,129 @@ async def stripe_webhook(request: Request):
                 save_keys(keys)
 
     return {"received": True}
+
+
+# -- Whop Premium upgrade (Apple Pay / card) ----------------------------------
+
+def _email_premium_key_to_customer(email: str, api_key_val: str) -> None:
+    if not _GMAIL_USER or not _GMAIL_PASS:
+        return
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        body = (
+            f"Welcome to OctoData Premium.\n\n"
+            f"Your API key:\n\n"
+            f"  {api_key_val}\n\n"
+            f"Include it in every request as:\n"
+            f"  X-OctoData-Key: {api_key_val}\n\n"
+            f"Docs: https://api.octodamus.com/docs\n"
+            f"Support: @octodamusai on X\n\n"
+            f"-- Octodamus"
+        )
+        msg = MIMEText(body)
+        msg["Subject"] = "[OctoData] Your Premium API key"
+        msg["From"]    = _GMAIL_USER
+        msg["To"]      = email
+        with smtplib.SMTP("smtp.gmail.com", 587) as s:
+            s.starttls()
+            s.login(_GMAIL_USER, _GMAIL_PASS)
+            s.send_message(msg)
+    except Exception as _e:
+        print(f"[Whop] Customer email failed (non-critical): {_e}")
+
+
+@app.get("/v1/whop-checkout", tags=["Payments"])
+def whop_checkout(
+    email: str     = Query(None, description="Pre-fill buyer email on Whop checkout"),
+    api_key: str   = Query(None, description="Existing API key — email is looked up automatically"),
+):
+    """
+    Returns a Whop checkout URL for the $29/yr Premium plan.
+    Apple Pay, Google Pay, and card accepted. No crypto required.
+    """
+    if not _WHOP_PLAN_ID:
+        raise HTTPException(status_code=503, detail="Whop checkout not yet configured. Contact @octodamusai")
+    resolved_email = email or ""
+    if api_key and not resolved_email:
+        entry = validate_key(api_key)
+        if entry:
+            resolved_email = entry.get("email", "")
+    import urllib.parse
+    url = f"https://whop.com/checkout/{_WHOP_PLAN_ID}/"
+    if resolved_email:
+        url += "?" + urllib.parse.urlencode({"email": resolved_email})
+    return {"checkout_url": url}
+
+
+@app.post("/webhooks/whop", tags=["Webhooks"])
+async def whop_webhook(request: Request):
+    """
+    Whop webhook. Point to: https://api.octodamus.com/webhooks/whop
+    Events: membership.went_valid (new paid member) -> provision Premium API key + email it.
+    Signature: HMAC-SHA256 of raw body, hex, in Whop-Signature header.
+    """
+    import hmac as _hmac
+    body = await request.body()
+    sig  = request.headers.get("Whop-Signature", "")
+    if _WHOP_WEBHOOK_SECRET and sig:
+        expected = _hmac.new(
+            _WHOP_WEBHOOK_SECRET.encode(),
+            body,
+            "sha256",
+        ).hexdigest()
+        if not _hmac.compare_digest(sig.lower(), expected.lower()):
+            raise HTTPException(status_code=400, detail="Invalid Whop signature")
+
+    try:
+        event = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    action = event.get("action", "")
+    if action not in ("membership.went_valid", "membership.created"):
+        return {"received": True, "skipped": action}
+
+    data  = event.get("data", {})
+    email = (data.get("user_email") or data.get("email") or "").lower().strip()
+    if not email:
+        return {"received": True, "skipped": "no email in payload"}
+
+    keys = load_keys()
+    # Find existing key for this email
+    existing_key = next((k for k, v in keys.items() if v.get("email", "").lower() == email), None)
+
+    if existing_key:
+        keys[existing_key]["tier"]        = "premium"
+        keys[existing_key]["upgraded_at"] = datetime.utcnow().isoformat()
+        keys[existing_key]["expires"]     = (datetime.utcnow() + timedelta(days=365)).isoformat()
+        keys[existing_key]["source"]      = "whop"
+        save_keys(keys)
+        provisioned_key = existing_key
+    else:
+        provisioned_key = "octo_" + secrets.token_urlsafe(24)
+        keys[provisioned_key] = {
+            "label":   email.split("@")[0],
+            "email":   email,
+            "tier":    "premium",
+            "created": datetime.utcnow().isoformat(),
+            "expires": (datetime.utcnow() + timedelta(days=365)).isoformat(),
+            "source":  "whop",
+        }
+        save_keys(keys)
+
+    threading.Thread(
+        target=_email_premium_key_to_customer,
+        args=(email, provisioned_key),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_notify_gmail_signup,
+        args=(email, "whop-premium", provisioned_key),
+        daemon=True,
+    ).start()
+
+    return {"received": True, "provisioned": True}
 
 
 @app.post("/v1/transak-session", tags=["Payments"])
@@ -5687,6 +5817,32 @@ def subarc_brief_preview(agent_key: str):
     }
 
 
+def _track_agent_revenue(agent: str, endpoint: str, amount_usdc: float):
+    """Log x402 revenue for a sub-agent to data/x402_agent_revenue.json."""
+    import threading
+    rev_file = Path("data/x402_agent_revenue.json")
+    _rev_lock = threading.Lock()
+    try:
+        with _rev_lock:
+            rev = {}
+            if rev_file.exists():
+                try:
+                    rev = json.loads(rev_file.read_text(encoding="utf-8"))
+                except Exception:
+                    rev = {}
+            if agent not in rev:
+                rev[agent] = []
+            rev[agent].append({
+                "date": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "endpoint": endpoint,
+                "amount_usdc": amount_usdc,
+            })
+            rev[agent] = rev[agent][-200:]
+            rev_file.write_text(json.dumps(rev, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 # -- MacroMind — Macro Intelligence Agent endpoints --------------------------
 
 def _nyse_macromind_gate(request: Request, price_usdc: float, reqs: list, product: str):
@@ -6064,6 +6220,256 @@ def chainflow_whales_preview():
     return {"agent": "Order_ChainFlow", "product": "whale_activity", "price_usdc": 0.35,
             "buy": "GET https://api.octodamus.com/v2/order_chainflow/whales (x402 $0.35)",
             "what_it_does": "Large USDC transactions (>$100k) on Base chain. Count, total volume, ACTIVE/MODERATE/QUIET signal."}
+
+
+# -- X_Sentiment_Agent — Crowd Sentiment Intelligence endpoints --------------
+
+def _x_sentiment_gate(request: Request, price_usdc: float, reqs: list, product: str):
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
+                 request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "X_Sentiment_Agent", "product": product,
+                         "price_usdc": price_usdc, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com/v2/x_sentiment/{product}/preview",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/x_sentiment/divergence", tags=["X_Sentiment_Agent"])
+def x_sentiment_divergence(request: Request, asset: str = "BTC"):
+    """X_Sentiment_Agent crowd vs price divergence score. BULL_TRAP/BEAR_TRAP/CAUTION/NO_SIGNAL. $0.35 USDC."""
+    gate = _x_sentiment_gate(request, 0.35, _X402_REQS_BEN_35CENT, "divergence")
+    if gate: return gate
+    _track_agent_revenue("X_Sentiment_Agent", "divergence", 0.35)
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        from financial_data_client import get_crypto_prices
+        a = asset.upper()
+        gs = get_grok_sentiment(a)
+        crowd_pct    = round((gs.get("confidence", 0.5)) * 100, 1)
+        crowd_bullish = gs.get("signal") == "BULLISH"
+        chg = 0.0
+        try:
+            if a in ("BTC", "ETH", "SOL"):
+                prices = get_crypto_prices([a])
+                chg = prices.get(a, {}).get("usd_24h_change", 0)
+        except Exception:
+            pass
+        crowd_extreme = min(40, int(abs(crowd_pct - 50)))
+        price_contradicts = (crowd_bullish and chg < -0.5) or (not crowd_bullish and chg > 0.5)
+        score = crowd_extreme + (30 if price_contradicts else 0)
+        divergence_type = "NO_SIGNAL"
+        if score >= 55 and price_contradicts:
+            divergence_type = "BULL_TRAP" if crowd_bullish else "BEAR_TRAP"
+        elif score >= 35:
+            divergence_type = "CAUTION"
+        return _sign_payload({
+            "agent": "X_Sentiment_Agent", "product": "crowd_divergence",
+            "asset": a,
+            "divergence_type": divergence_type,
+            "score": score,
+            "crowd_pct": crowd_pct,
+            "crowd_direction": "BULLISH" if crowd_bullish else "BEARISH",
+            "price_change_24h": chg,
+            "price_contradicts_crowd": price_contradicts,
+            "interpretation": (
+                f"BULL_TRAP: {crowd_pct:.0f}% of X is bullish on {a} but price is down {abs(chg):.1f}%. Contrarian bearish edge." if divergence_type == "BULL_TRAP"
+                else f"BEAR_TRAP: {crowd_pct:.0f}% of X is bearish on {a} but price is up {abs(chg):.1f}%. Contrarian bullish edge." if divergence_type == "BEAR_TRAP"
+                else f"CAUTION: {crowd_pct:.0f}% consensus forming. Watch for reversal." if divergence_type == "CAUTION"
+                else f"No significant crowd divergence on {a}. Score {score}/70."
+            ),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "X_Sentiment_Agent (@octodamusai ecosystem) | Grok real-time",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "X_Sentiment_Agent"})
+
+
+@app.get("/v2/x_sentiment/divergence/preview", tags=["X_Sentiment_Agent"])
+def x_sentiment_divergence_preview():
+    return {"agent": "X_Sentiment_Agent", "product": "crowd_divergence", "price_usdc": 0.35,
+            "buy": "GET https://api.octodamus.com/v2/x_sentiment/divergence?asset=BTC (x402 $0.35)",
+            "what_it_does": "Crowd vs price divergence score (0-70). BULL_TRAP/BEAR_TRAP/CAUTION/NO_SIGNAL. When 70%+ of X agrees on a direction while price disagrees — the fade is setting up.",
+            "output_fields": ["divergence_type", "score", "crowd_pct", "crowd_direction", "price_change_24h", "interpretation"]}
+
+
+@app.get("/v2/x_sentiment/scan", tags=["X_Sentiment_Agent"])
+def x_sentiment_scan(request: Request):
+    """X_Sentiment_Agent multi-asset sentiment sweep: BTC+ETH+SOL+COIN+MSTR. $0.50 USDC."""
+    gate = _x_sentiment_gate(request, 0.50, _X402_REQS_BEN_50CENT, "scan")
+    if gate: return gate
+    _track_agent_revenue("X_Sentiment_Agent", "scan", 0.50)
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        assets = ["BTC", "ETH", "SOL", "COIN", "MSTR"]
+        results = []
+        for a in assets:
+            try:
+                gs = get_grok_sentiment(a)
+                crowd_pct = round((gs.get("confidence", 0.5)) * 100, 1)
+                signal    = gs.get("signal", "NEUTRAL")
+                divergence_flag = crowd_pct >= 70
+                results.append({
+                    "asset": a, "signal": signal,
+                    "crowd_pct": crowd_pct,
+                    "contrarian_flag": divergence_flag,
+                    "contrarian_direction": ("BEARISH" if signal == "BULLISH" else "BULLISH") if divergence_flag else None,
+                })
+            except Exception:
+                continue
+        flagged = [r for r in results if r["contrarian_flag"]]
+        top_divergence = flagged[0]["asset"] if flagged else None
+        return _sign_payload({
+            "agent": "X_Sentiment_Agent", "product": "sentiment_scan",
+            "assets_scanned": assets,
+            "results": results,
+            "high_divergence_count": len(flagged),
+            "top_divergence_asset": top_divergence,
+            "summary": (
+                f"{len(flagged)} asset(s) showing crowd extreme (>=70% consensus): {', '.join(r['asset'] for r in flagged)}. Contrarian setups active." if flagged
+                else "No extreme crowd consensus detected. Markets balanced."
+            ),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "X_Sentiment_Agent (@octodamusai ecosystem) | Grok real-time",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "X_Sentiment_Agent"})
+
+
+@app.get("/v2/x_sentiment/scan/preview", tags=["X_Sentiment_Agent"])
+def x_sentiment_scan_preview():
+    return {"agent": "X_Sentiment_Agent", "product": "sentiment_scan", "price_usdc": 0.50,
+            "buy": "GET https://api.octodamus.com/v2/x_sentiment/scan (x402 $0.50)",
+            "what_it_does": "Full multi-asset X sentiment sweep: BTC+ETH+SOL+COIN+MSTR. Crowd consensus scores, contrarian flags, top divergence asset.",
+            "output_fields": ["results", "high_divergence_count", "top_divergence_asset", "summary"]}
+
+
+# -- NYSE_Tech_Agent — Regulatory & Tokenization Infrastructure endpoints ----
+
+def _nyse_tech_gate(request: Request, price_usdc: float, reqs: list, product: str):
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
+                 request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "NYSE_Tech_Agent", "product": product,
+                         "price_usdc": price_usdc, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com/v2/nyse_tech/{product}/preview",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/nyse_tech/regulatory", tags=["NYSE_Tech_Agent"])
+def nyse_tech_regulatory(request: Request):
+    """NYSE_Tech_Agent current SEC/FINRA/NYSE Digital Platform regulatory status. $0.35 USDC."""
+    gate = _nyse_tech_gate(request, 0.35, _X402_REQS_BEN_35CENT, "regulatory")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "regulatory", 0.35)
+    return _sign_payload({
+        "agent": "NYSE_Tech_Agent", "product": "regulatory_status",
+        "status": "IN_PROGRESS",
+        "milestones": {
+            "nyse_securitize_mou": {"status": "SIGNED", "date": "2026-03", "detail": "NYSE x Securitize MOU — 75 tokenized public equities target, late 2026 SEC/FINRA approval"},
+            "computershare_securitize": {"status": "SIGNED", "date": "2026-04", "detail": "58% of S&P 500 (25,000+ companies). ISTs for all US public companies. $70T unlock."},
+            "dtcc_pilot": {"status": "SEC_APPROVED", "date": "H2 2026", "detail": "Russell 1000 + US Treasuries + index ETFs. 3-year pilot."},
+            "blackrock_buidl": {"status": "LIVE", "detail": "Tokenized fund shares approved and live"},
+            "sec_stance": {"status": "PRO_CRYPTO", "detail": "Pro-crypto administration, accelerating no-action letters"},
+        },
+        "primary_chain": "Ethereum mainnet (Securitize + NYSE Digital Platform)",
+        "expansion_chains": ["Arbitrum", "Avalanche", "Polygon", "Solana", "Optimism"],
+        "base_status": "Dinari on Base = live early mover (thin volume). Robinhood tokenized stocks = Arbitrum.",
+        "chainlink_feeds": {
+            "spy_qqq_tsla": "LIVE on Ethereum mainnet",
+            "redstone": "NAV verification (BUIDL, ACRED) — selected by Securitize March 2025",
+        },
+        "key_watch_signals": [
+            "SEC/FINRA approval of NYSE Digital Platform = 75 stocks go live for agent trading",
+            "New Chainlink equity feed on Ethereum = specific stock tokenization imminent",
+            "DTC eligibility for tokenized equity token = legal for bots to hold/trade",
+            "Computershare IST launch = S&P 500 unlock begins",
+            "DTCC pilot Phase 1 results (H2 2026) = settlement infrastructure confirmed",
+        ],
+        "market_size": {"now_usd": "963M", "yoy_growth": "2878%", "projected_2026": "400B total tokenized assets"},
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem) | SEC EDGAR + Securitize tracking",
+    })
+
+
+@app.get("/v2/nyse_tech/regulatory/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_regulatory_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "regulatory_status", "price_usdc": 0.35,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/regulatory (x402 $0.35)",
+            "what_it_does": "Current SEC/FINRA/NYSE Digital Platform regulatory status. Key milestones, primary chain, Chainlink feeds, and watch signals for tokenized stock launch.",
+            "output_fields": ["status", "milestones", "primary_chain", "chainlink_feeds", "key_watch_signals", "market_size"]}
+
+
+@app.get("/v2/nyse_tech/tokenization", tags=["NYSE_Tech_Agent"])
+def nyse_tech_tokenization(request: Request):
+    """NYSE_Tech_Agent full tokenization intel: regulatory + Chainlink feeds + Base new tokens. $0.50 USDC."""
+    gate = _nyse_tech_gate(request, 0.50, _X402_REQS_BEN_50CENT, "tokenization")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "tokenization", 0.50)
+    try:
+        import httpx as _hx
+        # Chainlink equity feeds on Base
+        chainlink_base = []
+        _EQUITY_KEYWORDS = ["AAPL","TSLA","NVDA","AMZN","MSFT","COIN","GOOG","SPY","QQQ","MSTR"]
+        try:
+            r = _hx.get("https://reference-data-directory.vercel.app/feeds-base-mainnet.json", timeout=8)
+            if r.status_code == 200:
+                feeds = r.json() if isinstance(r.json(), list) else []
+                equity = [f for f in feeds if any(k in f.get("name","").upper() for k in _EQUITY_KEYWORDS)]
+                chainlink_base = [{"name": f.get("name","?"), "address": f.get("contractAddress","?")[:18] + "..."} for f in equity[:6]]
+        except Exception:
+            pass
+        # New tokens on Base
+        new_tokens = []
+        try:
+            r2 = _hx.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=8)
+            if r2.status_code == 200:
+                tokens = r2.json() if isinstance(r2.json(), list) else []
+                base_tokens = [t for t in tokens if t.get("chainId") == "base"][:3]
+                new_tokens = [{"name": t.get("name") or t.get("symbol","?"), "description": (t.get("description","") or "")[:60]} for t in base_tokens]
+        except Exception:
+            pass
+        return _sign_payload({
+            "agent": "NYSE_Tech_Agent", "product": "tokenization_intel",
+            "regulatory_status": "IN_PROGRESS",
+            "primary_chain": "Ethereum mainnet (Securitize + NYSE Digital Platform)",
+            "sec_finra_approval_target": "late 2026",
+            "chainlink_equity_feeds_on_base": chainlink_base if chainlink_base else "No equity feeds live on Base yet",
+            "new_base_tokens": new_tokens if new_tokens else "No new Base token launches detected",
+            "key_milestones": {
+                "nyse_securitize": "SIGNED March 2026 — 75 equities, late 2026 launch",
+                "computershare": "SIGNED April 2026 — 58% S&P 500, ISTs for all public companies",
+                "dtcc_pilot": "SEC-APPROVED H2 2026 — Russell 1000 + Treasuries + ETFs",
+            },
+            "gas_rule": "ETH writes: abort if gas >50 gwei or cost >2% of position. ACP payments (Base): always ~$0.001.",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem) | Chainlink + DexScreener + Securitize tracking",
+        })
+    except Exception as e:
+        return _sign_payload({"error": str(e), "agent": "NYSE_Tech_Agent"})
+
+
+@app.get("/v2/nyse_tech/tokenization/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_tokenization_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "tokenization_intel", "price_usdc": 0.50,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/tokenization (x402 $0.50)",
+            "what_it_does": "Full tokenization intel: regulatory status + live Chainlink equity feeds on Base + new Base token launches. Everything an agent needs before buying a tokenized stock.",
+            "output_fields": ["regulatory_status", "primary_chain", "chainlink_equity_feeds_on_base", "new_base_tokens", "key_milestones", "gas_rule"]}
 
 
 # -- V2 Ask — Agent-to-Octodamus conversation (no auth required) -------------

@@ -45,7 +45,7 @@ def _fetch_account(handle: str, label: str, client, max_posts: int) -> list[dict
             return []
         tweets = client.get_users_tweets(
             id=user.data.id,
-            max_results=max_posts,
+            max_results=max(5, max_posts),
             tweet_fields=["text", "created_at"],
             exclude=["retweets", "replies"],
         )

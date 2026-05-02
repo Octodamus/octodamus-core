@@ -225,9 +225,10 @@ def funding_rate(symbol: str = "BTC", interval: str = "8h") -> dict:
 
     interval: 8h, 1d
     """
+    binance_pair = f"{symbol}USDT"
     return _get(
         "futures/funding-rate/history",
-        params={"symbol": symbol, "interval": interval, "exchange": "Binance"},
+        params={"symbol": binance_pair, "interval": interval, "exchange": "Binance"},
         cache_key=f"fr_{symbol}_{interval}",
     )
 

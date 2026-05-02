@@ -43,6 +43,49 @@ POSTED_LOG = Path(__file__).parent / "octo_posted_log.json"
 
 FORCE_POST = False
 
+_SECRETS_FILE = Path(__file__).parent / ".octo_secrets"
+
+
+def _is_cliffhanger(chunk: str) -> bool:
+    """True if the chunk is a short, obviously-unfinished fragment ending with '...'"""
+    stripped = chunk.strip()
+    return stripped.endswith("...") and len(stripped) < 160
+
+
+def _haiku_complete_cliffhanger(prior_text: str, cliffhanger: str) -> str:
+    """Call Haiku to complete an unfinished sentence. Returns one tweet-sized completion."""
+    try:
+        import anthropic
+        raw = json.loads(_SECRETS_FILE.read_text(encoding="utf-8"))
+        key = raw.get("ANTHROPIC_API_KEY") or raw.get("secrets", {}).get("ANTHROPIC_API_KEY", "")
+        if not key:
+            return ""
+        client = anthropic.Anthropic(api_key=key)
+        system = (
+            "You are Octodamus — a sardonic AI oracle. "
+            "Complete the suspended thought in ONE short sentence (under 200 chars). "
+            "Do not repeat the prior context. No hashtags. No emojis. "
+            "End on a finished thought, not another ellipsis."
+        )
+        prompt = (
+            f"The post so far:\n\"{prior_text}\"\n\n"
+            f"The thread continuation ended with:\n\"{cliffhanger}\"\n\n"
+            f"Write the next reply (one sentence, under 200 chars) that completes the suspended thought."
+        )
+        r = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        completion = r.content[0].text.strip()
+        if len(completion) > 200:
+            completion = completion[:200].rsplit(" ", 1)[0]
+        return completion
+    except Exception as e:
+        print(f"[OctoPoster] Cliffhanger completion failed: {e}")
+        return ""
+
 
 # ─────────────────────────────────────────────
 # X API v2 CLIENT (tweepy OAuth 1.0a)
@@ -167,7 +210,7 @@ def _post_thread(posts: list) -> dict:
         prev_id = str(resp.data["id"])
 
     url = f"https://x.com/octodamusai/status/{first_id}"
-    return {"id": first_id, "url": url}
+    return {"id": first_id, "last_id": prev_id, "url": url}
 
 
 def post_reply(reply_text: str, tweet_id: str) -> dict:
@@ -234,6 +277,20 @@ def ensure_cashtag(text: str) -> str:
     """
     import re
     text_lower = text.lower()
+
+    # Strip duplicate cashtags — X allows max 1 per post.
+    # Keep the first occurrence, remove all subsequent ones.
+    all_tags = re.findall(r'\$[A-Z]{2,6}\b', text)
+    if len(all_tags) > 1:
+        _first_done = [False]
+        def _keep_first(m):
+            if not _first_done[0]:
+                _first_done[0] = True
+                return m.group()
+            return ''
+        text = re.sub(r'\$[A-Z]{2,6}\b', _keep_first, text)
+        text = re.sub(r'  +', ' ', text).strip()
+        text_lower = text.lower()
 
     # Already has a cashtag — X rejects 2+, so don't add another
     if re.search(r'\$[A-Z]{2,6}\b', text):
@@ -307,8 +364,10 @@ def split_for_thread(text: str) -> list[str]:
 def read_mentions(max_results: int = 20) -> list:
     """
     Read recent @octodamusai mentions.
-    Returns list of dicts: {id, text, author_id, created_at}
-    Cost: $0.005 per tweet read.
+    Returns list of dicts: {id, text, author_id, author_followers, created_at,
+                             conversation_id, parent_tweet}
+    parent_tweet is {text, author_id} of the tweet being replied to, if available.
+    author_followers is the mention author's follower count (0 if unavailable).
     """
     import tweepy
     client = _get_client()
@@ -317,20 +376,48 @@ def read_mentions(max_results: int = 20) -> list:
         mentions = client.get_users_mentions(
             id=user_id,
             max_results=max_results,
-            tweet_fields=["created_at", "author_id", "conversation_id"],
+            tweet_fields=["created_at", "author_id", "conversation_id", "referenced_tweets"],
+            expansions=["referenced_tweets.id", "author_id"],
+            user_fields=["public_metrics"],
         )
         if not mentions.data:
             return []
-        return [
-            {
+
+        # Build lookup for expanded parent tweets
+        expanded_tweets = {}
+        if mentions.includes and "tweets" in mentions.includes:
+            for t in mentions.includes["tweets"]:
+                expanded_tweets[str(t.id)] = {
+                    "text": t.text,
+                    "author_id": str(t.author_id) if hasattr(t, "author_id") else None,
+                }
+
+        # Build lookup for author follower counts
+        expanded_users = {}
+        if mentions.includes and "users" in mentions.includes:
+            for u in mentions.includes["users"]:
+                metrics = u.public_metrics if hasattr(u, "public_metrics") else {}
+                expanded_users[str(u.id)] = metrics.get("followers_count", 0)
+
+        results = []
+        for m in mentions.data:
+            parent = None
+            if hasattr(m, "referenced_tweets") and m.referenced_tweets:
+                for ref in m.referenced_tweets:
+                    if ref.type == "replied_to":
+                        parent = expanded_tweets.get(str(ref.id))
+                        break
+            author_id = str(m.author_id)
+            results.append({
                 "id": str(m.id),
                 "text": m.text,
-                "author_id": str(m.author_id),
+                "author_id": author_id,
+                "author_followers": expanded_users.get(author_id, 0),
                 "created_at": str(m.created_at),
                 "conversation_id": str(m.conversation_id) if hasattr(m, "conversation_id") else None,
-            }
-            for m in mentions.data
-        ]
+                "parent_tweet": parent,
+            })
+        return results
     except Exception as e:
         print(f"[OctoPoster] read_mentions failed: {e}")
         return []
@@ -864,6 +951,14 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
                     continue
                 chunks    = split_for_thread(text)
                 if len(chunks) > 1:
+                    # If last chunk is a cliffhanger fragment, generate a completion reply
+                    if _is_cliffhanger(chunks[-1]):
+                        completion = _haiku_complete_cliffhanger(
+                            "\n".join(chunks[:-1]), chunks[-1]
+                        )
+                        if completion:
+                            chunks.append(completion)
+                            print(f"[OctoPoster] Cliffhanger extended: {completion[:60]}...")
                     print(f"[OctoPoster] Auto-threading ({len(chunks)} tweets): {text[:60]}...")
                     result    = _post_thread(chunks)
                     tweet_url = result.get("url", "")

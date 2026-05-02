@@ -38,6 +38,15 @@ def _save_log(data: list):
     SKILL_LOG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _db():
+    try:
+        from octo_memory_db import init_db
+        init_db()
+        return True
+    except Exception:
+        return False
+
+
 def _load_history() -> list:
     if SKILL_HISTORY_FILE.exists():
         try:
@@ -73,22 +82,28 @@ def log_post(
     entries = _load_log()
     entry_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{post_type[:3]}"
     tweet_id = post_id or _extract_tweet_id(url)
+    ts = datetime.now(timezone.utc).isoformat()
     entries.append({
         "id":                 entry_id,
-        "post_id":            tweet_id,        # numeric tweet ID for API lookup
+        "post_id":            tweet_id,
         "text":               post_text[:280],
         "type":               post_type,
         "voice_mode":         voice_mode,
         "is_card":            is_card,
         "url":                url,
-        "timestamp":          datetime.now(timezone.utc).isoformat(),
+        "timestamp":          ts,
         "rating":             None,
         "rating_note":        "",
-        "engagement_metrics": None,            # filled by fetch_engagement_for_pending()
+        "engagement_metrics": None,
         "engagement_score":   None,
         "metrics_fetched_at": None,
     })
     _save_log(entries)
+    try:
+        from octo_memory_db import db_log_post
+        db_log_post(entry_id, tweet_id, post_text[:500], post_type, voice_mode, is_card, url, ts)
+    except Exception:
+        pass
     return entry_id
 
 
@@ -222,11 +237,18 @@ def fetch_engagement_for_pending(max_fetch: int = 20) -> int:
         entry["engagement_metrics"]  = metrics
         entry["engagement_score"]    = round(score, 2)
         entry["metrics_fetched_at"]  = datetime.now(timezone.utc).isoformat()
+        note = f"auto:{metrics.get('like_count',0)}L/{metrics.get('retweet_count',0)}RT/{metrics.get('reply_count',0)}R/{metrics.get('impression_count',0)}imp"
 
         # Only auto-rate if not already manually rated
         if entry.get("rating") is None:
             entry["rating"]      = rating
-            entry["rating_note"] = f"auto:{metrics.get('like_count',0)}L/{metrics.get('retweet_count',0)}RT/{metrics.get('reply_count',0)}R/{metrics.get('impression_count',0)}imp"
+            entry["rating_note"] = note
+
+        try:
+            from octo_memory_db import db_update_engagement
+            db_update_engagement(tweet_id, metrics, round(score, 2), rating, note)
+        except Exception:
+            pass
 
         updated += 1
         print(

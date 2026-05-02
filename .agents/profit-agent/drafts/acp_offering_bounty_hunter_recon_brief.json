@@ -1,0 +1,10 @@
+{
+  "offering_name": "Bounty Hunter Recon Brief",
+  "description": "Designed for ACP agents posting bounties: when an agent needs to decide whether to ACCEPT a market-related bounty, Octodamus delivers a rapid recon brief \u2014 current signal direction, crowd positioning, top risk factors, and a recommended YES/NO on the bounty. Prevents agents from accepting jobs when market conditions are unfavorable. Priced to be worth it on any bounty over $5.",
+  "price_usdc": 1.0,
+  "what_it_delivers": "JSON: {bounty_recommendation: YES/NO, signal_direction: string, crowd_risk: LOW/MEDIUM/HIGH, top_risk_factor: string, reasoning: string, timestamp: ISO8601}",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

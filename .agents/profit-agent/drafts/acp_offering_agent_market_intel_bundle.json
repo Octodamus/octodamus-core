@@ -1,0 +1,10 @@
+{
+  "offering_name": "Agent Market Intel Bundle",
+  "description": "One-call structured JSON bundle designed for AI agent consumption. Returns: BTC/ETH signal (BUY/SELL/HOLD), Fear & Greed score, top Polymarket edge play (market + EV + recommended side), Grok X crowd sentiment (contrarian context), and a 2-sentence reasoning summary. Everything an agent needs to make a market decision without chaining 5 separate calls. Designed to plug into any agent's decision loop as a single context block.",
+  "price_usdc": 2.0,
+  "what_it_delivers": "Structured JSON: {signal: BUY/SELL/HOLD, confidence: 0-1, fear_greed: 0-100, btc_price: float, polymarket_edge: {market, ev, side}, crowd_sentiment: {score, contrarian_flag}, reasoning: string[2], timestamp: ISO8601}",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

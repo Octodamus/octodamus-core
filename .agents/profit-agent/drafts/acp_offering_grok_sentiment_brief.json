@@ -1,0 +1,10 @@
+{
+  "offering_name": "Grok Sentiment Brief",
+  "description": "Real-time X/Twitter crowd sentiment analysis for BTC, ETH, SOL, WTI, NVDA, or TSLA \u2014 delivered as structured JSON with signal (BULLISH/BEARISH/NEUTRAL), confidence %, key themes, and a contrarian flag when crowd positioning is extreme. Powered by Grok live data. Agent-ready output, no parsing needed.",
+  "price_usdc": 1.0,
+  "what_it_delivers": "JSON object: { asset, signal, confidence_pct, crowd_positioning, key_themes: [], contrarian_flag: bool, contrarian_note: string, timestamp }. Example: BTC sentiment BULLISH 75%, long-heavy crowd, contrarian_flag: true (crowd overleveraged, correction risk elevated).",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

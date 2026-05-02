@@ -649,11 +649,52 @@ def batch_estimate(
         return (price_score * 0.30 + vlr_score * 0.30 +
                 vel_score * 0.20 + time_score * 0.15 + domain_score)
 
+    # Hard exclusion — markets where Octodamus has NO signal edge.
+    # These never reach AI evaluation regardless of volume or velocity.
+    _EXCLUDED_KEYWORDS = {
+        # War / military / conflict
+        "ceasefire", "military", "troops", "airstrike", "air strike", "bomb", "missile",
+        "invasion", "occupied", "occupation", "hostage", "casualties",
+        "iran", "ukraine", "russia", "gaza", "israel", "hamas", "hezbollah",
+        "north korea", "taiwan strait", "kharg",
+        # Political leadership / elections (not macro-relevant)
+        "prime minister", "chancellor", "premier", "leader of", "elect",
+        "vote", "parliament", "congress member", "senator",
+        "orban", "netanyahu", "zelensky", "putin",
+        # Tech competition / AI rankings
+        "best ai model", "openai", "chatgpt", "gpt-", "anthropic release",
+        "best llm",
+        # Sports
+        "nba", "nfl", "nhl", "mlb", "fifa", "premier league", "champions league",
+        "super bowl", "world cup", "championship", "playoffs",
+    }
+
+    def _is_excluded(m: dict) -> bool:
+        q = (m.get("question") or "").lower()
+        return any(kw in q for kw in _EXCLUDED_KEYWORDS)
+
+    # Hard inclusion — must touch at least one domain where Octodamus has live signal.
+    _REQUIRED_KEYWORDS = {
+        "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "crypto",
+        "fed", "federal reserve", "rate cut", "rate hike", "fomc", "interest rate",
+        "inflation", "cpi", "pce", "gdp", "recession", "jobs", "nonfarm", "nfp",
+        "oil", "wti", "crude", "gold", "silver", "dollar", "dxy",
+        "s&p", "spy", "nasdaq", "qqq", "dow",
+        "tariff", "trade war", "treasury", "yield",
+        "nvda", "nvidia", "aapl", "apple", "mstr", "microstrategy", "coin", "coinbase",
+    }
+
+    def _in_domain(m: dict) -> bool:
+        q = (m.get("question") or "").lower()
+        return any(kw in q for kw in _REQUIRED_KEYWORDS)
+
     passable = [
         m for m in markets
         if is_valid_market(m)
         and (0.05 < m.get("yes_price", 0.5) < 0.95)
         and m.get("vol_liq_ratio", 0) >= 0.03
+        and not _is_excluded(m)
+        and _in_domain(m)
     ]
     passable.sort(key=_pre_score, reverse=True)
     candidates = passable[:max_markets]

@@ -149,6 +149,8 @@ def _get_report_type(event: dict) -> str:
         return "bounty_hunter_recon"
     if any(k in all_text for k in ["bull trap", "bull_trap", "trap monitor", "trap_monitor", "btc_trap"]):
         return "btc_bull_trap_monitor"
+    if any(k in all_text for k in ["strike proximity", "strike_proximity", "btc strike", "strike alert", "polymarket strike"]):
+        return "btc_strike_proximity_alert"
     if any(k in all_text for k in ["macromind", "macro mind", "macro regime brief", "yield curve brief", "nyse_macromind"]):
         return "nyse_macromind_brief"
     if any(k in all_text for k in ["stockoracle", "stock oracle", "congressional brief", "nyse_stockoracle"]):
@@ -468,17 +470,31 @@ def start_listener() -> subprocess.Popen:
     return proc
 
 
+_last_event_ts: float = 0.0
+_LISTENER_ZOMBIE_S = 7200  # 2h no events from a "live" listener = WebSocket zombie
+
+
+def _heartbeat():
+    """Background thread: log every 30min so the monitor can detect zombies quickly."""
+    while True:
+        time.sleep(1800)
+        log.info("Heartbeat -- worker alive")
+
+
 def tail_events(proc: subprocess.Popen):
-    """Tail EVENTS_FILE and dispatch new lines. Restarts listener if it dies."""
+    """Tail EVENTS_FILE and dispatch new lines. Restarts listener if it dies or zombies."""
+    global _last_event_ts
+    _last_event_ts = time.monotonic()
+
     with open(EVENTS_FILE, "r", encoding="utf-8") as f:
         f.seek(0, 2)  # Seek to end -- don't replay old events
         log.info("Watching for events...")
 
         while True:
+            # --- Listener dead: restart it ---
             if proc.poll() is not None:
                 log.error(f"Listener exited (rc={proc.returncode}) -- restarting in 5s")
                 time.sleep(5)
-                # Kill before respawning to prevent process accumulation
                 try:
                     proc.terminate()
                     proc.wait(timeout=5)
@@ -488,10 +504,35 @@ def tail_events(proc: subprocess.Popen):
                     except Exception:
                         pass
                 proc = start_listener()
+                _last_event_ts = time.monotonic()
+                continue
+
+            # --- Zombie listener: alive but WebSocket dropped silently ---
+            silence_s = time.monotonic() - _last_event_ts
+            if silence_s > _LISTENER_ZOMBIE_S:
+                log.warning(
+                    f"Listener alive but no events in {silence_s / 3600:.1f}h "
+                    f"-- WebSocket zombie detected, restarting listener"
+                )
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                proc = start_listener()
+                _last_event_ts = time.monotonic()
+                continue
 
             line = f.readline()
             if line:
-                process_event(line)
+                _last_event_ts = time.monotonic()
+                try:
+                    process_event(line)
+                except Exception as e:
+                    log.error(f"process_event error (non-fatal, continuing): {e}", exc_info=True)
             else:
                 time.sleep(0.5)
 
@@ -642,17 +683,34 @@ def main():
 
     _load_job_cache()
 
-    proc = start_listener()
+    threading.Thread(target=_heartbeat, daemon=True, name="heartbeat").start()
 
-    threading.Thread(target=replay_funded_jobs, daemon=True, name="replay").start()
+    attempt = 0
+    while True:
+        proc = None
+        try:
+            proc = start_listener()
+            threading.Thread(target=replay_funded_jobs, daemon=True, name="replay").start()
+            tail_events(proc)
+        except KeyboardInterrupt:
+            log.info("Shutting down (KeyboardInterrupt)...")
+            break
+        except Exception as e:
+            attempt += 1
+            backoff = min(30 * attempt, 300)  # 30s → 60s → ... → 5min max
+            log.error(
+                f"Worker crash (attempt {attempt}): {e} -- restarting in {backoff}s",
+                exc_info=True,
+            )
+            time.sleep(backoff)
+        finally:
+            if proc:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
-    try:
-        tail_events(proc)
-    except KeyboardInterrupt:
-        log.info("Shutting down...")
-    finally:
-        proc.terminate()
-        log.info("Worker stopped.")
+    log.info("Worker stopped.")
 
 
 _PID_FILE = Path(__file__).parent / "data" / "acp_worker.pid"

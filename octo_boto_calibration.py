@@ -74,18 +74,25 @@ def record_estimate(
     data = _load()
     if any(e["market_id"] == market_id for e in data["estimates"]):
         return  # already logged
+    cat = _detect_category(question)
     data["estimates"].append({
         "market_id":    market_id,
         "question":     question[:120],
         "claude_p":     round(claude_p, 4),
         "market_price": round(market_price, 4),
         "confidence":   confidence,
-        "side":         side,          # "YES" or "NO" — needed to invert probability
-        "category":     _detect_category(question),
+        "side":         side,
+        "category":     cat,
         "recorded_at":  datetime.now(timezone.utc).isoformat(),
-        "outcome":      None,           # filled in after resolution
+        "outcome":      None,
     })
     _save(data)
+    try:
+        from octo_memory_db import db_record_estimate
+        db_record_estimate(market_id, question, round(claude_p, 4), round(market_price, 4),
+                           confidence, side, cat)
+    except Exception:
+        pass
 
 
 def record_outcome(market_id: str, resolved_yes: bool):
@@ -102,7 +109,11 @@ def record_outcome(market_id: str, resolved_yes: bool):
             updated = True
     if updated:
         _save(data)
-        # Auto-adjust threshold after every resolved trade
+        try:
+            from octo_memory_db import db_record_outcome
+            db_record_outcome(market_id, resolved_yes)
+        except Exception:
+            pass
         auto_adjust_threshold()
 
 

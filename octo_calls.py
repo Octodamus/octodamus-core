@@ -428,13 +428,14 @@ def _is_expired(call: dict) -> bool:
 
 
 def autoresolve() -> list:
-    """Check open calls against live prices. Resolve expired oracle calls only."""
+    """Check open calls against live prices. Resolve expired oracle and range_scout calls."""
     calls = _load()
     resolved = []
     for c in calls:
         if c["resolved"]:
             continue
-        if c.get("call_type", "oracle") != "oracle":
+        call_type = c.get("call_type", "oracle")
+        if call_type not in ("oracle", "range_scout"):
             continue  # Polymarket calls resolve via Polymarket, not price feeds
         if not _is_expired(c):
             continue
@@ -464,8 +465,8 @@ def autoresolve() -> list:
 
 def get_stats() -> dict:
     calls = _load()
-    # Only count oracle calls in the win/loss record — not polymarket bridge trades
-    oracle_calls = [c for c in calls if c.get("call_type", "oracle") == "oracle"]
+    # Count oracle calls + range_scout calls (range_scout merges into record after 70%+/20 calls)
+    oracle_calls = [c for c in calls if c.get("call_type", "oracle") in ("oracle", "range_scout")]
     resolved = [c for c in oracle_calls if c["resolved"]]
     wins = sum(1 for c in resolved if c["outcome"] == "WIN")
     losses = sum(1 for c in resolved if c["outcome"] == "LOSS")

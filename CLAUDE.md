@@ -38,6 +38,10 @@ Omit any calculation you're unsure about rather than guess.
 
 ---
 
+## Current Project State
+Read `.claude/project_state.md` for live system status, pending work, and key decisions.
+Update it at the end of every significant session.
+
 ## See Also
 - `.claude/rules/architecture.md` — key files, tasks, data files, deployment
 - `.claude/rules/coding.md`       — coding style, Windows gotchas

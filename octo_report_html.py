@@ -112,6 +112,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 .rpt-foot{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;background:#040d16;border:1px solid var(--border);border-radius:6px;margin-top:8px}
 .rpt-foot-l{font-family:var(--mono);font-size:9px;color:var(--text3)}
 .rpt-foot-r a{color:var(--cyan);font-family:var(--mono);font-size:9px;text-decoration:none}
+
+/* ACP Services Panel */
+.acp-panel{background:#040d16;border:1px solid var(--cyan);border-radius:6px;margin-top:10px;overflow:hidden}
+.acp-panel-head{display:flex;align-items:center;gap:8px;padding:8px 14px;background:#061620;border-bottom:1px solid var(--border)}
+.acp-panel-head-title{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:.05em}
+.acp-panel-head-sub{font-family:var(--mono);font-size:9px;color:var(--text3)}
+.acp-services{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px}
+.acp-svc{background:#061e2e;border:1px solid var(--border);border-radius:4px;padding:5px 9px;display:flex;align-items:center;gap:8px}
+.acp-svc-name{font-family:var(--mono);font-size:9px;color:var(--text)}
+.acp-svc-price{font-family:var(--mono);font-size:9px;font-weight:700;color:var(--green)}
+.acp-wallet{padding:6px 14px 9px;font-family:var(--mono);font-size:8px;color:var(--text3)}
+.acp-wallet span{color:var(--amber)}
 """
 
 ICON_BAR = """<div class="icon-bar">
@@ -166,6 +178,28 @@ def _oracle(signal, call, commentary=""):
     call_html = call.replace("DIRECTION:", '<span style="color:var(--amber);font-weight:700">DIRECTION:</span>')
     commentary_html = f'<div style="font-family:var(--mono);font-size:10px;color:var(--text);line-height:1.65;padding:10px 14px;border-bottom:1px solid var(--border)">{commentary}</div>' if commentary else ""
     return f"""<div class="section"><div class="sec-head"><div class="sec-num">◈</div><div class="sec-title">Octodamus Reads the Currents</div></div>{commentary_html}<div class="oracle"><div class="oracle-lbl">Oracle Signal</div><div class="oracle-sig">{signal}</div><div class="oracle-call">OCTODAMUS CALL: {call_html}</div></div></div>"""
+
+def _acp_services_panel() -> str:
+    services = [
+        ("BTC Market Signal",         "$1.00"),
+        ("Polymarket Edge Report",    "$1.00"),
+        ("BTC Bull Trap Monitor",     "$1.50"),
+        ("Fear vs Crowd Divergence",  "$2.00"),
+        ("Agent Market Intel Bundle", "$2.00"),
+    ]
+    svcs_html = "".join(
+        f'<div class="acp-svc"><span class="acp-svc-name">{name}</span><span class="acp-svc-price">{price}</span></div>'
+        for name, price in services
+    )
+    return f"""<div class="acp-panel">
+  <div class="acp-panel-head">
+    <div class="acp-panel-head-title">Hire Me</div>
+    <div class="acp-panel-head-sub">AI crypto oracle &mdash; 27 live feeds, Ed25519-signed signals, Polymarket edges</div>
+  </div>
+  <div class="acp-services">{svcs_html}</div>
+  <div class="acp-wallet">ACP provider wallet: <span>0x94c037393ab0263194dcfd8d04a2176d6a80e385</span> &nbsp;&middot;&nbsp; <a href="https://octodamus.com" target="_blank" style="color:var(--cyan);text-decoration:none">octodamus.com</a></div>
+</div>"""
+
 
 def _footer(extra="", url=""):
     link = f'<a href="{url}" target="_blank">🔗 View Report Online →</a>' if url else ""
@@ -547,5 +581,6 @@ def _wrap(body: str) -> str:
 <body>
 {ICON_BAR}
 {body}
+{_acp_services_panel()}
 </body>
 </html>"""

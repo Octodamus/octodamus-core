@@ -346,6 +346,30 @@ TREASURY
 
 # ── Live Context ────────────────────────────────────────────────────────────────
 
+def _get_project_state() -> str:
+    """Read .claude/project_state.md for current build state and pending work."""
+    try:
+        state_file = BASE_DIR / ".claude" / "project_state.md"
+        if state_file.exists():
+            return state_file.read_text(encoding="utf-8")[:3000]
+    except Exception:
+        pass
+    return ""
+
+
+def _get_brain_memory() -> str:
+    """Load brain.md — signal post-mortems: what worked, what failed, and why."""
+    try:
+        brain_file = BASE_DIR / "data" / "brain.md"
+        if brain_file.exists():
+            content = brain_file.read_text(encoding="utf-8")
+            if content.strip():
+                return f"SIGNAL MEMORY (post-mortems — use to inform drafts and reads):\n{content[:4000]}"
+    except Exception:
+        pass
+    return ""
+
+
 def build_live_context() -> str:
     now = datetime.now(TZ).strftime("%A %d %B %Y %H:%M PT")
     recent = get_recent_posts(1)
@@ -366,7 +390,7 @@ def build_live_context() -> str:
         f"Discord: connected via webhook",
                 f"Call record: {get_call_stats()['wins']}W / {get_call_stats()['losses']}L | Win rate: {get_call_stats()['win_rate']}",
         f"Open calls: {get_call_stats()['open']}",
-        f"ACP: live on Virtuals Base — 4 job offerings registered",
+        f"ACP: live on Virtuals Base -- 4 job offerings registered",
     ])
 
 
@@ -474,7 +498,7 @@ def _get_signal_feeds_context() -> str:
         if macro and macro.get("status") == "live":
             score = macro.get("score", 0)
             signal = macro.get("signal", "NEUTRAL")
-            lines.append(f"- Macro (FRED): {signal} | score {score:+d}/5 | {macro.get('brief','')[:80]}")
+            lines.append(f"- Macro (FRED): {signal} | score {score:+d}/5 | {macro.get('brief','')[:200]}")
         else:
             lines.append("- Macro (FRED): unavailable")
     except Exception as e:
@@ -485,7 +509,7 @@ def _get_signal_feeds_context() -> str:
         from octo_firecrawl import get_geopolitical_context
         geo = get_geopolitical_context()
         if geo and isinstance(geo, str) and len(geo) > 10:
-            lines.append(f"- Geopolitical: {geo[:150]}")
+            lines.append(f"- Geopolitical:\n{geo}")
         else:
             lines.append("- Geopolitical: no signal")
     except Exception as e:
@@ -536,12 +560,14 @@ def _get_live_prices() -> str:
 def build_system_prompt() -> str:
     live_prices   = _get_live_prices()
     signal_feeds  = _get_signal_feeds_context()
+    project_state = _get_project_state()
+    brain_memory  = _get_brain_memory()
 
     live_context = f"""LIVE NOW:
 - Posting to @octodamusai on X via Twitter API v2 (OAuth 1.0a direct, no middleware)
 - 20 posts/day max via X API v2 pay-per-use -- probabilistic schedule, peak 3am-9pm PT, market-adaptive
-- Auto-reply to @mentions (10 replies/day cap, prompt injection protected)
-- Task Scheduler runs 38 tasks automatically whether Christopher is logged in or not
+- Auto-reply to @mentions (25 replies/day cap, 15-min scan, full personality, thread-aware)
+- Task Scheduler runs tasks automatically whether Christopher is logged in or not
 - octodamus.com live on Vercel | Treasury: {TREASURY_WALLET} on Base mainnet
 
 X CONTENT ENGINE:
@@ -563,11 +589,15 @@ CURRENT CONTEXT:
 
     call_record = f"CALL RECORD:\n{build_call_context()}"
 
+    if project_state:
+        live_context += f"\n\nPROJECT STATE (current builds, pending work, key decisions):\n{project_state}"
+
     return _build_tg_system(
         live_prices=live_prices,
         call_record=call_record,
         live_context=live_context,
         signal_feeds=signal_feeds,
+        brain_memory=brain_memory,
     )
 
 
@@ -1162,7 +1192,6 @@ async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def ben_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show Agent_Ben's latest session summary."""
     try:
-        import json
         from pathlib import Path as _P
         state_file = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\state.json")
         log_file   = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\agent_session.log")
@@ -1171,27 +1200,33 @@ async def ben_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sessions = state.get("sessions", 0)
         last_run = state.get("last_run", "never")
         dead     = state.get("dead", False)
+        balance  = state.get("last_balance", "?")
 
         last_log = ""
         if log_file.exists():
-            for line in reversed(log_file.read_text(encoding="utf-8").strip().split("\n")):
-                if line.startswith("[") and "Session #" not in line and len(line) > 20:
-                    last_log = line[:280]
+            lines = log_file.read_text(encoding="utf-8").strip().split("\n")
+            for line in reversed(lines):
+                stripped = line.strip()
+                if stripped.startswith("[") and "Session #" not in stripped and len(stripped) > 20:
+                    last_log = stripped[:300]
                     break
 
         drafts_dir = _P(r"C:\Users\walli\octodamus\.agents\profit-agent\drafts")
         drafts = sorted(drafts_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:3] if drafts_dir.exists() else []
+        draft_names = "\n".join(f"- {d.stem}" for d in drafts) or "None yet"
 
+        status_str = "DEAD" if dead else "Active"
         msg = (
-            f"*Agent Ben — Session #{sessions}*\n"
+            f"Agent Ben -- Session #{sessions}\n"
             f"Last run: {last_run}\n"
-            f"Status: {'DEAD ⚠️' if dead else 'Active ✅'}\n\n"
-            f"*Last action:*\n{last_log or 'No recent activity'}\n\n"
-            f"*Recent drafts:*\n" + ("\n".join(f"• {d.stem}" for d in drafts) or "None yet")
+            f"Status: {status_str}\n"
+            f"Wallet: ${balance}\n\n"
+            f"Last action:\n{last_log or 'No recent activity'}\n\n"
+            f"Recent drafts:\n{draft_names}"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg)
     except Exception as e:
-        await update.message.reply_text(f"Ben status: {e}")
+        await update.message.reply_text(f"Ben status error: {e}")
 
 
 def main() -> None:

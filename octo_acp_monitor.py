@@ -28,6 +28,7 @@ ALERT_STATE  = PROJECT_DIR / "data" / "acp_monitor_state.json"
 STUCK_MIN_MIN        = 8     # funded job older than this = stuck (SLA is 5min)
 STUCK_MAX_MIN        = 240   # funded job older than this = already expired by network
 SILENCE_THRESHOLD_H  = 2.0   # 2 hours -- ACP marketplace can be quiet for hours normally
+ZOMBIE_THRESHOLD_H   = 4.0   # 4 hours silent with process "alive" = hung zombie, force-restart
 
 
 PID_FILE = PROJECT_DIR / "data" / "acp_worker.pid"
@@ -211,52 +212,92 @@ def run():
         print(f"[WARN] {len(stuck)} stuck funded job(s):")
         for s in stuck:
             print(f"       {s}")
-        if not _already_alerted(state, "stuck_jobs", cooldown_h=3):
+        # Track per-job-ID so the same job never fires a second alert.
+        # Extract job IDs from the description strings ("Job #NNNN ...").
+        import re as _re
+        alerted_jobs = state.setdefault("alerted_job_ids", {})
+        now_ts = datetime.now(timezone.utc).timestamp()
+        new_stuck = []
+        for s in stuck:
+            m = _re.search(r"Job #(\d+)", s)
+            jid = m.group(1) if m else s
+            if now_ts - alerted_jobs.get(jid, 0) > 48 * 3600:
+                new_stuck.append((jid, s))
+        if new_stuck:
+            for jid, _ in new_stuck:
+                alerted_jobs[jid] = now_ts
             send_email_alert(
-                subject=f"[Octodamus WARNING] {len(stuck)} ACP job(s) stuck -- {now_str}",
+                subject=f"[Octodamus WARNING] {len(new_stuck)} ACP job(s) stuck -- {now_str}",
                 body=(
                     f"The following ACP jobs are funded but have not been submitted:\n\n"
-                    + "\n".join(f"  - {s}" for s in stuck)
+                    + "\n".join(f"  - {s}" for _, s in new_stuck)
                     + f"\n\nThese customers paid $1 USDC each and are waiting for a response.\n"
                     f"The worker will attempt to submit them on next restart.\n\n"
                     f"If this persists, restart: schtasks /run /tn Octodamus-ACP-Worker\n"
                     f"Log: C:\\Users\\walli\\octodamus\\logs\\octo_acp_worker.log"
                 )
             )
-            _mark_alerted(state, "stuck_jobs")
+        else:
+            print("[OK ] Stuck jobs already alerted -- no repeat email")
     else:
         print("[OK ] No stuck funded jobs")
 
     # --- Check 3: last activity ---
+    # Silent log is NORMAL when no jobs arrive -- the ACP marketplace can go hours between jobs.
+    # Only restart if the process is confirmed dead. Never restart a live process just because it's quiet.
     hours_silent = check_last_activity()
     if hours_silent < 0:
         print("[WARN] Events file missing")
     elif hours_silent > SILENCE_THRESHOLD_H:
         mins_silent = hours_silent * 60
-        print(f"[WARN] No ACP events in {mins_silent:.0f}min -- auto-restarting worker")
-        # Kill and restart immediately -- don't wait for human
-        try:
-            subprocess.run(
-                ["powershell", "-Command",
-                 "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*octo_acp_worker*' "
-                 "-and $_.CommandLine -notlike '*powershell*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
-                capture_output=True, timeout=10
-            )
-        except Exception:
-            pass
-        restarted = _restart_acp_worker()
-        print(f"[{'OK ' if restarted else 'ERR'}] ACP worker restart: {'success' if restarted else 'FAILED'}")
-        # Only email if restart also failed, or first time silence detected
-        if not _already_alerted(state, "silence", cooldown_h=1):
-            send_email_alert(
-                subject=f"[Octodamus] ACP silent {mins_silent:.0f}min -- auto-restarted {'OK' if restarted else 'FAILED'} -- {now_str}",
-                body=(
-                    f"ACP listener was silent for {mins_silent:.0f} minutes.\n\n"
-                    f"Auto-restart: {'SUCCESS' if restarted else 'FAILED -- manual intervention needed'}\n\n"
-                    f"Log: C:\\Users\\walli\\octodamus\\logs\\octo_acp_worker.log"
+        worker_alive = _acp_is_running()
+        if worker_alive:
+            if hours_silent > ZOMBIE_THRESHOLD_H:
+                # Process appears alive but log has been silent 4+ hours -- hung zombie. Force-restart.
+                print(f"[WARN] ACP worker ZOMBIE detected: process alive but log silent {mins_silent:.0f}min -- force-restarting")
+                try:
+                    result = subprocess.run(
+                        ["powershell", "-Command",
+                         "Get-Process python* | ForEach-Object { "
+                         "$id = $_.Id; "
+                         "$cmd = (Get-WmiObject Win32_Process -Filter \"ProcessId=$id\").CommandLine; "
+                         "if ($cmd -like '*octo_acp_worker*') { Stop-Process -Id $id -Force } }"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                except Exception as _e:
+                    print(f"[WARN] Zombie kill attempt error: {_e}")
+                time.sleep(3)
+                restarted = _restart_acp_worker()
+                print(f"[{'OK ' if restarted else 'ERR'}] Zombie restart: {'success' if restarted else 'FAILED'}")
+                if not _already_alerted(state, "zombie", cooldown_h=6):
+                    send_email_alert(
+                        subject=f"[Octodamus] ACP worker ZOMBIE killed + restarted {'OK' if restarted else 'FAILED'} -- {now_str}",
+                        body=(
+                            f"ACP worker process was alive but log had been silent for {mins_silent:.0f} minutes.\n"
+                            f"Zombie detected at >{ZOMBIE_THRESHOLD_H:.0f}h silence threshold.\n\n"
+                            f"Force-killed + restarted: {'SUCCESS' if restarted else 'FAILED'}\n\n"
+                            f"Log: C:\\Users\\walli\\octodamus\\logs\\octo_acp_worker.log"
+                        )
+                    )
+                    _mark_alerted(state, "zombie")
+            else:
+                # Genuinely quiet marketplace -- no action
+                print(f"[OK ] ACP log silent {mins_silent:.0f}min but worker process is alive -- no action (quiet marketplace)")
+        else:
+            # Process is dead AND log is old -- genuine outage, restart
+            print(f"[WARN] ACP worker dead + log silent {mins_silent:.0f}min -- restarting")
+            restarted = _restart_acp_worker()
+            print(f"[{'OK ' if restarted else 'ERR'}] ACP worker restart: {'success' if restarted else 'FAILED'}")
+            if not _already_alerted(state, "silence", cooldown_h=6):
+                send_email_alert(
+                    subject=f"[Octodamus] ACP worker down + silent {mins_silent:.0f}min -- restarted {'OK' if restarted else 'FAILED'} -- {now_str}",
+                    body=(
+                        f"ACP worker was NOT running and log had been silent for {mins_silent:.0f} minutes.\n\n"
+                        f"Auto-restart: {'SUCCESS' if restarted else 'FAILED -- manual intervention needed'}\n\n"
+                        f"Log: C:\\Users\\walli\\octodamus\\logs\\octo_acp_worker.log"
+                    )
                 )
-            )
-            _mark_alerted(state, "silence")
+                _mark_alerted(state, "silence")
     else:
         print(f"[OK ] Last ACP event {hours_silent:.1f}h ago")
 

@@ -105,6 +105,14 @@ def run_journal() -> str:
     posts = _load_todays_posts()
     brain = _load_brain_snapshot()
 
+    # Load core memory for personality continuity
+    core_memory = ""
+    try:
+        from octo_memory_db import read_core_memory
+        core_memory = read_core_memory("octodamus")
+    except Exception:
+        pass
+
     if not posts:
         print("[OctoJournal] No posts today -- writing minimal entry.")
         entry = f"[{today}] No posts today. Signals monitored, no threshold crossed."
@@ -118,6 +126,8 @@ def run_journal() -> str:
     client   = anthropic.Anthropic()
     system   = _build_journal_system()
 
+    core_section = f"\n\nCore memory (Octodamus's accumulated personality & lessons):\n{core_memory}" if core_memory else ""
+
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=600,
@@ -127,7 +137,8 @@ def run_journal() -> str:
             "content": (
                 f"Today is {today}. Here is what Octodamus posted:\n\n"
                 f"{posts_summary}\n\n"
-                f"Current BRAIN.md state:\n{brain}\n\n"
+                f"Current BRAIN.md state:\n{brain}"
+                f"{core_section}\n\n"
                 "Distill 3-5 specific learnings from today. "
                 "Format each as a single line starting with '- '. "
                 "Focus on: what signals fired, what post types ran, "

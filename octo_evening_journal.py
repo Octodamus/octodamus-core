@@ -42,10 +42,8 @@ def _gmail_creds():
 def _load_calls() -> list:
     try:
         calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
-        # ALL entries in octo_calls.json are Octodamus oracle calls.
-        # call_type='polymarket' = oracle prediction on a Polymarket market (NOT OctoBoto trades).
-        # OctoBoto trades live in octo_boto_trades.json, never here. Include everything.
-        return calls
+        # Oracle calls only — exclude Polymarket bets so the record matches the website scorecard.
+        return [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
     except Exception:
         return []
 
@@ -419,7 +417,7 @@ def _format_article_email(date_str: str, body: str) -> str:
     return f"{_short_date(date_str)}\n\n" + body + SIGNATURE
 
 
-SIGNATURE = "\n\n-- o c t o d a m u s"
+SIGNATURE = "\n\n-- O C T O D A M U S"
 
 def _format_email(date_str: str, body: str) -> str:
     lines = body.splitlines()

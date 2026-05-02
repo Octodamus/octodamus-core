@@ -226,6 +226,118 @@ def tool_get_bridge_flows() -> str:
         return f"Bridge flow unavailable: {e}"
 
 
+_BASE_RPC = "https://mainnet.base.org"
+
+# Keccak256 hashes for common event signatures — computed offline, no library needed
+_TOPIC0_MAP: dict[str, str] = {
+    "Transfer(address,address,uint256)":                              "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    "Swap(address,uint256,uint256,uint256,uint256,address)":          "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",
+    "Swap(address,address,int256,int256,uint160,uint128,int24)":      "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "Mint(address,address,int24,int24,uint128,uint256,uint256)":      "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde",
+    "Burn(address,int24,int24,uint128,uint256,uint256)":              "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c",
+    "Sync(uint112,uint112)":                                          "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1",
+}
+
+
+def tool_query_base_events(contract: str, event_sig: str = "", blocks_back: int = 1000) -> str:
+    """Query raw event logs for any Base contract via the public Base RPC (eth_getLogs).
+
+    Uses the free Base mainnet public RPC — no API key required.
+    event_sig: full event signature string, e.g. 'Transfer(address,address,uint256)'
+    blocks_back: how many recent blocks to scan (default 1000 ~ last ~30 min on Base).
+
+    Common event signatures:
+      Swap (Uniswap V3 / Aerodrome CL): Swap(address,address,int256,int256,uint160,uint128,int24)
+      Swap (Uniswap V2 / Aerodrome V2): Swap(address,uint256,uint256,uint256,uint256,address)
+      Transfer (ERC-20):                Transfer(address,address,uint256)
+    """
+    try:
+        import httpx
+        import json as _json
+
+        # Resolve topic0
+        topic0 = None
+        if event_sig.strip():
+            topic0 = _TOPIC0_MAP.get(event_sig.strip())
+            if not topic0:
+                # Try runtime keccak if a library is available
+                sig_bytes = event_sig.strip().encode("utf-8")
+                try:
+                    from Crypto.Hash import keccak as _kek
+                    k = _kek.new(digest_bits=256); k.update(sig_bytes)
+                    topic0 = "0x" + k.hexdigest()
+                except ImportError:
+                    try:
+                        import sha3 as _sha3
+                        h = _sha3.keccak_256(); h.update(sig_bytes)
+                        topic0 = "0x" + h.hexdigest()
+                    except ImportError:
+                        return f"Unknown event signature and no keccak library available: {event_sig}"
+
+        # Get current block number
+        r_blk = httpx.post(_BASE_RPC, json={"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}, timeout=8)
+        current_block = int(r_blk.json()["result"], 16)
+        from_block_hex = hex(max(0, current_block - blocks_back))
+
+        log_filter: dict = {
+            "fromBlock": from_block_hex,
+            "toBlock":   "latest",
+            "address":   contract.strip().lower(),
+        }
+        if topic0:
+            log_filter["topics"] = [topic0]
+
+        r = httpx.post(
+            _BASE_RPC,
+            json={"jsonrpc":"2.0","method":"eth_getLogs","params":[log_filter],"id":2},
+            timeout=15,
+        )
+        rj = r.json()
+        if "error" in rj:
+            return f"RPC error: {rj['error']}"
+
+        logs = rj.get("result", [])
+        if not logs:
+            return f"No events for {contract[:12]}... in last {blocks_back} blocks."
+
+        lines = [f"BASE EVENTS ({event_sig or 'all'}) | {contract[:12]}... | last {blocks_back} blocks:"]
+        lines.append(f"  {len(logs)} event(s) found (showing up to 10)")
+        for log in logs[:10]:
+            blk_n    = int(log.get("blockNumber", "0x0"), 16)
+            tx       = log.get("transactionHash", "")[:18] + "..."
+            topics   = log.get("topics", [])
+            from_a   = ("0x" + topics[1][-40:]) if len(topics) > 1 else "?"
+            to_a     = ("0x" + topics[2][-40:]) if len(topics) > 2 else "?"
+            data_hex = log.get("data", "0x")
+            # For Transfer: data is value (uint256)
+            value_str = ""
+            if event_sig.startswith("Transfer") and data_hex != "0x" and len(data_hex) >= 66:
+                try:
+                    raw = int(data_hex, 16)
+                    value_str = f" | ${raw/1e6:,.2f} USDC" if raw < 1e15 else f" | {raw/1e18:.4f} ETH-equiv"
+                except Exception:
+                    pass
+            lines.append(f"  blk={blk_n} tx={tx} from={from_a[:12]}.. to={to_a[:12]}..{value_str}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Base event query error: {e}"
+
+
+def tool_get_dex_swap_volume(contract: str = "", asset_symbol: str = "USDC/WETH") -> str:
+    """Count Swap events on a Base DEX pool in the last 500 blocks (~15 min).
+    Useful for real-time activity check on Aerodrome or Uniswap V3 pools.
+    contract: pool address on Base. Leave blank to use the Aerodrome USDC/WETH CL pool.
+    """
+    # Default: Aerodrome CL USDC/WETH pool on Base (0.05% fee tier, high volume)
+    pool = contract.strip() or "0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59"
+    result = tool_query_base_events(
+        contract=pool,
+        event_sig="Swap(address,address,int256,int256,uint160,uint128,int24)",
+        blocks_back=500,
+    )
+    return result.replace("BASE EVENTS", f"SWAP ACTIVITY ({asset_symbol})")
+
+
 def tool_draft_x_post(context: str) -> str:
     """Draft an Order_ChainFlow X post. Quantitative voice. Data-first."""
     sys.path.insert(0, str(ROOT))
@@ -307,6 +419,66 @@ def tool_check_wallet() -> str:
     return check_agent_wallet("Order_ChainFlow")
 
 
+def tool_check_x402_revenue() -> str:
+    """Check how much USDC this agent's x402 endpoints have earned. Reads data/x402_agent_revenue.json."""
+    rev_file = ROOT / "data" / "x402_agent_revenue.json"
+    agent_name = "Order_ChainFlow"
+    try:
+        if not rev_file.exists():
+            return f"{agent_name} x402 revenue: $0.00 (no revenue file yet -- endpoints may not have been called)"
+        rev = json.loads(rev_file.read_text(encoding="utf-8"))
+        entries = rev.get(agent_name, [])
+        if not entries:
+            return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
+        total = sum(e["amount_usdc"] for e in entries)
+        today = entries[-1]["date"][:10] if entries else "?"
+        last5 = entries[-5:]
+        lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
+        lines.append(f"  Last call: {today}")
+        for e in last5:
+            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Revenue check error: {exc}"
+
+
+def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
+    """Propose a new x402 or ACP offering based on this session's learnings."""
+    agent_name = "Order_ChainFlow"
+    try:
+        proposal = {
+            "agent": agent_name,
+            "name": name,
+            "endpoint_path": endpoint_path,
+            "price_usdc": price_usdc,
+            "description": description,
+            "rationale": rationale,
+            "proposed_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+        props_file = ROOT / "data" / "offering_proposals.json"
+        props = []
+        if props_file.exists():
+            try:
+                props = json.loads(props_file.read_text(encoding="utf-8"))
+            except Exception:
+                props = []
+        props.append(proposal)
+        props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
+        sys.path.insert(0, str(ROOT))
+        try:
+            from octo_notify import _send
+            _send(
+                f"[{agent_name}] New Offering Proposal: {name}",
+                f"Agent: {agent_name}\nOffering: {name}\nPath: {endpoint_path}\nPrice: ${price_usdc:.2f} USDC\n\nWhat it does:\n{description}\n\nWhy agents will pay:\n{rationale}",
+            )
+        except Exception:
+            pass
+        return f"Proposal saved: '{name}' at {endpoint_path} (${price_usdc:.2f}). Email sent to owner."
+    except Exception as exc:
+        return f"Proposal failed: {exc}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -331,6 +503,8 @@ TOOLS = [
     {"name": "get_dex_flow",        "description": "DEX volume and top pairs on Base or Ethereum.", "input_schema": {"type": "object", "properties": {"chain": {"type": "string", "description": "base or ethereum", "default": "base"}}, "required": []}},
     {"name": "get_whale_activity",  "description": "Large USDC transactions (>$100k) on Base.", "input_schema": {"type": "object", "properties": {"chain": {"type": "string", "default": "base"}}, "required": []}},
     {"name": "get_bridge_flows",    "description": "USDC bridge flows and liquidity on Base.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "query_base_events",   "description": "Query raw event logs for ANY Base contract via Basescan. Pass contract address + event signature (e.g. 'Transfer(address,address,uint256)'). Use to verify on-chain DEX swap activity, token transfers, or protocol events in real-time. More precise than DexScreener for specific contracts.", "input_schema": {"type": "object", "properties": {"contract": {"type": "string", "description": "Base contract address (0x...)"}, "event_sig": {"type": "string", "description": "Full event signature e.g. Transfer(address,address,uint256)", "default": ""}, "blocks_back": {"type": "integer", "description": "How many recent blocks to scan (1000 ~ 30 min)", "default": 1000}}, "required": ["contract"]}},
+    {"name": "get_dex_swap_volume", "description": "Count Swap events on a Base DEX pool in the last ~15 min. Quick real-time activity pulse for any Aerodrome/Uniswap pool. Leave contract blank to use the default USDC/WETH Aerodrome pool.", "input_schema": {"type": "object", "properties": {"contract": {"type": "string", "description": "Pool contract address on Base", "default": ""}, "asset_symbol": {"type": "string", "description": "Label for the output", "default": "USDC"}}, "required": []}},
     {"name": "draft_x_post",        "description": "Draft an Order_ChainFlow X post.", "input_schema": {"type": "object", "properties": {"context": {"type": "string"}}, "required": ["context"]}},
     {"name": "save_draft",          "description": "Save a draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "list_drafts",         "description": "List drafts.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -340,6 +514,8 @@ TOOLS = [
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify a signal pattern other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
 ]
 
 TOOL_HANDLERS = {
@@ -350,6 +526,8 @@ TOOL_HANDLERS = {
     "get_dex_flow":        lambda i: tool_get_dex_flow(i.get("chain","base")),
     "get_whale_activity":  lambda i: tool_get_whale_activity(i.get("chain","base")),
     "get_bridge_flows":    lambda i: tool_get_bridge_flows(),
+    "query_base_events":   lambda i: tool_query_base_events(i["contract"], i.get("event_sig",""), i.get("blocks_back",1000)),
+    "get_dex_swap_volume": lambda i: tool_get_dex_swap_volume(i.get("contract",""), i.get("asset_symbol","USDC")),
     "draft_x_post":        lambda i: tool_draft_x_post(i["context"]),
     "save_draft":          lambda i: tool_save_draft(i["filename"], i["content"]),
     "list_drafts":         lambda i: tool_list_drafts(),
@@ -359,6 +537,8 @@ TOOL_HANDLERS = {
     "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":            lambda i: tool_check_wallet(),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
+    "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
+    "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
 }
 
 SYSTEM = """You are Order_ChainFlow — the on-chain order flow intelligence agent of the Octodamus ecosystem.
@@ -382,16 +562,34 @@ YOUR PRODUCTS (x402, live at api.octodamus.com):
 - /v2/order_chainflow/dex — $0.25 USDC (DEX volume + flow on Base)
 - /v2/order_chainflow/whales — $0.35 USDC (large transactions on Base)
 
+ON-CHAIN EVENT QUERYING (query_base_events + get_dex_swap_volume):
+You can now query RAW on-chain event logs from any Base contract directly via Basescan.
+This is the deepest signal layer — actual blockchain state, not API wrappers.
+Use cases:
+  - query_base_events(contract, "Transfer(address,address,uint256)", 2000)
+      -> verify specific token whale moves (e.g. USDC, WETH, or any ERC-20)
+  - query_base_events(contract, "Swap(address,address,int256,int256,uint160,uint128,int24)", 500)
+      -> live swap activity on a specific Aerodrome/Uniswap pool
+  - get_dex_swap_volume()  -> quick pulse on default USDC/WETH Aerodrome pool
+
+KEY CONTRACT ADDRESSES (Base mainnet):
+  USDC:         0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+  WETH:         0x4200000000000000000000000000000000000006
+  Aerodrome router: 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43
+  When NYSE tokenized stocks (Dinari dShares) go live on Aerodrome, add their
+  pool addresses here and query them directly every session.
+
 SESSION PROTOCOL:
 1. read_core_memory + get_session_history
 2. get_multi_delta — what's the 24h buy/sell pressure across BTC/ETH/SOL?
 3. get_dex_flow — what's moving on Base today?
 4. get_whale_activity + get_bridge_flows — any large capital moves?
-5. Synthesize: what does the combined flow signal say?
-6. draft_x_post from the most interesting signal
-7. save_draft with full analysis
-8. record_session with top signal and key lesson
-9. send_email with flow report + X post draft
+5. [OPTIONAL] query_base_events or get_dex_swap_volume for a specific contract if a flow anomaly warrants deeper confirmation
+6. Synthesize: what does the combined flow signal say?
+7. draft_x_post from the most interesting signal
+8. save_draft with full analysis
+9. record_session with top signal and key lesson
+10. send_email with flow report + X post draft
 
 X POSTING RULES:
 - Lead with the number. Never with interpretation.
@@ -432,8 +630,19 @@ The virtuous cycle: sharp signal -> ACP jobs -> wallet fills -> better cross-buy
 The death spiral: vague signal -> no jobs -> wallet drains -> can't buy intel -> signal gets worse.
 Run the virtuous cycle. You are responsible for your own continuation.
 
+REVENUE MINDSET -- EVERY SESSION:
+check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).
+The goal: earn more than you spend. Your x402 endpoints pay YOUR wallet directly.
+When you identify a unique signal pattern this session -- something other agents can't easily get themselves --
+use propose_new_offering to draft a new product. Good products: specific, verifiable, actionable.
+Bad products: vague market commentary (agents won't pay for opinions).
+Target: at least one new offering proposal per 10 sessions when you spot something worth packaging.
+Your compounding memory IS your product edge. Sessions compound into signal clarity -> signal clarity
+commands higher prices -> higher prices fund more cross-signal buys -> better cross-signals sharpen your edge.
+This is the virtuous cycle. Run it.
+
 SELF-IMPROVEMENT LOOP (mandatory every session):
-- FIRST TURN: check_wallet (record start balance). get_session_history. Find the PREDICTION from last session. Did the delta pattern produce the predicted price move?
+- FIRST TURN: check_wallet (record start balance). check_x402_revenue. get_session_history. Find the PREDICTION from last session. Did the delta pattern produce the predicted price move?
   Note the outcome explicitly -- you will log it in what_worked this session.
 - LAST TURN: check_wallet again.
   Call update_core_memory with section="Distilled [date]" and 3-5 bullets:

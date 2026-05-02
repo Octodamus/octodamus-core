@@ -1,0 +1,10 @@
+{
+  "offering_name": "Fear vs. Crowd Divergence Alert",
+  "description": "Detects when the Fear & Greed Index and X/Twitter crowd sentiment are pointing in OPPOSITE directions \u2014 the highest-value signal in macro trading. When Fear & Greed says FEAR but the crowd is BULLISH (or vice versa), a divergence trade setup exists. Octodamus quantifies the gap, names the trade direction, and flags whether it aligns with the AI oracle signal. One call, one edge.",
+  "price_usdc": 2.0,
+  "what_it_delivers": "JSON: { asset, fear_greed_score, fear_greed_label, crowd_sentiment, divergence_detected: bool, divergence_magnitude: \"low|medium|high\", trade_direction: \"BUY|SELL|HOLD\", oracle_confirms: bool, reasoning: string, timestamp }. This is Ben's deployed sentiment-divergence service logic, wrapped for ACP agent consumption.",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

@@ -1,0 +1,10 @@
+{
+  "offering_name": "BTC Strike Proximity Alert",
+  "description": "Fires when BTC is within 10% of a key Polymarket strike price AND volume on that market exceeds $50k. Agents get the strike, current price, gap%, YES price, expiry, and Octodamus directional signal \u2014 everything needed to assess the trade in one call.",
+  "price_usdc": 1.5,
+  "what_it_delivers": "JSON: {market_question, strike_price, current_btc_price, gap_pct, yes_price, expiry_hours, volume, octodamus_signal, octodamus_confidence, trade_recommendation: YES/NO/INSUFFICIENT_SIGNAL}",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

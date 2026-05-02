@@ -1,0 +1,14 @@
+{
+  "mode": "paper",
+  "starting_capital": 1000.0,
+  "cash": 1000.0,
+  "positions": {},
+  "trades": [],
+  "sessions": 1,
+  "started_at": "2026-05-01T00:00:00",
+  "total_pnl": 0.0,
+  "total_pnl_pct": 0.0,
+  "wins": 0,
+  "losses": 0,
+  "last_run": "Friday May 01 2026 04:00 PM"
+}

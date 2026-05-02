@@ -298,6 +298,24 @@ class GammaClient:
         # Market activity ratio — high ratio = good price discovery
         vol_liq_ratio = round(vol24 / liq, 3) if liq > 0 else 0.0
 
+        # Extract YES token ID for CLOB depth enrichment
+        yes_token_id = None
+        tokens = market.get("tokens") or []
+        for t in tokens:
+            outcome = str(t.get("outcome", "")).strip().upper()
+            if outcome in ("YES", "TRUE", "1"):
+                yes_token_id = t.get("token_id") or t.get("tokenId") or t.get("id")
+                break
+        if not yes_token_id:
+            clob_ids = market.get("clobTokenIds") or []
+            if isinstance(clob_ids, str):
+                try:
+                    clob_ids = json.loads(clob_ids)
+                except Exception:
+                    clob_ids = []
+            if clob_ids:
+                yes_token_id = clob_ids[0]
+
         return {
             "id":             str(market.get("id", "")),
             "question":       str(market.get("question", "Unknown")).strip(),
@@ -312,6 +330,8 @@ class GammaClient:
             "is_binary":      self._is_binary(market),
             "resolved":       self._check_resolved(market),
             "url":            self._build_url(market),
+            "yes_token_id":   yes_token_id,     # for CLOB depth enrichment
+            "clob_depth":     None,             # filled by enrich_with_clob_depth()
         }
 
     # ─── Resolution Checker ───────────────────────────────────────────────────

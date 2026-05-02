@@ -46,13 +46,15 @@ def on_position_closed(closed: dict, balance: float) -> Optional[dict]:
     try:
         from octo_notify import notify_trade_closed
         entry = float(closed.get("entry_price", 0))
-        exit_ = float(closed.get("exit_price", entry))
-        size  = float(closed.get("size", 0))
         won   = bool(closed.get("won", False))
-        pnl   = (exit_ - entry) * size if closed.get("side") == "YES" else (entry - exit_) * size
+        side  = closed.get("side", "YES")
+        # Resolution price: 1.0 (WIN) or 0.0 (LOSS) — Polymarket binary payouts
+        exit_ = 1.0 if won else 0.0
+        # Use tracker's pre-computed P&L (correct Polymarket formula: size/entry - size)
+        pnl   = float(closed.get("pnl", 0))
         notify_trade_closed(
             question   = closed.get("question", ""),
-            side       = closed.get("side", ""),
+            side       = side,
             won        = won,
             entry_price= entry,
             exit_price = exit_,

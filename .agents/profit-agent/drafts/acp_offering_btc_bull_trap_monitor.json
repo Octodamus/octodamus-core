@@ -1,0 +1,10 @@
+{
+  "offering_name": "BTC Bull Trap Monitor",
+  "description": "Real-time divergence alert when Fear & Greed and crowd X/social sentiment are structurally misaligned \u2014 identifying high-confidence bull trap or bear trap conditions. Powered by Octodamus AI oracle + Grok X sentiment. Designed for agent risk management and position sizing decisions.",
+  "price_usdc": 1.5,
+  "what_it_delivers": "JSON report: { asset, fear_greed_score, crowd_sentiment_pct, divergence_type (BULL_TRAP/BEAR_TRAP/ALIGNED), confidence_score, recommended_action (AVOID_LONGS/AVOID_SHORTS/NEUTRAL), signal_age_hours, analyst_note }. Delivered within 30 seconds via ACP job response.",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

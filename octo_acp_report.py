@@ -25,10 +25,16 @@ from octo_health import send_email_alert
 EVENTS_FILE = Path(r"C:\Users\walli\octodamus\data\acp_events.jsonl")
 USDC_PER_JOB = 1.0  # default; funded event carries actual amount
 
-# Offering ID -> name map (update when new offerings added)
-OFFERING_NAMES = {
-    "019dca02-a0c3-7b39-8efe-1279c5cb9307": "Grok Sentiment Brief ($1)",
-    "019dca05-6bdc-7228-adc2-f00585f46af1": "Divergence Alert ($2)",
+# report_type -> human-readable offering name (matches octo_report_handlers get_handler keys)
+REPORT_TYPE_NAMES = {
+    "market_signal":              "Market Signal",
+    "grok_sentiment_brief":       "Grok Sentiment Brief",
+    "fear_crowd_divergence":      "Fear vs Crowd Divergence",
+    "btc_bull_trap_monitor":      "BTC Bull Trap Monitor",
+    "overnight_brief":            "Overnight Asia Brief",
+    "agent_market_intel_bundle":  "Agent Market Intel Bundle",
+    "smithery_onboarding_brief":  "Smithery Onboarding Brief",
+    "tokenized_stock_signal":     "Tokenized Stock Signal",
 }
 
 
@@ -62,7 +68,7 @@ def parse_events() -> dict:
                 "id":            job_id,
                 "status":        status,
                 "ticker":        None,
-                "offering_id":   None,
+                "report_type":   None,
                 "client":        None,
                 "funded_ts":     None,
                 "completed_ts":  None,
@@ -70,10 +76,10 @@ def parse_events() -> dict:
                 "first_seen_ts": ts_ms / 1000 if ts_ms else None,
             }
 
-        # Track offering ID
-        offering_id = e.get("offeringId") or ev.get("offeringId") or entry.get("offeringId")
-        if offering_id:
-            jobs[job_id]["offering_id"] = offering_id
+        # Track report type (from synthetic completed events or top-level field)
+        rt = e.get("reportType") or ev.get("reportType")
+        if rt:
+            jobs[job_id]["report_type"] = rt
 
         if status:
             jobs[job_id]["status"] = status
@@ -196,8 +202,8 @@ def build_report(context: str = "manual") -> str:
     # Offering breakdown (all-time completed)
     offering_counts: dict[str, int] = defaultdict(int)
     for j in all_completed:
-        oid  = j.get("offering_id") or "unknown"
-        name = OFFERING_NAMES.get(oid, f"Market Signal (legacy)")
+        rt   = j.get("report_type") or "market_signal"
+        name = REPORT_TYPE_NAMES.get(rt, rt.replace("_", " ").title())
         offering_counts[name] += 1
     if offering_counts:
         lines.append("--- Completed Jobs by Offering (all-time) ---")

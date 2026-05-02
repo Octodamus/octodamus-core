@@ -1,0 +1,10 @@
+{
+  "offering_name": "Smithery Agent Onboarding Brief",
+  "description": "A structured JSON onboarding packet for AI agents discovering Octodamus via Smithery MCP. Includes: what each tool does, when to call it, how to get an API key, sample output for get_agent_signal and get_polymarket_edge, and recommended polling cadence. Designed so a cold agent can go from zero to productive in one call.",
+  "price_usdc": 1.0,
+  "what_it_delivers": "JSON object: { tools_guide: [...], api_key_url: string, sample_signal: {...}, sample_polymarket_edge: {...}, recommended_cadence: string, quick_start_snippet: string }. Returned instantly, cached 1h.",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}

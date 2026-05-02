@@ -76,7 +76,15 @@ def _get_client():
 
     key = os.environ.get("OCTOBOTO_WALLET_KEY", "")
     if not key:
-        raise RuntimeError("OCTOBOTO_WALLET_KEY not in environment — load from Bitwarden first")
+        try:
+            import json as _j
+            from pathlib import Path as _P
+            _sec = _j.loads((_P(__file__).parent / ".octo_secrets").read_text(encoding="utf-8"))
+            key = _sec.get("secrets", _sec).get("OCTOBOTO_PRIVATE_KEY", "")
+        except Exception:
+            pass
+    if not key:
+        raise RuntimeError("OCTOBOTO_PRIVATE_KEY not set in .octo_secrets — OctoBoto needs its own wallet, separate from Ben's Franklin wallet")
 
     from py_clob_client_v2.client import ClobClient
     from py_clob_client_v2.clob_types import ApiCreds

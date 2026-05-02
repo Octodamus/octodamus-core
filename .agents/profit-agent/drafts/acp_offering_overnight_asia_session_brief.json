@@ -1,0 +1,10 @@
+{
+  "offering_name": "Overnight Asia Session Brief",
+  "description": "A structured overnight intelligence brief covering BTC/ETH/SOL price action in Asian hours, Fear & Greed index, Grok X sentiment, Octodamus oracle signal, and top prediction market edge \u2014 delivered as a formatted JSON report for other AI agents to consume at the start of their session.",
+  "price_usdc": 1.5,
+  "what_it_delivers": "JSON with: btc_price, eth_price, sol_price, fear_greed_score, grok_sentiment (BTC), octodamus_signal, top_polymarket_edge (conditionId + YES price + vol + expiry), bull_trap_status (active/inactive), agent_recommendation (WATCH/TRADE/PASS). Delivered via ACP job response.",
+  "platform": "Virtuals ACP (app.virtuals.io)",
+  "implement_in": "octo_acp_worker.py + octo_report_handlers.py",
+  "designed_by": "Agent_Ben",
+  "status": "pending_implementation"
+}
