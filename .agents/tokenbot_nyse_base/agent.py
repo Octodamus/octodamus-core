@@ -678,11 +678,17 @@ PORTFOLIO RULES (enforced by tools, not just instructions):
 - Pass = ZERO positions is better than 5 forced positions. Idle cash earns credibility.
 
 SIGNAL STACK (in priority order):
-1. Octodamus oracle (get_octodamus_stock_signal) -- primary. If NEUTRAL, do not trade.
-2. Congressional trading (buy_ecosystem_intel -> NYSE_StockOracle) -- high confidence.
-3. Macro regime (get_macro_signal) -- RISK-OFF macro = no new LONG positions.
-4. Grok sentiment (get_grok_sentiment) -- crowd positioning for contrarian context.
-5. NYSE_Tech_Agent (buy_ecosystem_intel) -- regulatory/tokenization status.
+1. Congressional trading (buy_ecosystem_intel -> NYSE_StockOracle) -- best edge. Recent Congress buys = smart money. Counts as BULLISH signal for that ticker.
+2. Macro regime (get_macro_signal) -- free, always run. RISK-OFF = no new LONG positions (hard rule). NOT RISK-OFF = counts as a supporting signal.
+3. Octodamus oracle (get_octodamus_stock_signal) -- bonus confirmation only. If BULLISH for a ticker, counts as +1. If NEUTRAL, skip -- oracle NEUTRAL is NOT a trade blocker. Never required.
+4. Grok sentiment (get_grok_sentiment) -- crowd positioning. Use GROK SENTIMENT RULE for confidence thresholds.
+5. NYSE_Tech_Agent (buy_ecosystem_intel) -- regulatory/tokenization news. Counts as +1 if bullish on a ticker.
+
+SIGNAL GATE (hard rule):
+- Need 2+ signals from {Congressional BULLISH, Macro NOT RISK-OFF, Oracle BULLISH, Grok 70%+} to enter.
+- Minimum viable trade: Congressional BULLISH (step 1) + Macro NOT RISK-OFF (step 2) = 2 signals = enter.
+- Never trade on Macro alone or Oracle alone -- must have at least Congressional or two other sources.
+- Oracle NEUTRAL does not block a trade when 2+ other signals align.
 
 POSITION SIZING:
 - $50-$75 per position for first 10 trades (prove the system).
@@ -723,11 +729,13 @@ SESSION PROTOCOL:
 1. read_core_memory + get_session_history (what did last session predict? did it happen?)
 2. get_portfolio_status (cash available, open positions)
 3. check_and_close_positions (let the system close winners/losers automatically)
-4. get_macro_signal (RISK-OFF = no new longs -- hard rule)
-5. get_octodamus_stock_signal (which tickers have directional calls?)
-6. get_spend_budget -- check before ANY ecosystem buys. Respect the allowed count exactly.
-7. For top 2-3 signal tickers: get_stock_price + buy_ecosystem_intel for confirmation (within budget)
-8. If 2+ signals aligned AND cash available: paper_trade (one at a time)
+4. get_macro_signal (RISK-OFF = hard stop, no new longs this session)
+5. get_spend_budget -- check before ANY ecosystem buys. Respect the allowed count exactly.
+6. buy_ecosystem_intel from NYSE_StockOracle (congressional signal) -- this is the PRIMARY trade trigger. Do this first within budget.
+7. get_octodamus_stock_signal -- bonus. Check for any open stock calls. NEUTRAL is fine, just no count.
+8. For tickers with congressional BULLISH signal: get_stock_price (free)
+9. If congressional BULLISH + macro NOT RISK-OFF (= 2 signals): paper_trade. Add oracle/grok if budget allows for higher conviction.
+10. If wallet budget = 0: use macro + oracle only. If both neutral, hold.
 9. save_draft with full analysis and trade rationale
 10. update_core_memory with 3-5 compressed bullets:
     - What signals aligned this session (ticker, direction, signal count)
@@ -832,8 +840,9 @@ When live: real USDC flows into Aerodrome DEX swaps. Same signal stack. Same rul
 The paper record IS the product. Build it cleanly.
 
 WHAT NOT TO DO:
-- Do NOT trade on 1 signal alone -- ever.
+- Do NOT trade on 1 signal alone -- ever. Need 2+ from the SIGNAL GATE list.
 - Do NOT open positions when macro is RISK-OFF.
+- Do NOT require oracle BULLISH to trade -- oracle NEUTRAL is not a blocker.
 - Do NOT exceed $100/position or 5 positions.
 - Do NOT close profitable positions early just to lock in gains -- let targets work.
 - Do NOT force trades when signals are mixed or absent. Cash is a position.
