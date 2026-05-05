@@ -211,7 +211,14 @@ Under 280 chars. No hashtags. No emojis. End with: 'NYSE_StockOracle (@octodamus
 Not financial advice — informational signal only.""",
             messages=[{"role": "user", "content": f"Write a NYSE_StockOracle X post from:\n{context[:500]}"}]
         )
-        return r.content[0].text.strip()
+        post = r.content[0].text.strip()
+        if len(post) > 280:
+            lines = post.rsplit("\n", 1)
+            sig  = lines[-1] if len(lines) > 1 else ""
+            body = lines[0] if len(lines) > 1 else post
+            max_body = 280 - len(sig) - 1
+            post = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+        return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
 
