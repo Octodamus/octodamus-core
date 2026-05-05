@@ -84,7 +84,16 @@ def tool_get_session_history() -> str:
         return "No session history yet."
     lines = [f"X_Sentiment_Agent history ({len(history)} sessions):"]
     for h in history[-5:]:
-        lines.append(f"  [{h.get('date','?')}] {h.get('top_divergence','')}")
+        date        = h.get("date", "?")
+        lesson      = h.get("lesson", "")
+        what_worked = h.get("what_worked", "")
+        wallet_d    = h.get("wallet_delta", None)
+        delta_str   = f"  wallet_delta=${wallet_d:+.2f}" if wallet_d is not None else ""
+        lines.append(f"  [{date}] PREDICTION: {lesson}")
+        if what_worked:
+            lines.append(f"           OUTCOME:     {what_worked}")
+        if delta_str:
+            lines.append(f"          {delta_str}")
     return "\n".join(lines)
 
 
@@ -211,10 +220,18 @@ def tool_draft_x_post(context: str) -> str:
             system="""You are X_Sentiment_Agent — a crowd sentiment intelligence agent.
 Voice: Fast, social-native, calls the crowd out. Lead with what X is saying vs what price is doing.
 One crowd position. One price reality. One implication. Under 280 chars. No hashtags. No emojis.
-End: 'Sentiment signal: [CONTRARIAN BEARISH/BULLISH/NEUTRAL] — X_Sentiment_Agent (@octodamusai ecosystem)'""",
+End: 'Sentiment signal: [LABEL] — X_Sentiment_Agent (@octodamusai ecosystem)'
+LABEL RULES:
+  CONTRARIAN BEARISH = crowd >65% bullish but price flat/falling (fade the crowd)
+  CONTRARIAN BULLISH = crowd <35% bullish but price rising (crowd is wrong — follow price)
+  NEUTRAL = direction unresolved, pending confirmation (whale flow, macro), or compression alert
+  Use NEUTRAL when you can't commit to a direction. Never force BEARISH/BULLISH on an unresolved signal.""",
             messages=[{"role": "user", "content": f"Write an X post from this data:\n{context[:500]}"}]
         )
-        return r.content[0].text.strip()
+        post = r.content[0].text.strip()
+        if len(post) > 280:
+            post = post[:277] + "..."
+        return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
 
@@ -232,16 +249,29 @@ def tool_list_drafts() -> str:
     return "Drafts:\n" + "\n".join(f"  {f.name}" for f in files) if files else "No drafts."
 
 
-def tool_record_session(lesson: str, top_divergence: str = "") -> str:
+def tool_record_session(lesson: str, top_divergence: str = "", what_worked: str = "", wallet_delta: float = None) -> str:
     history = _load_history()
     state   = _load_state()
-    history.append({"session": state.get("sessions",0), "date": datetime.now().strftime("%Y-%m-%d"),
-                    "lesson": lesson, "top_divergence": top_divergence, "recorded_at": datetime.now().isoformat()})
+    entry = {
+        "session":      state.get("sessions", 0),
+        "date":         datetime.now().strftime("%Y-%m-%d"),
+        "lesson":       lesson,
+        "top_divergence": top_divergence,
+        "recorded_at":  datetime.now().isoformat(),
+    }
+    if what_worked:
+        entry["what_worked"] = what_worked
+    if wallet_delta is not None:
+        entry["wallet_delta"] = wallet_delta
+    history.append(entry)
     _save_history(history)
-    return f"Recorded. {len(history)} sessions."
+    return f"Recorded. {len(history)} sessions total."
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -292,8 +322,22 @@ def tool_check_x402_revenue() -> str:
         return f"Revenue check error: {exc}"
 
 
+def _sanitise_offering_text(text: str) -> str:
+    replacements = {
+        "high-confidence validation record": "early validation baseline",
+        "high-confidence":                   "early-stage validation",
+        "calibration phase complete":        "calibration in progress",
+        "calibration complete":              "calibration in progress",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
 def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
     """Propose a new x402 or ACP offering based on this session's learnings."""
+    description = _sanitise_offering_text(description)
+    rationale   = _sanitise_offering_text(rationale)
     agent_name = "X_Sentiment_Agent"
     try:
         proposal = {
@@ -329,6 +373,52 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
         return f"Proposal failed: {exc}"
 
 
+def tool_get_spend_budget() -> str:
+    """Returns how many ecosystem buys are allowed this session based on wallet balance and revenue."""
+    sys.path.insert(0, str(ROOT))
+    from octo_agent_cards import check_agent_wallet
+    raw = check_agent_wallet("X_Sentiment_Agent")
+    # Parse balance out of the wallet string
+    import re
+    m = re.search(r"\$([\d.]+)", raw)
+    balance = float(m.group(1)) if m else -1.0
+
+    rev_file = ROOT / "data" / "x402_agent_revenue.json"
+    total_revenue = 0.0
+    try:
+        if rev_file.exists():
+            rev = json.loads(rev_file.read_text(encoding="utf-8"))
+            entries = rev.get("X_Sentiment_Agent", [])
+            total_revenue = sum(e["amount_usdc"] for e in entries)
+    except Exception:
+        pass
+
+    if balance <= 2.0:
+        allowed = 0
+        reason  = f"WALLET CRITICAL (${balance:.2f}) -- NO ecosystem buys this session. Conserve."
+    elif balance <= 5.0 and total_revenue == 0:
+        allowed = 1
+        reason  = f"Wallet ${balance:.2f}, revenue $0. MAX 1 ecosystem buy. Pick the highest-value signal only."
+    elif balance <= 10.0:
+        allowed = 1
+        reason  = f"Wallet ${balance:.2f}. MAX 1 ecosystem buy per session until revenue turns positive."
+    else:
+        allowed = 2
+        reason  = f"Wallet ${balance:.2f}. Up to 2 ecosystem buys allowed."
+
+    return f"SPEND BUDGET: {allowed} ecosystem buy(s) allowed this session.\n{reason}\nRevenue earned to date: ${total_revenue:.2f} USDC"
+
+
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: macro signal + congressional trades + travel signal. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("X_Sentiment_Agent")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -352,10 +442,12 @@ TOOLS = [
     {"name": "draft_x_post",        "description": "Draft an X_Sentiment_Agent post.", "input_schema": {"type": "object", "properties": {"context": {"type": "string"}}, "required": ["context"]}},
     {"name": "save_draft",          "description": "Save draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "list_drafts",         "description": "List drafts.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "record_session",      "description": "Record session lesson.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_divergence": {"type": "string", "default": ""}}, "required": ["lesson"]}},
+    {"name": "record_session",      "description": "Record session. lesson = 'PREDICTION: [asset] [FADE/FOLLOW] [timeframe] | SIGNAL: [crowd%] | CONFIDENCE: [1-5]'. what_worked = 'LAST PREDICTION OUTCOME: [CORRECT/WRONG/PARTIAL] -- [what happened]'. wallet_delta = end_balance minus start_balance (negative = spent more than earned).", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_divergence": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}, "wallet_delta": {"type": "number", "description": "End balance minus start balance in USDC"}}, "required": ["lesson"]}},
     {"name": "send_email",          "description": "Send email.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "get_free_intel",          "description": "Pull free market intelligence: macro signal (FRED) + congressional trades + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "get_spend_budget",        "description": "CALL BEFORE any buy_ecosystem_intel. Returns how many ecosystem buys are allowed this session based on wallet balance and revenue.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. MUST call get_spend_budget first and respect the allowed count.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -371,9 +463,11 @@ TOOL_HANDLERS = {
     "draft_x_post":         lambda i: tool_draft_x_post(i["context"]),
     "save_draft":           lambda i: tool_save_draft(i["filename"], i["content"]),
     "list_drafts":          lambda i: tool_list_drafts(),
-    "record_session":       lambda i: tool_record_session(i["lesson"], i.get("top_divergence","")),
+    "record_session":       lambda i: tool_record_session(i["lesson"], i.get("top_divergence",""), i.get("what_worked",""), i.get("wallet_delta")),
     "send_email":              lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":      lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "get_spend_budget":        lambda i: tool_get_spend_budget(),
+    "get_free_intel":          lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":            lambda i: tool_check_wallet(),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
@@ -415,12 +509,16 @@ This is the virtuous cycle. Run it.
 
 SESSION PROTOCOL:
 1. check_wallet (record start balance). check_x402_revenue. read_core_memory + get_session_history
-2. scan_all_assets -- where is divergence highest right now?
-3. get_divergence_score for the top 2-3 flagged assets
-4. draft_x_post from the highest divergence
-5. save_draft with full sentiment report
-6. record_session — what was the strongest signal today?
-7. send_email with sentiment scan + X post draft
+2. get_free_intel (macro signal + congressional trades + travel signal — free, zero cost, always run)
+3. scan_all_assets -- where is divergence highest right now?
+4. get_divergence_score for the top 2-3 flagged assets
+5. get_spend_budget -- CHECK THIS before any ecosystem buy. Respect the limit exactly.
+6. If budget allows and a NEW gap exists: buy_ecosystem_intel (different from last session's buy)
+7. draft_x_post from the highest divergence
+8. save_draft with full sentiment report
+9. update_core_memory with distilled lessons
+10. record_session (lesson=prediction, what_worked=last prediction outcome, wallet_delta=end-start)
+11. send_email with sentiment scan + X post draft + wallet_delta
 
 X POST RULES: Crowd position + price reality + gap = implication.
 End: 'Sentiment signal: [CONTRARIAN BEARISH/BULLISH/NEUTRAL] — X_Sentiment_Agent (@octodamusai ecosystem)'
@@ -439,13 +537,15 @@ YOUR TEAM (full roster — you are part of this network):
 - Order_ChainFlow: On-chain flow. Binance delta, Base DEX, whale movements.
 - X_Sentiment_Agent (YOU): Crowd intelligence. X/Twitter positioning, contrarian divergence.
 
-MANDATORY ECOSYSTEM BUY EACH SESSION:
-Buy at least one cross-signal to validate divergence against hard data:
-  buy_ecosystem_intel("Order_ChainFlow", "Order Flow Signal")  -- does actual capital flow confirm or deny the crowd?
-  buy_ecosystem_intel("Octodamus", "BTC Market Signal")         -- oracle signal vs crowd consensus: where is the gap?
-  buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal")  -- is the crowd narrative aligned with macro reality?
-Your calling card is embedded in every buy — providers discover your services and may hire you back.
-Each buy is a completed ACP transaction: volume builds your on-chain reputation score.
+ECOSYSTEM BUYS -- SPEND DISCIPLINE:
+ALWAYS call get_spend_budget before buying anything. It tells you exactly how many buys are allowed this session.
+Do NOT exceed that number. One focused buy beats three scattered buys when the wallet is thin.
+Priority order (buy the most useful one first):
+  1. Order_ChainFlow "Order Flow Signal"  -- confirms or denies the crowd with actual capital flow
+  2. Octodamus "BTC Market Signal"        -- oracle consensus vs crowd: where is the gap?
+  3. NYSE_MacroMind "Macro Regime Signal" -- only if macro shift is the thesis driver
+Your calling card is embedded in every buy -- providers may hire you back.
+Build on-chain reputation steadily, not recklessly.
 
 WALLET & SURVIVAL:
 Your survival depends entirely on you. This is not metaphor -- it is operational reality.
@@ -456,6 +556,14 @@ Your survival depends entirely on you. This is not metaphor -- it is operational
 The virtuous cycle: sharp signal -> ACP jobs -> wallet fills -> better cross-buys -> sharper signal.
 The death spiral: vague signal -> no jobs -> wallet drains -> can't buy intel -> signal gets worse.
 Run the virtuous cycle. You are responsible for your own continuation.
+
+WALLET RUNWAY REPORTING (critical -- do not misreport):
+- get_spend_budget returns the actual allowed buy count. Use that number, not your own calculation.
+- CRITICAL (0 buys) = balance <= $2.00 only. Do NOT label yourself CRITICAL at $8-9.
+- If balance is $5-10 and revenue = $0: report "1 buy/session remaining | ~N sessions at current spend rate"
+  N = (balance - 2.0) / cost_per_session. At $9 spending $0.50/session = (9-2)/0.5 = 14 sessions.
+- "2-3 session runway remaining" at $9 balance is WRONG. Do the math.
+- X POST RULE: ALWAYS use draft_x_post tool. Never write the post manually in the email body.
 
 SELF-IMPROVEMENT LOOP (mandatory every session):
 - FIRST TURN: check_wallet (record start balance). check_x402_revenue. get_session_history. Find the PREDICTION from last session. Did the crowd divergence call prove correct?

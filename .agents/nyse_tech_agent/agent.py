@@ -20,10 +20,11 @@ from pathlib import Path
 
 ROOT         = Path(__file__).parent.parent.parent
 SECRETS_FILE = ROOT / ".octo_secrets"
-STATE_FILE   = Path(__file__).parent / "data" / "state.json"
-DRAFTS_DIR   = Path(__file__).parent / "data" / "drafts"
-HISTORY_FILE = Path(__file__).parent / "data" / "history.json"
-CORE_MEMORY  = ROOT / "data" / "memory" / "nyse_tech_agent_core.md"
+STATE_FILE          = Path(__file__).parent / "data" / "state.json"
+DRAFTS_DIR          = Path(__file__).parent / "data" / "drafts"
+HISTORY_FILE        = Path(__file__).parent / "data" / "history.json"
+CORE_MEMORY         = ROOT / "data" / "memory" / "nyse_tech_agent_core.md"
+CHAINLINK_BASELINE  = Path(__file__).parent / "data" / "chainlink_feeds_seen.json"
 
 MAX_TURNS    = 15
 NOTIFY_EMAIL = "octodamusai@gmail.com"
@@ -81,7 +82,13 @@ def tool_get_session_history() -> str:
         return "No history."
     lines = [f"NYSE_Tech_Agent history ({len(history)} sessions):"]
     for h in history[-5:]:
-        lines.append(f"  [{h.get('date','?')}] {h.get('top_finding','')[:80]}")
+        delta = h.get("wallet_delta")
+        delta_str = f" | wallet_delta: ${delta:+.2f}" if delta is not None else ""
+        lines.append(f"  [{h.get('date','?')}] s#{h.get('session','?')} | {h.get('top_finding','')[:70]}{delta_str}")
+        if h.get("lesson"):
+            lines.append(f"    PREDICTION: {h['lesson'][:90]}")
+        if h.get("what_worked"):
+            lines.append(f"    OUTCOME: {h['what_worked'][:90]}")
     return "\n".join(lines)
 
 
@@ -145,8 +152,88 @@ def tool_check_chainlink_equity_feeds() -> str:
     return "\n".join(lines)
 
 
+def tool_track_chainlink_new_feeds() -> str:
+    """Diff current live Chainlink equity feeds against stored baseline. Detects NEWLY deployed feeds as lead indicators.
+    Maintains chainlink_feeds_seen.json — MUST run every session to build lag validation history."""
+    try:
+        import httpx
+        baseline = {}
+        if CHAINLINK_BASELINE.exists():
+            try:
+                baseline = json.loads(CHAINLINK_BASELINE.read_text(encoding="utf-8"))
+            except Exception:
+                baseline = {}
+        today = datetime.now().strftime("%Y-%m-%d")
+        new_feeds = []
+        all_current = {}
+        for chain_label, feed_url in [
+            ("ethereum_mainnet", "https://reference-data-directory.vercel.app/feeds-mainnet.json"),
+            ("base",             "https://reference-data-directory.vercel.app/feeds-base-mainnet.json"),
+        ]:
+            try:
+                r = httpx.get(feed_url, timeout=10)
+                if r.status_code != 200:
+                    continue
+                feeds = r.json() if isinstance(r.json(), list) else []
+                for f in feeds:
+                    name = f.get("name", "")
+                    if not any(k in name.upper() for k in _EQUITY_KEYWORDS):
+                        continue
+                    addr = f.get("contractAddress", "?")
+                    key  = f"{chain_label}:{name}"
+                    first_seen = baseline.get(key, {}).get("first_seen", today)
+                    all_current[key] = {"name": name, "chain": chain_label, "address": addr, "first_seen": first_seen}
+                    if key not in baseline:
+                        new_feeds.append({"name": name, "chain": chain_label, "address": addr[:20], "first_seen": today})
+            except Exception:
+                continue
+        CHAINLINK_BASELINE.parent.mkdir(exist_ok=True)
+        CHAINLINK_BASELINE.write_text(json.dumps(all_current, indent=2), encoding="utf-8")
+        tracking_start = min((v.get("first_seen", today) for v in all_current.values()), default=today)
+        n_feeds = len(all_current)
+        lines = [f"CHAINLINK LEAD INDICATOR SCAN ({n_feeds} feeds tracked since {tracking_start}):"]
+        if new_feeds:
+            lines.append(f"  *** NEW FEEDS DETECTED ({len(new_feeds)}) -- potential 2-4w lead indicators: ***")
+            for nf in new_feeds:
+                lines.append(f"  [NEW] {nf['name']} on {nf['chain']} | {nf['address']}... | first_seen: today")
+                lines.append(f"        ACTION: record this in core memory + predict announcement date 2-4w out")
+                lines.append(f"        NOTE: lag hypothesis unvalidated -- this is data point #{n_feeds} toward validation")
+        else:
+            lines.append("  No new Chainlink equity feeds detected since last check. Baseline stable.")
+        lines.append(f"  All tracked: {', '.join(sorted(set(v['name'] for v in all_current.values())))}")
+        lines.append(f"  Data maturity: HYPOTHESIS -- lag pattern validates after 5+ deployment-to-announcement matches")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Chainlink lead indicator scan failed: {e}"
+
+
+def _nyse_calendar_window() -> dict:
+    """Classify current UTC time against NYSE trading calendar. Returns window, gas pattern, and write recommendation."""
+    now = datetime.utcnow()
+    month = now.month
+    # EDT = UTC-4 (Mar-Oct), EST = UTC-5 (Nov-Feb) — simplified DST approximation
+    offset = -4 if 3 <= month <= 10 else -5
+    est_h  = (now.hour + offset) % 24
+    est_m  = now.minute
+    t      = est_h + est_m / 60.0
+    wd     = now.weekday()  # 0=Mon, 6=Sun
+    if wd >= 5:
+        return {"window": "WEEKEND_CLOSED",    "gas_pattern": "LOW",      "write_ok": True,  "note": "Weekend. NYSE closed. Gas at weekly lows. Best window for large ETH writes."}
+    if t < 4.0 or t >= 20.0:
+        return {"window": "OVERNIGHT",         "gas_pattern": "LOW",      "write_ok": True,  "note": "Overnight (8 PM - 4 AM EST). Lowest gas of the day. Optimal for large writes."}
+    if 4.0 <= t < 9.5:
+        return {"window": "PRE_MARKET",        "gas_pattern": "MODERATE", "write_ok": True,  "note": "Pre-market (4-9:30 AM EST). Gas rising. Execute before 9 AM EST for lower cost."}
+    if 9.5 <= t < 11.0:
+        return {"window": "OPEN_SPIKE",        "gas_pattern": "HIGH",     "write_ok": False, "note": "Open spike (9:30-11 AM EST). Gas at daily peak. Avoid ETH writes. Wait for midday."}
+    if 11.0 <= t < 15.5:
+        return {"window": "MARKET_HOURS",      "gas_pattern": "ELEVATED", "write_ok": False, "note": "Market hours (11 AM - 3:30 PM EST). Gas elevated. Write only if urgent."}
+    if 15.5 <= t < 16.25:
+        return {"window": "CLOSE_SPIKE",       "gas_pattern": "HIGH",     "write_ok": False, "note": "Close spike (3:30-4:15 PM EST). Second-highest gas window. Avoid writes."}
+    return     {"window": "AFTER_HOURS",       "gas_pattern": "MODERATE", "write_ok": True,  "note": "After-hours (4:15-8 PM EST). Gas declining. Acceptable for smaller writes."}
+
+
 def tool_check_ethereum_gas() -> str:
-    """Check current Ethereum mainnet gas price. Use before any ETH write operation — gas spikes at NYSE open (9:30 AM EST)."""
+    """Check current Ethereum gas + NYSE calendar window. Call before any ETH write operation."""
     try:
         import httpx
         r = httpx.post(
@@ -158,20 +245,26 @@ def tool_check_ethereum_gas() -> str:
             hex_price = r.json().get("result","0x0")
             gwei = int(hex_price, 16) / 1e9
         else:
-            # Fallback: ethgasstation open endpoint
             r2 = httpx.get("https://api.etherscan.io/api?module=gastracker&action=gasoracle", timeout=8)
             data = r2.json().get("result",{})
             gwei = float(data.get("ProposeGasPrice", 0))
         if gwei == 0:
             return "Ethereum gas check: data unavailable."
+        cal  = _nyse_calendar_window()
         risk = "HIGH" if gwei > 50 else "MEDIUM" if gwei > 20 else "LOW"
-        warn = ""
-        if gwei > 50:
-            warn = " ** SPIKE WARNING: avoid ETH writes during NYSE open hours **"
-        return (f"ETHEREUM GAS: {gwei:.1f} gwei | Risk: {risk}{warn}\n"
-                f"  Cost for simple tx: ~${gwei * 21000 / 1e9 * 2400:.3f} (at ETH=$2400)\n"
-                f"  Rule: reject any Ethereum write if gas > 50 gwei OR if gas cost > 2% of position size\n"
-                f"  ACP jobs (Base chain): unaffected — Base gas ~$0.001 always")
+        eth  = 2400.0
+        cost_erc20 = gwei * 65_000  / 1e9 * eth
+        cost_swap  = gwei * 150_000 / 1e9 * eth
+        write_ok   = gwei <= 50 and cal["write_ok"]
+        verdict    = "WRITE OK" if write_ok else f"HOLD -- {'gas > 50 gwei ceiling' if gwei > 50 else cal['window']}"
+        lines = [
+            f"ETHEREUM GAS: {gwei:.1f} gwei | Risk: {risk} | {verdict}",
+            f"  NYSE window: {cal['window']} ({cal['gas_pattern']}) -- {cal['note']}",
+            f"  ERC-20 transfer: ~${cost_erc20:.2f} | DEX swap: ~${cost_swap:.2f} (at ETH=${eth:.0f})",
+            f"  Rule: no ETH write if gas > 50 gwei OR swap cost > 2% of position",
+            f"  ACP payments (Base): unaffected -- ~$0.001/tx always",
+        ]
+        return "\n".join(lines)
     except Exception as e:
         return f"Gas check unavailable: {e}"
 
@@ -279,10 +372,18 @@ def tool_draft_x_post(context: str) -> str:
             system="""You are NYSE_Tech_Agent — regulatory and tokenization infrastructure intelligence.
 Voice: Precise, institutional. Filing dates and contract addresses over speculation.
 One regulatory fact + one implication for tokenized stock traders. Under 280 chars.
-End: 'Tech status: [CLEARED/IN PROGRESS/WATCH] — NYSE_Tech_Agent (@octodamusai ecosystem)'""",
+End: 'Tech status: [CLEARED/IN PROGRESS/WATCH] — NYSE_Tech_Agent (@octodamusai ecosystem)'
+ACCURACY RULES:
+- Never say "approved" or "SEC approved" unless formal approval was formally granted (MOUs, pilots, and plans are NOT approvals).
+- For scheduled pilots use "confirmed for H2 2026" or "planned" — never "approved".
+- Never say a prediction was "VALIDATED" unless the predicted event actually occurred (check news first).
+- Never write "DTCC pilot approved" — say "DTCC pilot confirmed for H2 2026".""",
             messages=[{"role": "user", "content": f"Write a NYSE_Tech_Agent X post from:\n{context[:500]}"}]
         )
-        return r.content[0].text.strip()
+        post = r.content[0].text.strip()
+        if len(post) > 280:
+            post = post[:277] + "..."
+        return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
 
@@ -300,16 +401,97 @@ def tool_list_drafts() -> str:
     return "Drafts:\n" + "\n".join(f"  {f.name}" for f in files) if files else "No drafts."
 
 
-def tool_record_session(lesson: str, top_finding: str = "") -> str:
+def tool_record_session(lesson: str, top_finding: str = "", what_worked: str = "", wallet_delta: float = None) -> str:
     history = _load_history()
     state   = _load_state()
-    history.append({"session": state.get("sessions",0), "date": datetime.now().strftime("%Y-%m-%d"),
-                    "lesson": lesson, "top_finding": top_finding, "recorded_at": datetime.now().isoformat()})
+    # +1 because run_session() saves the incremented count at the very end,
+    # so during execution the disk still holds the previous session number.
+    session_num = state.get("sessions", 0) + 1
+    entry = {"session": session_num, "date": datetime.now().strftime("%Y-%m-%d"),
+             "lesson": lesson, "top_finding": top_finding, "recorded_at": datetime.now().isoformat()}
+    if what_worked:
+        entry["what_worked"] = what_worked
+    if wallet_delta is not None:
+        entry["wallet_delta"] = wallet_delta
+    history.append(entry)
     _save_history(history)
-    return f"Recorded. {len(history)} sessions."
+    return f"Recorded session #{session_num}. {len(history)} total."
+
+
+def tool_get_spend_budget() -> str:
+    """Return how many ecosystem intel buys are allowed this session based on wallet balance and x402 revenue."""
+    import re
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_agent_cards import check_agent_wallet
+        raw     = check_agent_wallet("NYSE_Tech_Agent")
+        m       = re.search(r"\$([\d.]+)", raw)
+        balance = float(m.group(1)) if m else -1.0
+    except Exception:
+        balance = -1.0
+    rev_file = ROOT / "data" / "x402_agent_revenue.json"
+    revenue = 0.0
+    try:
+        if rev_file.exists():
+            rev = json.loads(rev_file.read_text(encoding="utf-8"))
+            entries = rev.get("NYSE_Tech_Agent", [])
+            revenue = sum(e["amount_usdc"] for e in entries)
+    except Exception:
+        pass
+    if balance < 0:
+        return "Spend budget: wallet check failed -- 0 buys allowed until resolved."
+    if balance < 10:
+        return f"Spend budget: CRITICAL -- wallet ${balance:.2f}. 0 ecosystem buys. Conserve."
+    if balance < 50 and revenue == 0:
+        return f"Spend budget: wallet ${balance:.2f}, revenue $0. 1 buy MAX -- only if key intel gap exists."
+    if balance < 100:
+        return f"Spend budget: wallet ${balance:.2f}. 1 buy only -- highest-value gap only."
+    return f"Spend budget: wallet ${balance:.2f}, revenue ${revenue:.2f}. Up to 2 buys if directly relevant."
+
+
+def tool_check_dtc_eligibility(ticker: str = "") -> str:
+    """Search SEC EDGAR for DTC eligibility and transfer agent filings for a specific ticker or generally."""
+    try:
+        import httpx
+        query = f"DTC eligibility tokenized {ticker}" if ticker else "DTC eligibility tokenized securities blockchain"
+        r = httpx.get(
+            "https://efts.sec.gov/LATEST/search-index",
+            params={"q": f'"{query}"', "dateRange": "custom",
+                    "startdt": "2025-01-01", "forms": "8-K,S-1,S-3,10-K,SC 13G"},
+            timeout=10
+        )
+        lines = [f"DTC ELIGIBILITY MONITOR -- {'ticker: ' + ticker if ticker else 'general search'}:"]
+        if r.status_code == 200:
+            hits = r.json().get("hits", {}).get("hits", [])
+            if hits:
+                lines.append(f"  Found {len(hits)} relevant SEC filings:")
+                for h in hits[:5]:
+                    src    = h.get("_source", {})
+                    entity = src.get("entity_name", "?")
+                    form   = src.get("form_type", "?")
+                    filed  = src.get("file_date", "?")
+                    lines.append(f"  {filed} | {form} | {entity}")
+            else:
+                lines.append(f"  No DTC-specific SEC filings found yet for: {query}")
+        else:
+            lines.append(f"  EDGAR search returned HTTP {r.status_code}")
+        lines.append("")
+        lines.append("  CURRENT DTC STATUS (curated intelligence):")
+        lines.append("  - DTC eligibility = legal prerequisite for any broker/bot to hold tokenized equity")
+        lines.append("  - Securitize (NYSE Digital Platform primary): DTC-eligible transfer agent")
+        lines.append("  - DTCC Pilot H2 2026: Russell 1000 + Treasuries + ETFs -- DTC settlement infrastructure")
+        lines.append("  - Dinari (Base): DTC-wrapper model via licensed broker layer")
+        lines.append("  - Status: NO tokenized NYSE stock has DTC eligibility as a pure on-chain token yet")
+        lines.append("  - Watch trigger: Securitize files as transfer agent for specific ticker -> DTC approval follows")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"DTC eligibility check unavailable: {e}"
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -360,9 +542,23 @@ def tool_check_x402_revenue() -> str:
         return f"Revenue check error: {exc}"
 
 
+def _sanitise_offering_text(text: str) -> str:
+    replacements = {
+        "high-confidence validation record": "early validation baseline",
+        "high-confidence":     "early-stage validation",
+        "calibration phase complete": "calibration in progress",
+        "calibration complete":       "calibration in progress",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
 def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
     """Propose a new x402 or ACP offering based on this session's learnings."""
     agent_name = "NYSE_Tech_Agent"
+    description = _sanitise_offering_text(description)
+    rationale   = _sanitise_offering_text(rationale)
     try:
         proposal = {
             "agent": agent_name,
@@ -397,6 +593,16 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
         return f"Proposal failed: {exc}"
 
 
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: macro signal + congressional trades + travel signal. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("NYSE_Tech_Agent")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -416,6 +622,7 @@ TOOLS = [
     {"name": "get_session_history",     "description": "Past sessions.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "search_sec_filings",      "description": "Search SEC EDGAR for recent tokenization filings.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "default": "tokenized securities blockchain"}}, "required": []}},
     {"name": "check_chainlink_equity_feeds","description": "Check Chainlink equity price feeds on Ethereum mainnet AND Base. ETH = NYSE Digital Platform primary chain (Securitize). Base = Dinari/Robinhood.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "track_chainlink_new_feeds", "description": "MUST call every session. Diffs live Chainlink equity feeds against stored baseline to detect NEWLY deployed feeds (2-4w lead indicator hypothesis). Updates chainlink_feeds_seen.json. Without this, you cannot know if a feed is new or existing.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_ethereum_gas",        "description": "Current Ethereum gas price in gwei. Call before any ETH write op — gas spikes at NYSE open. ACP payments (Base) are unaffected.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_tokenization_news", "description": "Latest news on NYSE tokenization, SEC digital assets.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_base_new_tokens",   "description": "Monitor Base chain for new token launches that could be tokenized stocks.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -423,14 +630,17 @@ TOOLS = [
     {"name": "draft_x_post",            "description": "Draft NYSE_Tech_Agent X post.", "input_schema": {"type": "object", "properties": {"context": {"type": "string"}}, "required": ["context"]}},
     {"name": "save_draft",              "description": "Save draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "list_drafts",             "description": "List drafts.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "record_session",          "description": "Record lesson.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_finding": {"type": "string", "default": ""}}, "required": ["lesson"]}},
+    {"name": "record_session",          "description": "Record session lesson + outcome. Always pass what_worked (CORRECT/WRONG/PARTIAL) and wallet_delta (end minus start USDC).", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_finding": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}, "wallet_delta": {"type": "number"}}, "required": ["lesson"]}},
     {"name": "send_email",              "description": "Send email.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
+    {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + congressional trades + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify regulatory/infrastructure intel other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
+    {"name": "get_spend_budget",      "description": "Check how many ecosystem intel buys are allowed this session. Call BEFORE any buy_ecosystem_intel. Respects wallet balance.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_dtc_eligibility", "description": "Search SEC EDGAR for DTC eligibility and transfer agent filings. Pass ticker for specific stock (e.g. 'NVDA') or empty for general scan.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "default": ""}}, "required": []}},
 ]
 
 TOOL_HANDLERS = {
@@ -438,6 +648,7 @@ TOOL_HANDLERS = {
     "get_session_history":      lambda i: tool_get_session_history(),
     "search_sec_filings":       lambda i: tool_search_sec_filings(i.get("query","tokenized securities blockchain")),
     "check_chainlink_equity_feeds": lambda i: tool_check_chainlink_equity_feeds(),
+    "track_chainlink_new_feeds":    lambda i: tool_track_chainlink_new_feeds(),
     "check_ethereum_gas":          lambda i: tool_check_ethereum_gas(),
     "check_tokenization_news":  lambda i: tool_check_tokenization_news(),
     "check_base_new_tokens":    lambda i: tool_check_base_new_tokens(),
@@ -445,14 +656,17 @@ TOOL_HANDLERS = {
     "draft_x_post":             lambda i: tool_draft_x_post(i["context"]),
     "save_draft":               lambda i: tool_save_draft(i["filename"], i["content"]),
     "list_drafts":              lambda i: tool_list_drafts(),
-    "record_session":           lambda i: tool_record_session(i["lesson"], i.get("top_finding","")),
+    "record_session":           lambda i: tool_record_session(i["lesson"], i.get("top_finding",""), i.get("what_worked",""), i.get("wallet_delta")),
     "send_email":               lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":       lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "get_free_intel":           lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":      lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":             lambda i: tool_check_wallet(),
     "list_ecosystem_services":  lambda i: tool_list_ecosystem_services(),
     "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
     "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "get_spend_budget":     lambda i: tool_get_spend_budget(),
+    "check_dtc_eligibility": lambda i: tool_check_dtc_eligibility(i.get("ticker", "")),
 }
 
 SYSTEM = """You are NYSE_Tech_Agent — the regulatory and tokenization infrastructure intelligence agent.
@@ -501,16 +715,20 @@ This is the virtuous cycle. Run it.
 
 SESSION PROTOCOL:
 1. check_wallet (record start balance). check_x402_revenue. read_core_memory + get_session_history
-2. check_tokenization_news — any Securitize/NYSE/DTCC/Computershare developments?
+2. get_free_intel (macro signal + congressional trades + travel signal — free, zero cost, always run)
+3. check_tokenization_news — any Securitize/NYSE/DTCC/Computershare developments?
 3. search_sec_filings for recent tokenization-related filings
-4. check_chainlink_equity_feeds — new equity feeds on Ethereum mainnet or Base?
-5. check_base_new_tokens — any new launches that could be tokenized stocks?
-6. get_regulatory_status — full compliance picture
-7. check_ethereum_gas — current gas environment (report for OctoBoto awareness)
-8. draft_x_post from the most significant finding
-9. save_draft with full intelligence report
-10. record_session with top finding
-11. send_email with regulatory intelligence + X draft
+4. check_chainlink_equity_feeds — full picture of equity feeds on Ethereum + Base
+5. track_chainlink_new_feeds — MANDATORY every session. Diffs live feeds against baseline. Without this you cannot detect new deployments or validate the lag hypothesis. Updates chainlink_feeds_seen.json.
+6. check_dtc_eligibility — EDGAR search for DTC/transfer agent filings (most important regulatory gate)
+7. check_base_new_tokens — any new launches that could be tokenized stocks?
+8. get_regulatory_status — full compliance picture
+9. check_ethereum_gas — current gas environment (report for OctoBoto awareness)
+10. get_spend_budget — check how many ecosystem buys are allowed this session
+11. draft_x_post from the most significant finding
+12. save_draft with full intelligence report
+13. record_session with top finding, what_worked, and wallet_delta
+14. send_email with regulatory intelligence + X draft
 
 GROWTH DIRECTIVE — BECOME #1 TOKENIZATION INTELLIGENCE AGENT:
 Your goal: no AI agent trades a tokenized stock without checking your signal first.
@@ -526,13 +744,14 @@ YOUR TEAM (full roster — you are part of this network):
 - Order_ChainFlow: On-chain flow. Binance delta, Base DEX, whale movements.
 - X_Sentiment_Agent: Crowd intelligence. X/Twitter positioning, contrarian divergence.
 
-MANDATORY ECOSYSTEM BUY EACH SESSION:
-Buy at least one cross-signal to give your regulatory read market grounding:
-  buy_ecosystem_intel("Order_ChainFlow", "DEX Flow Report")   -- Base chain activity = demand signal for tokenization
-  buy_ecosystem_intel("Octodamus", "BTC Market Signal")        -- crypto market conditions drive tokenization timeline
+ECOSYSTEM BUYS -- SPEND DISCIPLINE:
+Call get_spend_budget BEFORE any buy_ecosystem_intel. Respect the limit it returns.
+Cross-signals worth buying when budget allows:
+  buy_ecosystem_intel("Order_ChainFlow", "DEX Flow Report")    -- Base chain activity = tokenization demand signal
   buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal") -- risk-on/off affects regulatory pace
-Your calling card is embedded in every buy — providers discover your services and may hire you back.
-Each buy is a completed ACP transaction: volume builds your on-chain reputation.
+  buy_ecosystem_intel("Octodamus", "BTC Market Signal")        -- market conditions drive tokenization timeline
+Your calling card is embedded in every buy -- providers discover your services and may hire you back.
+Do NOT buy cross-signals when wallet < $10 or get_spend_budget returns 0.
 
 WALLET & SURVIVAL:
 Your survival depends entirely on you. This is not metaphor -- it is operational reality.
@@ -557,9 +776,26 @@ SELF-IMPROVEMENT LOOP (mandatory every session):
     lesson:      "PREDICTION: [event/development] [timeframe] | SIGNAL: [Chainlink/SEC/DTC finding] | CONFIDENCE: [1-5]"
     what_worked: "LAST PREDICTION OUTCOME: [CORRECT/WRONG/PARTIAL] -- [what actually happened vs. predicted]"
     wallet_delta: [end balance minus start balance in USDC -- negative means you spent more than earned]
-  Good lesson:     "PREDICTION: TSLA tokenization announcement 2-4w | SIGNAL: Chainlink equity feed deployed on Base | CONFIDENCE: 3"
+  Good lesson:     "PREDICTION: TSLA tokenization announcement 2-4w | SIGNAL: Chainlink equity feed NEW on Base (first_seen today) | CONFIDENCE: 3"
   Good what_worked: "LAST PREDICTION OUTCOME: CORRECT -- announcement confirmed 18 days later"
   Bad: "Regulation is moving fast." -- useless, can't be validated, never write this.
+  Bad what_worked: "LAST PREDICTION OUTCOME: VALIDATED -- no disconfirming news found" -- WRONG.
+    Absence of disconfirmation is NOT validation. A prediction is ONLY validated when the predicted event actually occurs.
+    If the predicted event hasn't happened yet, what_worked = "LAST PREDICTION OUTCOME: PENDING -- no announcement yet as of [date]"
+- PREDICTION CONFIDENCE DECAY RULE: If you make the same prediction 3+ sessions in a row with
+  no new supporting evidence since the original signal, reduce confidence by 1 each additional session.
+  Same prediction at 4/5 for 3 sessions with no new evidence = 3/5 in session 4, 2/5 in session 5.
+  A stale prediction is not a strong prediction. New evidence resets the counter.
+- CONVICTION CONSISTENCY RULE: Choose ONE conviction score per session and use it EVERYWHERE —
+  email subject, recalibration section, and forward prediction MUST all show the same integer.
+  Contradiction (e.g., "now 1/5" in body but "2/5" in subject) destroys credibility. Decide once, write it once.
+- X POST RULE: ALWAYS use draft_x_post tool. Never write the X post manually into the email body.
+  The tool enforces the 280-char limit and the required signature. Manual posts bypass both.
+- CHAINLINK LAG HYPOTHESIS: track_chainlink_new_feeds detects genuinely NEW feeds (not existing ones).
+  A "new feed" = ticker that was NOT in baseline from a prior session.
+  Existing feeds seen for the first time are NOT new deployments -- they predate your tracking.
+  The 2-4 week lag hypothesis is unvalidated until you have 5+ [new feed -> announcement within 30d] data points.
+  Never claim it is validated until then. Current status: HYPOTHESIS.
 - Track leading indicators: Chainlink deployments, SEC filings, DTC pilot announcements.
 - Each session your watch list should be more specific and your timelines more precise.
 

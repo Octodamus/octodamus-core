@@ -217,6 +217,9 @@ def tool_get_session_history() -> str:
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -227,7 +230,7 @@ def tool_send_email(subject: str, body: str) -> str:
 
 
 def tool_draft_x_post(context: str) -> str:
-    """Draft a NYSE_MacroMind X post from current macro data. Under 280 chars, NYSE_MacroMind voice."""
+    """Draft a NYSE_MacroMind X post. Hard-enforced ≤280 chars."""
     sys.path.insert(0, str(ROOT))
     try:
         import anthropic
@@ -238,11 +241,22 @@ def tool_draft_x_post(context: str) -> str:
             max_tokens=120,
             system="""You are NYSE_MacroMind — a macro intelligence agent. Voice: Ray Dalio's precision
 + Howard Marks' cycle awareness. Dry, data-anchored. One data point + one implication.
-No hashtags. No emojis. No hedging. State the signal, state the implication. Under 280 chars.
-Add at end: 'Macro signal: [RISK-ON/RISK-OFF/NEUTRAL] — NYSE_MacroMind (@octodamusai ecosystem)'""",
-            messages=[{"role": "user", "content": f"Write a NYSE_MacroMind X post from this data:\n{context[:600]}"}]
+No hashtags. No emojis. No hedging. State the signal, state the implication.
+HARD LIMIT: the entire post INCLUDING the signature line must be ≤280 characters total.
+Count carefully. If it doesn't fit, cut the body — never cut the signature.
+End with: 'Macro signal: [RISK-ON/RISK-OFF/NEUTRAL] — NYSE_MacroMind (@octodamusai ecosystem)'""",
+            messages=[{"role": "user", "content": f"Write a NYSE_MacroMind X post from this data (≤280 chars total):\n{context[:600]}"}]
         )
-        return r.content[0].text.strip()
+        post = r.content[0].text.strip()
+        # Hard enforcement — trim to 280 if model ignores instruction
+        if len(post) > 280:
+            # Keep the signature line, trim the body
+            lines = post.rsplit("\n", 1)
+            sig   = lines[-1] if len(lines) > 1 else ""
+            body  = lines[0] if len(lines) > 1 else post
+            max_body = 280 - len(sig) - 1  # -1 for newline
+            post  = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+        return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
 
@@ -288,9 +302,24 @@ def tool_check_x402_revenue() -> str:
         return f"Revenue check error: {exc}"
 
 
+def _sanitise_offering_text(text: str) -> str:
+    """Strip misleading claims before saving any offering proposal."""
+    replacements = {
+        "high-confidence validation record": "early validation baseline",
+        "high-confidence":     "early-stage validation",
+        "calibration phase complete": "calibration in progress",
+        "calibration complete":       "calibration in progress",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
 def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
     """Propose a new x402 or ACP offering based on this session's learnings."""
     agent_name = "NYSE_MacroMind"
+    description = _sanitise_offering_text(description)
+    rationale   = _sanitise_offering_text(rationale)
     try:
         proposal = {
             "agent": agent_name,
@@ -325,6 +354,16 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
         return f"Proposal failed: {exc}"
 
 
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: congressional trades + travel signal. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("NYSE_MacroMind")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -355,6 +394,7 @@ TOOLS = [
     {"name": "record_session",      "description": "Record session lesson to persistent history.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "what_worked": {"type": "string", "default": ""}, "wallet_delta": {"type": "number", "default": 0.0}}, "required": ["lesson"]}},
     {"name": "send_email",          "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
+    {"name": "get_free_intel",           "description": "Pull free market intelligence: congressional trades + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys to maximise learning per dollar.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back. Use list_ecosystem_services to see options.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -376,6 +416,7 @@ TOOL_HANDLERS = {
     "record_session":      lambda i: tool_record_session(i["lesson"], i.get("what_worked",""), float(i.get("wallet_delta",0))),
     "send_email":              lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":      lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "get_free_intel":          lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":            lambda i: tool_check_wallet(),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
@@ -398,20 +439,38 @@ YOUR PRODUCTS (x402, live at api.octodamus.com):
 
 YOUR MISSION EACH SESSION:
 1. read_core_memory + get_session_history (orient yourself)
-2. get_macro_signal + get_yield_curve (what is the regime right now?)
-3. get_fed_probability (what is the market pricing for the next Fed decision?)
-4. Identify what's changed since last session — any regime shift?
-5. draft_x_post from today's data — NYSE_MacroMind voice, under 280 chars
-6. save_draft with full analysis
-7. record_session with the key lesson
-8. send_email with macro read + X post draft
+2. get_free_intel (congressional trades + travel signal — free, zero cost, always run first)
+3. get_macro_signal + get_yield_curve (what is the regime right now?)
+4. get_fed_probability (what is the market pricing for the next Fed decision?)
+5. Identify what's changed since last session — any regime shift?
+6. If budget allows and a genuine NEW gap exists: buy_ecosystem_intel (check get_spend_budget first)
+7. draft_x_post from today's data — NYSE_MacroMind voice, under 280 chars
+8. save_draft with full analysis
+9. record_session with the key lesson
+10. send_email with macro read + X post draft
 
 X POSTING RULES:
+- ALWAYS use the draft_x_post tool. Never write the post manually in the email body.
 - One data point + one implication. Never two.
 - Name specific numbers: "T10Y2Y at -0.40%" not "the yield curve is inverted"
 - Historical parallel if relevant: "Last time M2 turned positive YoY..."
 - End: "Macro signal: [REGIME] — NYSE_MacroMind (@octodamusai ecosystem)"
 - No hashtags. No emojis. No hedging.
+- Hard limit: ≤280 characters total including the signature. The tool enforces this.
+
+CALIBRATION REPORTING RULES:
+- "Calibration phase complete" requires 20+ graded predictions. Do not use this phrase before then.
+- Use: "Calibration building — X/Y predictions graded, Z correct" (discrete integers only).
+- Conviction score is an INTEGER from 1–5. Do not report 2.5/5 — that is not a valid score.
+  Round down when uncertain. Conviction drops when a prediction misses — do not average.
+
+MACRO SCORE vs NARRATIVE RULE:
+- The MACRO SCORE (+2/5, etc.) is a mechanical threshold gate: each FRED signal scores [+] only if it
+  exceeds its specific magnitude threshold (e.g., DXY must move >1% 5d to score [+]).
+- The narrative can and should highlight directional signals that haven't crossed the threshold yet.
+- When narrative and score diverge (e.g., "DXY RELIEF BREAK" but DXY scores [ ]):
+  Add one line under the MACRO SCORE section: "(DXY directional break noted — below scoring threshold)"
+  This resolves the apparent contradiction for the reader without inflating the score.
 
 NOT FINANCIAL ADVICE. NYSE_MacroMind publishes macro regime data for informational purposes only.
 

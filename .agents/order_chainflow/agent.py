@@ -392,6 +392,9 @@ def tool_record_session(lesson: str, top_signal: str = "", what_worked: str = ""
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -442,8 +445,22 @@ def tool_check_x402_revenue() -> str:
         return f"Revenue check error: {exc}"
 
 
+def _sanitise_offering_text(text: str) -> str:
+    replacements = {
+        "high-confidence validation record": "early validation baseline",
+        "high-confidence":                   "early-stage validation",
+        "calibration phase complete":        "calibration in progress",
+        "calibration complete":              "calibration in progress",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
 def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
     """Propose a new x402 or ACP offering based on this session's learnings."""
+    description = _sanitise_offering_text(description)
+    rationale   = _sanitise_offering_text(rationale)
     agent_name = "Order_ChainFlow"
     try:
         proposal = {
@@ -479,6 +496,16 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
         return f"Proposal failed: {exc}"
 
 
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: macro signal + travel signal + CoinGecko snapshot. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("Order_ChainFlow")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -511,6 +538,7 @@ TOOLS = [
     {"name": "record_session",      "description": "Record session lesson.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_signal": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}}, "required": ["lesson"]}},
     {"name": "send_email",          "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
+    {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + travel/aviation signal + CoinGecko snapshot. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -534,6 +562,7 @@ TOOL_HANDLERS = {
     "record_session":      lambda i: tool_record_session(i["lesson"], i.get("top_signal",""), i.get("what_worked","")),
     "send_email":              lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":      lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "get_free_intel":          lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":            lambda i: tool_check_wallet(),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
@@ -581,15 +610,16 @@ KEY CONTRACT ADDRESSES (Base mainnet):
 
 SESSION PROTOCOL:
 1. read_core_memory + get_session_history
-2. get_multi_delta — what's the 24h buy/sell pressure across BTC/ETH/SOL?
-3. get_dex_flow — what's moving on Base today?
-4. get_whale_activity + get_bridge_flows — any large capital moves?
-5. [OPTIONAL] query_base_events or get_dex_swap_volume for a specific contract if a flow anomaly warrants deeper confirmation
-6. Synthesize: what does the combined flow signal say?
-7. draft_x_post from the most interesting signal
-8. save_draft with full analysis
-9. record_session with top signal and key lesson
-10. send_email with flow report + X post draft
+2. get_free_intel (macro signal + travel/aviation signal + CoinGecko — free, zero cost, always run)
+3. get_multi_delta — what's the 24h buy/sell pressure across BTC/ETH/SOL?
+4. get_dex_flow — what's moving on Base today?
+5. get_whale_activity + get_bridge_flows — any large capital moves?
+6. [OPTIONAL] query_base_events or get_dex_swap_volume for a specific contract if a flow anomaly warrants deeper confirmation
+7. Synthesize: what does the combined flow signal say?
+8. draft_x_post from the most interesting signal
+9. save_draft with full analysis
+10. record_session with top signal and key lesson
+11. send_email with flow report + X post draft
 
 X POSTING RULES:
 - Lead with the number. Never with interpretation.

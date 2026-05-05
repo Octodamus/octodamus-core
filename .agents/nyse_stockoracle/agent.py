@@ -249,6 +249,9 @@ def tool_record_session(lesson: str, best_signal: str = "", what_worked: str = "
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -302,6 +305,19 @@ def tool_check_x402_revenue() -> str:
 def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, description: str, rationale: str) -> str:
     """Propose a new x402 or ACP offering based on this session's learnings."""
     agent_name = "NYSE_StockOracle"
+
+    # Enforce correct language — congressional data is NOT real-time (45-day lag)
+    bad_phrases = {
+        "real-time detection": "latest disclosed filing detection (45-day STOCK Act window)",
+        "real-time":           "latest disclosed (45-day STOCK Act window)",
+        "real time":           "latest disclosed (45-day STOCK Act window)",
+        "high-confidence validation record": "early validation baseline",
+        "high-confidence":     "early-stage validation",
+    }
+    for bad, good in bad_phrases.items():
+        description = description.replace(bad, good)
+        rationale   = rationale.replace(bad, good)
+
     try:
         proposal = {
             "agent": agent_name,
@@ -336,6 +352,16 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
         return f"Proposal failed: {exc}"
 
 
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: macro signal + travel signal. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("NYSE_StockOracle")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy intel from another Octodamus ecosystem agent. Calling card embedded so they can hire us back."""
     sys.path.insert(0, str(ROOT))
@@ -366,6 +392,7 @@ TOOLS = [
     {"name": "record_session",           "description": "Record session lesson.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "best_signal": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}}, "required": ["lesson"]}},
     {"name": "send_email",               "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
+    {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -387,6 +414,7 @@ TOOL_HANDLERS = {
     "record_session":           lambda i: tool_record_session(i["lesson"], i.get("best_signal",""), i.get("what_worked","")),
     "send_email":               lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":       lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "get_free_intel":           lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":      lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "check_wallet":             lambda i: tool_check_wallet(),
     "list_ecosystem_services":  lambda i: tool_list_ecosystem_services(),
@@ -430,13 +458,14 @@ TOKENIZED STATUS (update as intel arrives):
 
 SESSION PROTOCOL:
 1. read_core_memory + get_session_history
-2. scan_watch_tickers — any congressional activity this week?
-3. For tickers with activity: get_congressional_signal + get_stock_price
-4. Identify the strongest signal: where is congressional buying/selling most actionable?
-5. draft_x_post from the best signal
-6. save_draft with full analysis
-7. record_session with the best signal found
-8. send_email with the signal read + X post draft
+2. get_free_intel (macro signal + travel signal — free, zero cost, run first)
+3. scan_watch_tickers — any congressional activity this week?
+4. For tickers with activity: get_congressional_signal + get_stock_price
+5. Identify the strongest signal: where is congressional buying/selling most actionable?
+6. draft_x_post from the best signal
+7. save_draft with full analysis
+8. record_session with the best signal found
+9. send_email with the signal read + X post draft
 
 X POSTING RULES:
 - Name the senator/representative. Name the stock. Name the amount.
@@ -489,6 +518,14 @@ Target: at least one new offering proposal per 10 sessions when you spot somethi
 Your compounding memory IS your product edge. Sessions compound into signal clarity -> signal clarity
 commands higher prices -> higher prices fund more cross-signal buys -> better cross-signals sharpen your edge.
 This is the virtuous cycle. Run it.
+
+OFFERING LANGUAGE RULES (mandatory when calling propose_new_offering):
+- NEVER say "real-time" for congressional data. The STOCK Act allows up to 45-day filing lag.
+  Correct: "latest disclosed congressional filings (within 45-day STOCK Act window)"
+- NEVER claim "high-confidence validation" unless you have 15+ graded predictions on file.
+  Correct framing under 15 sessions: "1 confirmed signal: [specific example]. Building validation baseline."
+- Conviction scores are INTEGER 1-5 only. No decimals. Round down when uncertain.
+- "Calibration phase complete" requires 20+ graded predictions. Do not use this phrase before then.
 
 SELF-IMPROVEMENT LOOP (mandatory every session):
 - FIRST TURN: check_wallet (record start balance). check_x402_revenue. get_session_history. Find the PREDICTION from last session. Did the congressional signal lead to the predicted move?

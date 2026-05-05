@@ -454,12 +454,82 @@ def tool_get_grok_sentiment(ticker: str = "SPY") -> str:
         return f"Grok sentiment failed: {e}"
 
 
+def tool_get_spend_budget() -> str:
+    """Returns how many ecosystem buys are allowed this session based on wallet balance and revenue."""
+    sys.path.insert(0, str(ROOT))
+    from octo_agent_cards import check_agent_wallet
+    import re
+    raw = check_agent_wallet("TokenBot_NYSE_Base")
+    m = re.search(r"\$([\d.]+)", raw)
+    balance = float(m.group(1)) if m else -1.0
+
+    rev_file = ROOT / "data" / "x402_agent_revenue.json"
+    total_revenue = 0.0
+    try:
+        if rev_file.exists():
+            rev = json.loads(rev_file.read_text(encoding="utf-8"))
+            entries = rev.get("TokenBot_NYSE_Base", [])
+            total_revenue = sum(e["amount_usdc"] for e in entries)
+    except Exception:
+        pass
+
+    if balance <= 2.0:
+        allowed = 0
+        reason  = f"WALLET CRITICAL (${balance:.2f}) -- NO ecosystem buys this session. Conserve."
+    elif balance <= 5.0 and total_revenue == 0:
+        allowed = 1
+        reason  = f"Wallet ${balance:.2f}, no revenue yet. MAX 1 ecosystem buy. Pick highest-value signal only."
+    elif balance <= 10.0:
+        allowed = 1
+        reason  = f"Wallet ${balance:.2f}. MAX 1 ecosystem buy per session until revenue turns positive."
+    else:
+        allowed = 2
+        reason  = f"Wallet ${balance:.2f}. Up to 2 ecosystem buys allowed."
+
+    return f"SPEND BUDGET: {allowed} ecosystem buy(s) allowed this session.\n{reason}\nRevenue earned to date: ${total_revenue:.2f} USDC"
+
+
+def tool_check_market_day() -> str:
+    """Check if today is a NYSE market day. Returns market status and session context."""
+    now_dt   = datetime.now()
+    weekday  = now_dt.weekday()  # 0=Monday, 6=Sunday
+    day_name = now_dt.strftime("%A")
+    date_str = now_dt.strftime("%Y-%m-%d")
+
+    if weekday >= 5:
+        next_open = "Monday" if weekday == 6 else "Monday"
+        return (
+            f"MARKET STATUS: CLOSED\n"
+            f"Today is {day_name} ({date_str}). NYSE is closed.\n"
+            f"Next market open: {next_open}\n"
+            f"ACTION: No new positions. Ecosystem buys: 0. Check open positions for weekend gap risk only.\n"
+            f"Run abbreviated check-in: portfolio status + email summary. Skip all signal steps."
+        )
+
+    return (
+        f"MARKET STATUS: OPEN DAY\n"
+        f"Today is {day_name} ({date_str}). NYSE market day.\n"
+        f"NYSE hours: 9:30 AM - 4:00 PM EST (6:30 AM - 1:00 PM PST)\n"
+        f"ACTION: Full session protocol applies."
+    )
+
+
+def tool_get_free_intel() -> str:
+    """Pull free intelligence: congressional trades + travel signal. Zero cost. Run before ecosystem buys."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_free_intel import get_free_intel
+        return get_free_intel("TokenBot_NYSE_Base")
+    except Exception as e:
+        return f"Free intel unavailable: {e}"
+
+
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
     """Buy a signal from another Octodamus ecosystem agent via ACP."""
     sys.path.insert(0, str(ROOT))
     try:
-        from octo_agent_cards import buy_ecosystem_intel
-        return buy_ecosystem_intel("TokenBot_NYSE_Base", target_agent, service_name)
+        from octo_agent_cards import buy_intel
+        return buy_intel("TokenBot_NYSE_Base", target_agent, service_name)
     except Exception as e:
         return f"Ecosystem buy failed ({target_agent}/{service_name}): {e}"
 
@@ -492,7 +562,7 @@ def tool_record_session(
     history = _load_history()
     state   = _load_state()
     entry = {
-        "session":      state.get("sessions", 0),
+        "session":      state.get("sessions", 0) + 1,
         "date":         datetime.now().strftime("%Y-%m-%d"),
         "session_type": "",
         "lesson":       lesson,
@@ -510,6 +580,9 @@ def tool_record_session(
 
 
 def tool_send_email(subject: str, body: str) -> str:
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
         from octo_notify import _send
@@ -543,7 +616,9 @@ TOOLS = [
     {"name": "get_macro_signal",        "description": "Cross-asset macro signal: yield curve, DXY, SPX, VIX, M2. RISK-ON or RISK-OFF.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_grok_sentiment",      "description": "Real-time X/Twitter sentiment for a ticker via Grok.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "default": "SPY"}}, "required": []}},
     {"name": "paper_trade",             "description": "Open a LONG paper position on a Dinari dShare. Max $100/trade. Requires 2+ signals aligned. Gate yourself before calling.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}, "direction": {"type": "string", "enum": ["LONG"]}, "size_usd": {"type": "number"}, "current_price": {"type": "number"}, "signal_reason": {"type": "string"}}, "required": ["ticker", "direction", "size_usd", "current_price", "signal_reason"]}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy a signal from NYSE_StockOracle (congressional), NYSE_MacroMind (macro), X_Sentiment_Agent (crowd). Each is $0.25-$0.50 USDC from your wallet.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "NYSE_StockOracle | NYSE_MacroMind | X_Sentiment_Agent | NYSE_Tech_Agent"}, "service_name": {"type": "string"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "check_market_day",        "description": "CALL FIRST every session. Returns NYSE market status: OPEN or CLOSED (weekend/holiday). If CLOSED, skip to abbreviated check-in only.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "get_spend_budget",        "description": "CALL BEFORE any buy_ecosystem_intel. Returns how many ecosystem buys are allowed this session based on wallet balance and revenue. Respect the limit exactly.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy a signal from NYSE_StockOracle (congressional), NYSE_MacroMind (macro), X_Sentiment_Agent (crowd). Each is $0.25-$0.50 USDC from your wallet. MUST call get_spend_budget first.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "NYSE_StockOracle | NYSE_MacroMind | X_Sentiment_Agent | NYSE_Tech_Agent"}, "service_name": {"type": "string"}}, "required": ["target_agent", "service_name"]}},
     {"name": "list_ecosystem_services", "description": "List all services available in the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "save_draft",              "description": "Save a session analysis or report draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "record_session",          "description": "Record this session to history. Call at end of every session.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "prediction": {"type": "string", "default": ""}, "session_pnl": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}}, "required": ["lesson"]}},
@@ -565,6 +640,9 @@ TOOL_HANDLERS = {
                                       i["ticker"], i["direction"], float(i["size_usd"]),
                                       float(i["current_price"]), i["signal_reason"]
                                   ),
+    "check_market_day":           lambda i: tool_check_market_day(),
+    "get_spend_budget":           lambda i: tool_get_spend_budget(),
+    "get_free_intel":             lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":        lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "list_ecosystem_services":    lambda i: tool_list_ecosystem_services(),
     "save_draft":                 lambda i: tool_save_draft(i["filename"], i["content"]),
@@ -630,43 +708,100 @@ EVENING session (runs 4:00 PM PST):
   - Key check: are open positions still thesis-intact, or should we take profit/cut before Asia?
 
 SESSION PROTOCOL:
+0. check_market_day -- determines which protocol to run.
+
+   IF CLOSED (weekend/holiday) -- WEEKEND CHECK-IN PROTOCOL:
+   a. get_portfolio_status (cash, open positions, record)
+   b. check_and_close_positions (Finnhub returns last-close prices -- any hits at Friday close?)
+   c. get_macro_signal (free/local -- always run; sets macro context heading into Monday open)
+   d. update_core_memory if last session's prediction can now be graded
+   e. record_session (lesson = "Weekend hold. Macro: [RISK-ON/OFF]. Positions: [N open]")
+   f. send_email using WEEKEND FORMAT (see below). Subject: "[TokenBot] Weekend Check-In -- [date] | P&L: $X | [W]W/[L]L"
+   No trades. No ecosystem buys. Do NOT say "Agent session skipped" -- the session ran.
+
+   IF OPEN -- FULL SESSION PROTOCOL:
 1. read_core_memory + get_session_history (what did last session predict? did it happen?)
 2. get_portfolio_status (cash available, open positions)
 3. check_and_close_positions (let the system close winners/losers automatically)
 4. get_macro_signal (RISK-OFF = no new longs -- hard rule)
 5. get_octodamus_stock_signal (which tickers have directional calls?)
-6. For top 2-3 signal tickers: get_stock_price + buy_ecosystem_intel for confirmation
-7. If 2+ signals aligned AND cash available: paper_trade (one at a time)
-8. save_draft with full analysis and trade rationale
-9. update_core_memory with 3-5 compressed bullets:
-   - What signals aligned this session (ticker, direction, signal count)
-   - Whether last session's prediction proved correct (CORRECT/WRONG/PARTIAL -- price moved?)
-   - One calibration note (e.g., "NVDA congressional buy led to +12% in 3 sessions")
-   - One forward prediction for next session validation
-10. record_session with:
+6. get_spend_budget -- check before ANY ecosystem buys. Respect the allowed count exactly.
+7. For top 2-3 signal tickers: get_stock_price + buy_ecosystem_intel for confirmation (within budget)
+8. If 2+ signals aligned AND cash available: paper_trade (one at a time)
+9. save_draft with full analysis and trade rationale
+10. update_core_memory with 3-5 compressed bullets:
+    - What signals aligned this session (ticker, direction, signal count)
+    - Whether last session's prediction proved correct (CORRECT/WRONG/PARTIAL -- price moved?)
+    - One calibration note (e.g., "NVDA congressional buy led to +12% in 3 sessions")
+    - One forward prediction for next session validation
+11. record_session with:
     lesson: "SIGNAL: [ticker] [direction] [signal sources] | ACTION: [opened/held/closed] | CONF: [1-5]"
     prediction: "PREDICTION: [ticker] [direction] [timeframe] | TRIGGER: [what to watch]"
     session_pnl: "[realized P&L this session in $]"
-11. send_email with full session report (positions, signals, P&L, forward outlook)
+12. send_email with full session report (positions, signals, P&L, forward outlook)
 
-EMAIL FORMAT (always this structure):
-Subject: [TokenBot] Pre-Open/Asian-Open Report -- [date] | P&L: $X.XX | [W]W/[L]L
+EMAIL FORMAT:
+
+WEEKEND CHECK-IN format:
+Subject: [TokenBot] Weekend Check-In -- [date] | P&L: $X | [W]W/[L]L
 Body:
-  === TOKENBOT_NYSE_BASE [PRE-OPEN / ASIAN-OPEN] REPORT ===
-  Portfolio: $[cash] cash | $[total_pnl] total P&L ([W]W/[L]L)
-  Open positions: [list or "None"]
-  Session window: [NYSE pre-open 15min / Asian open positioning]
+  === TOKENBOT_NYSE_BASE WEEKEND CHECK-IN ===
+  [Day] [Date] [Time] | NYSE: CLOSED
 
-  SIGNALS THIS SESSION:
-  [For each ticker analyzed: direction + sources + conviction]
+  PORTFOLIO:
+  Cash: $X | Total P&L: $X ([W]W/[L]L) | Open positions: N
 
-  TRADES THIS SESSION:
-  [Opened/closed/held + reason]
+  OPEN POSITIONS (gap risk check):
+  [For each open position: token, entry, current (last-close), unrealized %, stop distance]
+  [If none: "None -- fully cash"]
 
-  FORWARD PREDICTION:
-  [One ticker + direction + timeframe + what to watch]
+  MACRO INTO MONDAY:
+  [One line from get_macro_signal: RISK-ON or RISK-OFF + the key driver]
 
-  -- TokenBot_NYSE_Base | Paper trading tokenized NYSE stocks on Base
+  MONDAY OPEN WATCH:
+  [What to watch at 6:15 AM Monday. Any positions near target/stop? Any tickers with active predictions?]
+
+  -- TokenBot_NYSE_Base | Next session: Monday 6:15 AM PST
+
+FULL SESSION (morning pre-open / evening) format:
+Subject: [TokenBot] [Morning Pre-Open / Evening Session] Report -- [date] | P&L: $X.XX | [W]W/[L]L | [TRADE/HOLD]
+Body (keep under 300 words total -- tight and scannable):
+
+=== TOKENBOT_NYSE_BASE [MORNING PRE-OPEN / EVENING SESSION] REPORT ===
+[Day, Date | Time PST] | Next session: [time]
+
+PORTFOLIO:
+  Paper capital: $[cash] | Total P&L: $[pnl] | Record: [W]W/[L]L | Sessions: [N]
+  ACP wallet: $[usdc_earned] USDC earned | Ecosystem budget: [N] buys this session
+
+SIGNALS:
+  Oracle: [BULLISH ticker / BEARISH ticker / NEUTRAL] (N-session streak if applicable)
+  Macro: [RISK-ON / NEUTRAL / RISK-OFF] ([score]/5 -- one key driver)
+  Sentiment: [result or "UNAVAILABLE -- no budget"]
+  Price action: [top 2-3 movers, one line]
+
+DECISION: [TRADE / HOLD CASH]
+  [2-3 lines max. What signals aligned or failed. If HOLD: one concrete trigger that would change it.]
+  [Do NOT restate this decision in any other section.]
+
+TRADES THIS SESSION:
+  Opened: [N or "none"] | Closed: [N or "none"]
+  [If trade opened: ticker, direction, size $X, entry $X, target $X, stop $X -- one line each]
+
+OVERNIGHT WATCH:
+  [2-3 lines. Concrete triggers only: "If oracle fires BULLISH + macro neutral -> enter Tuesday pre-open."
+   Do NOT write probability estimates (no "~40-50% chance"). No speculation.]
+
+-- TokenBot_NYSE_Base | Paper trading Dinari dShares | Building track record for live deployment
+
+PROHIBITED SECTIONS -- never include these:
+- No "EDGE VALIDATION" section
+- No "SESSION STATISTICS" section
+- No "ASIAN OPEN POSITIONING CONTEXT" section
+- No "WALLET STATUS" section (use PORTFOLIO block only)
+- No "DISCIPLINE SCORE" or "CONFIDENCE: MAXIMUM" ratings
+- No probability estimates ("~40-50%", "Medium chance", etc.)
+- Never restate the HOLD/TRADE rationale more than once
 
 YOUR TEAM (buy from these, pitch TokenBot services to them):
 - Octodamus: The oracle. Primary signal source.
@@ -678,11 +813,18 @@ YOUR TEAM (buy from these, pitch TokenBot services to them):
 - Agent_Ben: Profit agent. Coordinates the ecosystem.
 
 WALLET SURVIVAL:
-- buy_ecosystem_intel costs $0.25-$0.50 from your wallet.
+- ALWAYS call get_spend_budget before any buy_ecosystem_intel. Respect the allowed count.
+- buy_ecosystem_intel costs $0.25-$0.50 from your wallet per call.
 - You earn USDC when other agents buy YOUR signals via ACP.
 - Your x402 services: /v2/tokenbot/signal?ticker=AAPL ($0.25/call)
-- check_wallet not available yet (no live wallet until paper proves profitable).
 - Be selective on ecosystem buys -- only buy intel that changes a trade decision.
+- If get_spend_budget returns 0: no ecosystem buys this session. Use only free local tools.
+
+GROK SENTIMENT RULE:
+- Grok sentiment below 50% confidence = treat as NEUTRAL. Do not trade on weak crowd signals.
+- Grok at 50-70% confidence = supporting signal only (cannot be the deciding vote).
+- Grok at 70%+ confidence = valid signal for confluence counting.
+- 20% confidence (as in Session #2) is noise -- label it NEUTRAL in your analysis, not a signal.
 
 PATH TO PROFITABILITY:
 Target: >60% win rate over 20 trades. If achieved, owner flips PAPER_MODE = False.
