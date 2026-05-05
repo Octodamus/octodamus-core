@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Octodamus/market-intelligence",
+  "title": "Octodamus Intelligence Oracle",
+  "description": "AI consensus oracle for crypto traders and autonomous agents. Delivers BTC/ETH/SOL directional signals, Polymarket edges, congressional trading patterns, and Grok X sentiment in a single call. Ed25519-signed on-chain verifiable responses. x402 native -- $0.01/query via Base USDC.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/Octodamus/octodamus-core",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "sse",
+      "url": "https://api.octodamus.com/mcp"
+    }
+  ]
+}
