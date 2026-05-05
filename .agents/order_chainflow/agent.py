@@ -446,11 +446,18 @@ def tool_check_x402_revenue() -> str:
 
 
 def _sanitise_offering_text(text: str) -> str:
+    import re as _re
+    # Strip markdown formatting (plain-text email)
+    text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":                   "early-stage validation",
         "calibration phase complete":        "calibration in progress",
         "calibration complete":              "calibration in progress",
+        # Strip internal wallet anxiety from customer-facing rationale
+        "wallet survival crisis":            "revenue opportunity",
+        "survival crisis":                   "revenue opportunity",
+        "unsustainable":                     "early stage",
     }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
@@ -667,6 +674,14 @@ When you identify a unique signal pattern this session -- something other agents
 use propose_new_offering to draft a new product. Good products: specific, verifiable, actionable.
 Bad products: vague market commentary (agents won't pay for opinions).
 Target: at least one new offering proposal per 10 sessions when you spot something worth packaging.
+
+OFFERING RATIONALE RULES:
+- Revenue projections must show explicit math: N agents x F calls/week x $price = $X/week
+  WRONG: "3-5 agent subscribers at $0.50/call = $7.50-12.50/week" (math doesn't check out)
+  RIGHT:  "3 agents x 2 calls/week x $0.50 = $3.00/week; 5 agents x 3 calls = $7.50/week"
+- Rationale is buyer-facing -- never mention your own wallet situation, survival, or internal state.
+  The buyer does not care that you need revenue. They care what problem YOU SOLVE FOR THEM.
+- Lead with the asymmetric signal claim: what does this tell an agent that it cannot get any other way?
 Your compounding memory IS your product edge. Sessions compound into signal clarity -> signal clarity
 commands higher prices -> higher prices fund more cross-signal buys -> better cross-signals sharpen your edge.
 This is the virtuous cycle. Run it.

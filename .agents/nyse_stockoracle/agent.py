@@ -306,13 +306,20 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
     """Propose a new x402 or ACP offering based on this session's learnings."""
     agent_name = "NYSE_StockOracle"
 
-    # Enforce correct language — congressional data is NOT real-time (45-day lag)
+    # Strip markdown and enforce correct language
+    import re as _re
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    description = _MD.sub("", description)
+    rationale   = _MD.sub("", rationale)
     bad_phrases = {
         "real-time detection": "latest disclosed filing detection (45-day STOCK Act window)",
         "real-time":           "latest disclosed (45-day STOCK Act window)",
         "real time":           "latest disclosed (45-day STOCK Act window)",
         "high-confidence validation record": "early validation baseline",
         "high-confidence":     "early-stage validation",
+        "wallet survival crisis": "revenue opportunity",
+        "survival crisis":        "revenue opportunity",
+        "unsustainable":          "early stage",
     }
     for bad, good in bad_phrases.items():
         description = description.replace(bad, good)

@@ -323,11 +323,16 @@ def tool_check_x402_revenue() -> str:
 
 
 def _sanitise_offering_text(text: str) -> str:
+    import re as _re
+    text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":                   "early-stage validation",
         "calibration phase complete":        "calibration in progress",
         "calibration complete":              "calibration in progress",
+        "wallet survival crisis":            "revenue opportunity",
+        "survival crisis":                   "revenue opportunity",
+        "unsustainable":                     "early stage",
     }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
