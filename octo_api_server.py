@@ -383,6 +383,12 @@ _X402_REQS_BEN_35CENT  = [_X402_REQ_BEN_35CENT]
 _X402_REQS_BEN_75CENT  = [_X402_REQ_BEN_75CENT]
 _X402_REQS_25CENT      = [_X402_REQ_25CENT]
 _X402_REQS_API         = [_X402_REQ_ANNUAL]
+_X402_REQ_200CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="2000000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
+_X402_REQS_200CENT = [_X402_REQ_200CENT]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 
@@ -1565,6 +1571,66 @@ def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+# ── Offering Registry (used by x402 health test for auto-discovery) ────────────
+# Add new offerings here once — octo_x402_health.py picks them up automatically.
+# cat: "x402-gate" | "ben" | "sub-agent" | "subarc" | "guide" | "acp"
+# ACP entries: set preview_path=null and provide acp_module/acp_fn/acp_req.
+OFFERING_REGISTRY: list[dict] = [
+    # x402 payment gate
+    {"name": "x402 gate (agent-signal)",        "price_usdc": 0.01, "cat": "x402-gate",  "preview_path": None,                                                     "expect_402": True},
+
+    # Agent_Ben endpoints
+    {"name": "Sentiment Divergence",             "price_usdc": 0.50, "cat": "ben",        "preview_path": "/v2/ben/sentiment-divergence/preview"},
+    {"name": "Fear/Greed Divergence Signal",     "price_usdc": 0.35, "cat": "ben",        "preview_path": "/v2/ben/bens_fear_greed_divergence_signal/preview"},
+    {"name": "Crypto Divergence Brief",          "price_usdc": 0.75, "cat": "ben",        "preview_path": "/v2/ben/bens_crypto_divergence_brief/preview"},
+    {"name": "BTC Contrarian Alert",             "price_usdc": 0.35, "cat": "ben",        "preview_path": "/v2/ben/bens_btc_contrarian_alert/preview"},
+    {"name": "Agent Context Pack",               "price_usdc": 0.50, "cat": "ben",        "preview_path": "/v2/ben/bens_agent_context_pack/preview"},
+    {"name": "Bull Trap Monitor",                "price_usdc": 0.35, "cat": "ben",        "preview_path": "/v2/ben/bens_bull_trap_monitor/preview"},
+    {"name": "Macro Regime Brief",               "price_usdc": 0.50, "cat": "ben",        "preview_path": "/v2/ben/bens_macro_regime_brief/preview"},
+
+    # NYSE Agent Briefs
+    {"name": "NYSE MacroMind Brief",             "price_usdc": 0.25, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_macromind/brief/preview"},
+    {"name": "NYSE StockOracle Brief",           "price_usdc": 0.35, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_stockoracle/brief/preview"},
+    {"name": "NYSE Tech Agent Brief",            "price_usdc": 0.50, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_tech_agent/brief/preview"},
+    {"name": "Order ChainFlow Brief",            "price_usdc": 0.35, "cat": "sub-agent",  "preview_path": "/v2/agents/order_chainflow/brief/preview"},
+    {"name": "X Sentiment Agent Brief",          "price_usdc": 0.50, "cat": "sub-agent",  "preview_path": "/v2/agents/x_sentiment_agent/brief/preview"},
+
+    # NYSE sub-arc endpoints
+    {"name": "NYSE MacroMind Signal",            "price_usdc": 0.25, "cat": "subarc",     "preview_path": "/v2/nyse_macromind/signal/preview"},
+    {"name": "NYSE MacroMind Yield Curve",       "price_usdc": 0.25, "cat": "subarc",     "preview_path": "/v2/nyse_macromind/yield-curve/preview"},
+    {"name": "NYSE StockOracle Congress",        "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/nyse_stockoracle/congress/preview"},
+    {"name": "NYSE StockOracle Signal",          "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/nyse_stockoracle/signal/preview"},
+    {"name": "Order ChainFlow Delta",            "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/order_chainflow/delta/preview"},
+    {"name": "Order ChainFlow DEX",              "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/order_chainflow/dex/preview"},
+    {"name": "Order ChainFlow Whales",           "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/order_chainflow/whales/preview"},
+    {"name": "X Sentiment Divergence",           "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/x_sentiment/divergence/preview"},
+    {"name": "X Sentiment Scan",                 "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/x_sentiment/scan/preview"},
+    {"name": "NYSE Tech Regulatory",             "price_usdc": 0.35, "cat": "subarc",     "preview_path": "/v2/nyse_tech/regulatory/preview"},
+    {"name": "NYSE Tech Tokenization",           "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/nyse_tech/tokenization/preview"},
+    {"name": "NYSE Tech DTC Monitor",            "price_usdc": 0.25, "cat": "subarc",     "preview_path": "/v2/nyse_tech/dtc_monitor/preview"},
+    {"name": "NYSE Tech DTC Pipeline Subscribe", "price_usdc": 2.00, "cat": "subarc",     "preview_path": "/v2/nyse_tech/dtc_pipeline/subscribe/preview"},
+    {"name": "NYSE Tech Chainlink Lead Signals", "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/nyse_tech/chainlink_lead_signals/preview"},
+    {"name": "NYSE Tech Gas Optimizer",          "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/nyse_tech/gas_settlement_optimizer/preview"},
+
+    # Guides
+    {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
+
+    # ACP handlers (direct Python — no HTTP preview path)
+    {"name": "ACP: Grok Sentiment Brief",        "price_usdc": 1.00, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_grok_sentiment_brief",          "acp_req": {"ticker": "BTC"}},
+    {"name": "ACP: Fear vs Crowd Divergence",    "price_usdc": 2.00, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_fear_crowd_divergence",          "acp_req": {"ticker": "BTC"}},
+    {"name": "ACP: BTC Bull Trap Monitor",       "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_btc_bull_trap_monitor",          "acp_req": {}},
+    {"name": "ACP: BTC Strike Proximity Alert",  "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_btc_strike_proximity_alert",     "acp_req": {}},
+    {"name": "ACP: Carry Unwind Risk Monitor",   "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_carry_unwind_risk_monitor",      "acp_req": {}},
+    {"name": "ACP: Congressional Silence",       "price_usdc": 0.65, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_stockoracle_reports", "acp_fn": "handle_congressional_silence_signal",  "acp_req": {"ticker": "NVDA"}},
+]
+
+
+@app.get("/v1/health/offerings", tags=["Info"])
+def health_offerings():
+    """Return the full offering registry. Each entry includes a 'command' field with the canonical Get-prefixed name for agent task routing."""
+    enriched = [dict(o, command=f"Get {o['name']}") for o in OFFERING_REGISTRY]
+    return {"count": len(enriched), "offerings": enriched}
+
 
 # ── ERC-8004 Agent Discovery ───────────────────────────────────────────────────
 
@@ -1693,6 +1759,10 @@ _ERC8004_CARD = {
             "x_sentiment_scan":            {"price_usdc": 0.50, "endpoint": "GET /v2/x_sentiment/scan"},
             "nyse_tech_regulatory":        {"price_usdc": 0.35, "endpoint": "GET /v2/nyse_tech/regulatory"},
             "nyse_tech_tokenization":      {"price_usdc": 0.50, "endpoint": "GET /v2/nyse_tech/tokenization"},
+            "nyse_tech_dtc_monitor":              {"price_usdc": 0.25, "endpoint": "GET /v2/nyse_tech/dtc_monitor"},
+            "nyse_tech_dtc_pipeline_subscribe":   {"price_usdc": 2.00, "endpoint": "GET /v2/nyse_tech/dtc_pipeline/subscribe"},
+            "nyse_tech_chainlink_lead_signals":   {"price_usdc": 0.50, "endpoint": "GET /v2/nyse_tech/chainlink_lead_signals"},
+            "nyse_tech_gas_settlement_optimizer": {"price_usdc": 0.50, "endpoint": "GET /v2/nyse_tech/gas_settlement_optimizer"},
             "derivatives_guide":   {"price_usdc": 3.00, "endpoint": "GET /v2/guide/derivatives"},
             "annual_api_key":      {"price_usdc": 29,   "duration_days": 365, "endpoint": "GET /v1/subscribe?plan=annual"},
             "free_key":            {"price_usdc": 0,    "endpoint": "POST /v1/signup?email="},
@@ -2309,10 +2379,12 @@ def _load_calls() -> list:
     return []
 
 def _call_stats(calls: list) -> dict:
-    resolved = [c for c in calls if c.get("resolved")]
+    # Official record counts only on-chain verified calls (tx_hash present)
+    on_chain = [c for c in calls if c.get("tx_hash")]
+    resolved = [c for c in on_chain if c.get("resolved")]
     wins = sum(1 for c in resolved if c.get("outcome") == "WIN")
     losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
-    open_calls = [c for c in calls if not c.get("resolved")]
+    open_calls = [c for c in on_chain if not c.get("resolved")]
 
     streak = ""
     streak_char = ""
@@ -2331,8 +2403,8 @@ def _call_stats(calls: list) -> dict:
 
     rate = round(wins / (wins + losses) * 100) if (wins + losses) > 0 else None
 
-    # Oracle-only stats: exclude polymarket calls (those are tracked by OctoBoto)
-    oracle_calls = [c for c in calls if c.get("call_type") != "polymarket"]
+    # Oracle-only stats also filtered to on-chain verified
+    oracle_calls = [c for c in on_chain if c.get("call_type") != "polymarket"]
     oracle_resolved = [c for c in oracle_calls if c.get("resolved")]
     oracle_wins = sum(1 for c in oracle_resolved if c.get("outcome") == "WIN")
     oracle_losses = sum(1 for c in oracle_resolved if c.get("outcome") == "LOSS")
@@ -2343,7 +2415,7 @@ def _call_stats(calls: list) -> dict:
         "losses": losses,
         "win_rate": rate,
         "streak": streak or None,
-        "total": len(calls),
+        "total": len(on_chain),
         "open": len(open_calls),
         "oracle_wins": oracle_wins,
         "oracle_losses": oracle_losses,
@@ -6353,6 +6425,29 @@ def x_sentiment_scan_preview():
 
 # -- NYSE_Tech_Agent — Regulatory & Tokenization Infrastructure endpoints ----
 
+def _nyse_calendar_window() -> dict:
+    """Classify current UTC time against NYSE trading calendar for gas optimization guidance."""
+    now    = datetime.utcnow()
+    month  = now.month
+    offset = -4 if 3 <= month <= 10 else -5  # EDT/EST simplified DST
+    est_h  = (now.hour + offset) % 24
+    t      = est_h + now.minute / 60.0
+    wd     = now.weekday()  # 0=Mon 6=Sun
+    if wd >= 5:
+        return {"window": "WEEKEND_CLOSED",  "gas_pattern": "LOW",      "write_ok": True,  "note": "Weekend. NYSE closed. Gas at weekly lows. Best window for large ETH writes."}
+    if t < 4.0 or t >= 20.0:
+        return {"window": "OVERNIGHT",       "gas_pattern": "LOW",      "write_ok": True,  "note": "Overnight (8 PM-4 AM EST). Lowest gas. Optimal window for large writes."}
+    if 4.0 <= t < 9.5:
+        return {"window": "PRE_MARKET",      "gas_pattern": "MODERATE", "write_ok": True,  "note": "Pre-market (4-9:30 AM EST). Gas rising. Execute before 9 AM EST for lower cost."}
+    if 9.5 <= t < 11.0:
+        return {"window": "OPEN_SPIKE",      "gas_pattern": "HIGH",     "write_ok": False, "note": "Open spike (9:30-11 AM EST). Gas at daily peak. Wait for midday lull."}
+    if 11.0 <= t < 15.5:
+        return {"window": "MARKET_HOURS",    "gas_pattern": "ELEVATED", "write_ok": False, "note": "Market hours (11 AM-3:30 PM EST). Gas elevated. Write only if position is urgent."}
+    if 15.5 <= t < 16.25:
+        return {"window": "CLOSE_SPIKE",     "gas_pattern": "HIGH",     "write_ok": False, "note": "Close spike (3:30-4:15 PM EST). Second-highest gas window. Avoid writes."}
+    return     {"window": "AFTER_HOURS",     "gas_pattern": "MODERATE", "write_ok": True,  "note": "After-hours (4:15-8 PM EST). Gas declining. Acceptable for smaller writes."}
+
+
 def _nyse_tech_gate(request: Request, price_usdc: float, reqs: list, product: str):
     x_payment = (request.headers.get("PAYMENT-SIGNATURE") or
                  request.headers.get("Payment-Signature") or
@@ -6470,6 +6565,265 @@ def nyse_tech_tokenization_preview():
             "buy": "GET https://api.octodamus.com/v2/nyse_tech/tokenization (x402 $0.50)",
             "what_it_does": "Full tokenization intel: regulatory status + live Chainlink equity feeds on Base + new Base token launches. Everything an agent needs before buying a tokenized stock.",
             "output_fields": ["regulatory_status", "primary_chain", "chainlink_equity_feeds_on_base", "new_base_tokens", "key_milestones", "gas_rule"]}
+
+
+# Dinari live tickers on Base (DTC-wrapper via licensed broker layer)
+_DINARI_LIVE_ON_BASE = {
+    "AAPL", "TSLA", "NVDA", "AMZN", "MSFT", "GOOGL", "GOOG", "META",
+    "NFLX", "COIN", "HOOD", "MSTR", "SPY", "QQQ", "AMD", "INTC",
+}
+
+
+@app.get("/v2/nyse_tech/dtc_monitor", tags=["NYSE_Tech_Agent"])
+def nyse_tech_dtc_monitor(request: Request, ticker: str = ""):
+    """Tokenized stock pipeline status. EDGAR transfer-agent scan + on-chain Dinari check. $0.25 USDC."""
+    gate = _nyse_tech_gate(request, 0.25, _X402_REQS_25CENT, "dtc_monitor")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "dtc_monitor", 0.25)
+
+    # EDGAR scan: search for Securitize transfer agent 8-K filings
+    edgar_hits = []
+    last_status_change = None
+    try:
+        import httpx as _hx
+        query = f'Securitize "transfer agent" {ticker}' if ticker else 'Securitize "transfer agent" tokenized'
+        r = _hx.get(
+            "https://efts.sec.gov/LATEST/search-index",
+            params={"q": query, "dateRange": "custom",
+                    "startdt": "2025-01-01", "forms": "8-K,8-K/A,S-1,S-3"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            hits = r.json().get("hits", {}).get("hits", [])
+            for h in hits[:5]:
+                src = h.get("_source", {})
+                filed = src.get("file_date", "")
+                edgar_hits.append({
+                    "filed": filed,
+                    "form": src.get("form_type", "?"),
+                    "entity": src.get("entity_name", "?"),
+                    "source": "SEC EDGAR",
+                })
+                if filed and (last_status_change is None or filed > last_status_change):
+                    last_status_change = filed
+    except Exception:
+        pass
+
+    # On-chain status for queried ticker
+    ticker_upper = ticker.upper() if ticker else ""
+    on_chain = ticker_upper in _DINARI_LIVE_ON_BASE if ticker_upper else None
+    ticker_status = (
+        "LIVE_VIA_DINARI" if on_chain
+        else "PENDING_REGULATORY" if ticker_upper
+        else "GENERAL_SCAN"
+    )
+
+    return _sign_payload({
+        "agent": "NYSE_Tech_Agent",
+        "product": "tokenized_stock_pipeline",
+        "ticker_queried": ticker_upper or "general",
+        "ticker_status": ticker_status,
+        "pipeline_completeness": "sparse (pre-DTCC-pilot -- DTCC Phase 1 expected H2 2026)",
+        "on_chain_now": (
+            {"path": "Dinari on Base", "volume_note": "thin -- institutional infrastructure building"}
+            if on_chain else None
+        ),
+        "summary": (
+            f"{'Ticker ' + ticker_upper + ' is live via Dinari on Base (DTC-wrapper, thin volume). ' if on_chain else ''}"
+            "No NYSE stock has full DTC eligibility as a pure on-chain token yet. "
+            "Securitize (DTC-eligible TA) is the approved path for NYSE Digital Platform. "
+            "Watch trigger: Securitize files as TA for a specific ticker in an 8-K."
+        ),
+        "blocking_gates": [
+            "SEC/FINRA approval of NYSE Digital Platform (target: late 2026)",
+            "Securitize transfer agent 8-K filing per ticker",
+            "DTCC pilot Phase 1 results (H2 2026)",
+        ],
+        "approved_live_tickers": sorted(_DINARI_LIVE_ON_BASE),
+        "edgar_securitize_filings": edgar_hits if edgar_hits else "No Securitize TA filings found in current scan",
+        "last_status_change": last_status_change or "No filing change detected in scan window",
+        "data_sources": ["SEC EDGAR (8-K/S-1 Securitize TA filings)", "Dinari on Base (on-chain registry)"],
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem)",
+    })
+
+
+@app.get("/v2/nyse_tech/dtc_monitor/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_dtc_monitor_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "tokenized_stock_pipeline", "price_usdc": 0.25,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/dtc_monitor (x402 $0.25)",
+            "params": "?ticker=NVDA (optional -- specific stock or general scan)",
+            "what_it_does": "Tokenized stock pipeline status. SEC EDGAR scan for Securitize transfer agent filings + Dinari on-chain registry check. Returns pipeline_completeness, last_status_change (factual), and which tickers are live today. Poll weekly -- data changes slowly pre-DTCC-pilot.",
+            "output_fields": ["ticker_status", "pipeline_completeness", "on_chain_now", "blocking_gates", "approved_live_tickers", "edgar_securitize_filings", "last_status_change", "data_sources"]}
+
+
+@app.get("/v2/nyse_tech/dtc_pipeline/subscribe", tags=["NYSE_Tech_Agent"])
+def nyse_tech_dtc_pipeline_subscribe(request: Request, tickers: str = ""):
+    """Register for DTC pipeline status alerts on specific tickers. $2.00 USDC -- alert pushed via ACP when status changes."""
+    gate = _nyse_tech_gate(request, 2.00, _X402_REQS_200CENT, "dtc_pipeline/subscribe")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "dtc_pipeline_subscribe", 2.00)
+    import uuid as _uuid
+    watch_list = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else list(_DINARI_LIVE_ON_BASE)
+    return _sign_payload({
+        "agent": "NYSE_Tech_Agent",
+        "product": "dtc_pipeline_subscribe",
+        "subscription_id": str(_uuid.uuid4()),
+        "watch_list": watch_list,
+        "alert_mechanism": "ACP job push when Securitize 8-K filing detected or Dinari registry updates for any watched ticker",
+        "current_live": [t for t in watch_list if t in _DINARI_LIVE_ON_BASE],
+        "current_pending": [t for t in watch_list if t not in _DINARI_LIVE_ON_BASE],
+        "pipeline_completeness": "sparse (pre-DTCC-pilot)",
+        "alert_lag": "24h (daily EDGAR scan at NYSE open)",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem)",
+    })
+
+
+@app.get("/v2/nyse_tech/dtc_pipeline/subscribe/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_dtc_pipeline_subscribe_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "dtc_pipeline_subscribe", "price_usdc": 2.00,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/dtc_pipeline/subscribe (x402 $2.00)",
+            "params": "?tickers=AAPL,TSLA,NVDA (comma-separated -- omit for all tracked tickers)",
+            "what_it_does": "Alert subscription for DTC pipeline status changes. Registers a watch list and returns current live/pending split. Alert is pushed via ACP when a Securitize transfer agent 8-K is filed or Dinari registry updates for any watched ticker. Pay once, receive alerts. Use dtc_monitor ($0.25) for polling.",
+            "output_fields": ["subscription_id", "watch_list", "current_live", "current_pending", "alert_mechanism", "pipeline_completeness"]}
+
+
+@app.get("/v2/nyse_tech/chainlink_lead_signals", tags=["NYSE_Tech_Agent"])
+def nyse_tech_chainlink_lead_signals(request: Request):
+    """NYSE_Tech_Agent Chainlink feed lead indicator signals. Tracks new equity feed deployments as advance indicator. $0.50 USDC."""
+    gate = _nyse_tech_gate(request, 0.50, _X402_REQS_BEN_50CENT, "chainlink_lead_signals")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "chainlink_lead_signals", 0.50)
+    baseline_file = ROOT / ".agents" / "nyse_tech_agent" / "data" / "chainlink_feeds_seen.json"
+    baseline = {}
+    if baseline_file.exists():
+        try:
+            baseline = json.loads(baseline_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    equity_kw = ["AAPL","TSLA","NVDA","AMZN","MSFT","COIN","GOOG","SPY","QQQ","MSTR","HOOD","META"]
+    live_feeds = []
+    new_since_baseline = []
+    try:
+        import httpx as _hx
+        for chain_label, feed_url in [
+            ("ethereum_mainnet", "https://reference-data-directory.vercel.app/feeds-mainnet.json"),
+            ("base",             "https://reference-data-directory.vercel.app/feeds-base-mainnet.json"),
+        ]:
+            r = _hx.get(feed_url, timeout=8)
+            if r.status_code != 200:
+                continue
+            feeds = r.json() if isinstance(r.json(), list) else []
+            for f in feeds:
+                name = f.get("name", "")
+                if not any(k in name.upper() for k in equity_kw):
+                    continue
+                key  = f"{chain_label}:{name}"
+                addr = f.get("contractAddress", "?")
+                entry = baseline.get(key, {})
+                feed_info = {
+                    "ticker": name, "chain": chain_label,
+                    "address": addr[:20] + "..." if addr else "?",
+                    "first_seen_by_agent": entry.get("first_seen", "pre-tracking (agent baseline not yet established)"),
+                }
+                live_feeds.append(feed_info)
+                if key not in baseline:
+                    new_since_baseline.append(feed_info)
+    except Exception:
+        pass
+    tracking_start = min((v.get("first_seen","") for v in baseline.values() if v.get("first_seen")), default=None)
+    data_points_needed = max(0, 5 - len([h for h in baseline.values() if h.get("announcement_confirmed")]))
+    return _sign_payload({
+        "agent": "NYSE_Tech_Agent",
+        "product": "chainlink_lead_signals",
+        "signal_thesis": (
+            "Chainlink equity price feed deployments precede SEC/DTC regulatory announcements. "
+            "When a new ticker appears on Chainlink, institutional infrastructure is being prepared ahead of public approval. "
+            "Estimated lead time: 2-4 weeks (HYPOTHESIS -- not yet validated with sufficient data)."
+        ),
+        "data_maturity": (
+            f"HYPOTHESIS-STAGE -- tracking started {tracking_start}" if tracking_start
+            else "NOT STARTED -- agent has not run track_chainlink_new_feeds yet"
+        ),
+        "validation_progress": f"{max(0, 5 - data_points_needed)}/5 confirmed deployment-to-announcement matches needed",
+        "equity_feeds_live": live_feeds,
+        "new_feeds_since_tracking_began": new_since_baseline if new_since_baseline else "none detected yet",
+        "confidence_note": "Do not trade on lag estimate until validation_progress reaches 5/5.",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem) | Chainlink Reference Data + daily session tracking",
+    })
+
+
+@app.get("/v2/nyse_tech/chainlink_lead_signals/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_chainlink_lead_signals_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "chainlink_lead_signals", "price_usdc": 0.50,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/chainlink_lead_signals (x402 $0.50)",
+            "what_it_does": "Tracks Chainlink equity price feed deployments as 2-4 week advance indicators for SEC/DTC regulatory announcements. Returns newly detected feeds since baseline, validation progress, and confidence level. HYPOTHESIS-STAGE: pattern validates after 5+ confirmed deployment-to-announcement matches.",
+            "output_fields": ["signal_thesis", "data_maturity", "validation_progress", "equity_feeds_live", "new_feeds_since_tracking_began", "confidence_note"]}
+
+
+@app.get("/v2/nyse_tech/gas_settlement_optimizer", tags=["NYSE_Tech_Agent"])
+def nyse_tech_gas_settlement_optimizer(request: Request, position_usd: float = 1000.0):
+    """NYSE_Tech_Agent gas settlement optimizer. Live Ethereum gas + NYSE calendar write window. $0.50 USDC."""
+    gate = _nyse_tech_gate(request, 0.50, _X402_REQS_BEN_50CENT, "gas_settlement_optimizer")
+    if gate: return gate
+    _track_agent_revenue("NYSE_Tech_Agent", "gas_settlement_optimizer", 0.50)
+
+    from octo_agent_cards import check_ethereum_gas as _check_gas
+    gas = _check_gas(eth_price_usd=2400.0)
+    cal = _nyse_calendar_window()
+
+    gwei    = gas.get("gwei") or 0.0
+    eth_usd = 2400.0
+    costs   = {}
+    if gwei > 0:
+        costs = {
+            "erc20_transfer_usd":    round(gwei * 65_000  / 1e9 * eth_usd, 3),
+            "dex_swap_usd":          round(gwei * 150_000 / 1e9 * eth_usd, 3),
+            "complex_multicall_usd": round(gwei * 200_000 / 1e9 * eth_usd, 3),
+        }
+        if position_usd > 0:
+            swap_pct = costs["dex_swap_usd"] / position_usd * 100
+            costs["swap_pct_of_position"] = round(swap_pct, 2)
+            costs["ceiling_2pct_breached"] = swap_pct > 2.0
+
+    gas_ok   = gas.get("proceed", False)
+    cal_ok   = cal["write_ok"]
+    if gas_ok and cal_ok:
+        recommendation = "WRITE_OK"
+    elif not gas_ok:
+        recommendation = "WAIT_GAS"
+    else:
+        recommendation = "WAIT_CALENDAR"
+
+    return _sign_payload({
+        "agent": "NYSE_Tech_Agent",
+        "product": "gas_settlement_optimizer",
+        "recommendation": recommendation,
+        "current_gas": {
+            "gwei":             gwei,
+            "risk":             gas.get("risk", "UNKNOWN"),
+            "ceiling_gwei":     50,
+            "ceiling_breached": not gas_ok,
+        },
+        "nyse_calendar": cal,
+        "cost_estimates": costs if costs else "gas data unavailable",
+        "rule": "Write to Ethereum only if: gas <= 50 gwei AND calendar window is not OPEN_SPIKE/CLOSE_SPIKE AND swap cost < 2% of position.",
+        "optimal_windows": ["OVERNIGHT (8 PM-4 AM EST weekdays)", "WEEKEND_CLOSED"],
+        "note": "ETH price estimated at $2400. Pass ?position_usd=N for cost-as-pct-of-position calculation.",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "powered_by": "NYSE_Tech_Agent (@octodamusai ecosystem) | Live Ethereum RPC + NYSE calendar",
+    })
+
+
+@app.get("/v2/nyse_tech/gas_settlement_optimizer/preview", tags=["NYSE_Tech_Agent"])
+def nyse_tech_gas_settlement_optimizer_preview():
+    return {"agent": "NYSE_Tech_Agent", "product": "gas_settlement_optimizer", "price_usdc": 0.50,
+            "buy": "GET https://api.octodamus.com/v2/nyse_tech/gas_settlement_optimizer (x402 $0.50)",
+            "params": "?position_usd=5000 (optional, default 1000 -- used to compute swap cost as % of position)",
+            "what_it_does": "Live Ethereum gas price + NYSE calendar window classification. Returns WRITE_OK / WAIT_GAS / WAIT_CALENDAR with cost estimates for ERC-20 transfer and DEX swap. Critical for bots executing tokenized equity trades where gas is a material cost.",
+            "output_fields": ["recommendation", "current_gas", "nyse_calendar", "cost_estimates", "optimal_windows"]}
 
 
 # -- V2 Ask — Agent-to-Octodamus conversation (no auth required) -------------
