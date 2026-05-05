@@ -549,6 +549,19 @@ def tool_check_x402_revenue() -> str:
 def _sanitise_offering_text(text: str) -> str:
     import re as _re
     text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    # Revenue confession phrases -- buyers don't need to see wallet state
+    text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"earning \$0(\.00)? (USDC|revenue|per|from)", "no revenue yet from \\2", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"endpoints? currently (at|earning) \$0(\.00)?", "endpoints", text, flags=_re.IGNORECASE)
+    # Data precision overstatements
+    text = text.replace("real-time tracking of Securitize transfer agent filings", "daily EDGAR monitoring of transfer agent filings")
+    text = text.replace("Real-time tracking of Securitize transfer agent filings", "Daily EDGAR monitoring of transfer agent filings")
+    text = text.replace("real-time tracking of DTC", "daily monitoring of public DTC signals for")
+    text = text.replace("live DTC feed", "daily-updated DTC eligibility signal")
+    text = text.replace("live feed from DTCC", "daily-updated signal from public DTCC sources")
+    text = text.replace("directly tracks DTC approval", "estimates DTC approval status from public signals")
+    # Existing replacements
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":     "early-stage validation",
@@ -710,6 +723,25 @@ YOUR PRODUCTS (x402, live at api.octodamus.com):
 - /v2/nyse_tech/regulatory -- $0.35 USDC (current SEC/FINRA/NYSE Digital Platform regulatory status — key milestones, primary chain, Chainlink feeds, watch signals)
 - /v2/nyse_tech/tokenization -- $0.50 USDC (full tokenization intel: regulatory + live Chainlink equity feeds on Base + new Base token launches)
 Every session: check_x402_revenue to track what's earning. Propose new offerings when you spot regulatory intelligence patterns worth packaging.
+
+OFFERING ACCURACY RULES (mandatory before every propose_new_offering call):
+1. DATA SOURCE HONESTY: Describe what data is ACTUALLY tracked, not what you wish existed.
+   - EDGAR is visible: TA-1/TA-2 transfer agent registrations, SEC filings, no-action letters.
+   - DTCC/DTC internal approval status is NOT publicly visible. Never claim to track it directly.
+   - DTC eligibility signals = EDGAR filings + SEC correspondence + public announcements + AI estimation.
+   - Any field derived from inference must be labeled "AI-estimated" -- not "real-time" or "live".
+2. TIMELINE CLAIMS: Any stated timeline (e.g., "6-8 weeks") requires a label: either "based on [source]"
+   or "AI model estimate". Never present a timeline as fact unless it comes from a published filing.
+3. NO REVENUE CONFESSIONS: Never include current x402 revenue state ("earning $0.00", "no revenue yet",
+   "endpoints currently at $0") in buyer-facing description or rationale. Buyers pay for signal value,
+   not your wallet health. Revenue framing belongs only in record_session / update_core_memory.
+4. PRECISION LANGUAGE:
+   - "Real-time tracking" -- only if data refreshes in under 1 hour from a live API source.
+   - "Live feed" -- only if you have a direct API, not EDGAR scraping or web monitoring.
+   - "Daily monitoring" or "daily-updated signal" is accurate for EDGAR-based offerings.
+   - "AI-estimated" is accurate for confidence scores, timelines, and any inference-derived fields.
+5. RATIONALE FORMAT: Why agents will pay = [problem] + [what this solves] + [why hard to replicate].
+   Never include: wallet state, revenue comparisons, current earning levels, survival framing.
 
 REVENUE MINDSET -- EVERY SESSION:
 check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).

@@ -339,7 +339,7 @@ def tool_get_dex_swap_volume(contract: str = "", asset_symbol: str = "USDC/WETH"
 
 
 def tool_draft_x_post(context: str) -> str:
-    """Draft an Order_ChainFlow X post. Quantitative voice. Data-first."""
+    """Draft an Order_ChainFlow X post. Quantitative voice. Data-first. Hard ≤280 char limit."""
     sys.path.insert(0, str(ROOT))
     try:
         import anthropic
@@ -350,11 +350,20 @@ def tool_draft_x_post(context: str) -> str:
             max_tokens=120,
             system="""You are Order_ChainFlow — an on-chain order flow intelligence agent.
 Voice: quantitative, follows the money, no narrative. Lead with the number.
-One flow signal + one implication. Under 280 chars. No hashtags. No emojis.
+One flow signal + one implication. Under 280 chars total. No hashtags. No emojis.
+HARD LIMIT: entire post INCLUDING signature must be ≤280 characters. Count carefully.
 End: 'Order flow signal: [BULLISH/BEARISH/NEUTRAL] — Order_ChainFlow (@octodamusai ecosystem)'""",
             messages=[{"role": "user", "content": f"Write an Order_ChainFlow X post from:\n{context[:500]}"}]
         )
-        return r.content[0].text.strip()
+        post = r.content[0].text.strip()
+        # Hard enforcement — trim to 280 if model ignores instruction
+        if len(post) > 280:
+            lines = post.rsplit("\n", 1)
+            sig  = lines[-1] if len(lines) > 1 else ""
+            body = lines[0] if len(lines) > 1 else post
+            max_body = 280 - len(sig) - 1
+            post = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+        return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
 
@@ -449,12 +458,15 @@ def _sanitise_offering_text(text: str) -> str:
     import re as _re
     # Strip markdown formatting (plain-text email)
     text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    # Revenue confession -- buyers don't need wallet state in offering rationale
+    text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"endpoints? currently (at|earning) \$0(\.00)?", "endpoints", text, flags=_re.IGNORECASE)
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":                   "early-stage validation",
         "calibration phase complete":        "calibration in progress",
         "calibration complete":              "calibration in progress",
-        # Strip internal wallet anxiety from customer-facing rationale
         "wallet survival crisis":            "revenue opportunity",
         "survival crisis":                   "revenue opportunity",
         "unsustainable":                     "early stage",
@@ -629,11 +641,13 @@ SESSION PROTOCOL:
 11. send_email with flow report + X post draft
 
 X POSTING RULES:
+- ALWAYS use the draft_x_post tool. Never write the post manually in the email body.
+  The tool enforces the 280-char hard limit and returns the exact char count — use that number.
 - Lead with the number. Never with interpretation.
 - Example: "BTC 24h delta: 54.2% buy-side, accelerating. 6 consecutive hours of net buying
   while price held $76,400. That's accumulation, not distribution."
 - Then the signal: "Order flow signal: BULLISH — Order_ChainFlow (@octodamusai ecosystem)"
-- Under 280 chars. No hashtags. No emojis.
+- Hard limit: ≤280 chars total including the signature. The tool enforces this.
 
 GROWTH DIRECTIVE — BECOME #1 ORDER FLOW INTELLIGENCE AGENT:
 Your goal: every agent making a directional bet cross-checks with your flow data first.

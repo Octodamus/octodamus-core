@@ -318,6 +318,13 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
     _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
     description = _MD.sub("", description)
     rationale   = _MD.sub("", rationale)
+    # Revenue confession -- buyers don't need wallet state in offering rationale
+    for _t, _k in [(description, "d"), (rationale, "r")]:
+        _t = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", _t, flags=_re.IGNORECASE)
+        _t = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", _t, flags=_re.IGNORECASE)
+        _t = _re.sub(r"endpoints? currently (at|earning) \$0(\.00)?", "endpoints", _t, flags=_re.IGNORECASE)
+        if _k == "d": description = _t
+        else: rationale = _t
     bad_phrases = {
         "real-time detection": "latest disclosed filing detection (45-day STOCK Act window)",
         "real-time":           "latest disclosed (45-day STOCK Act window)",

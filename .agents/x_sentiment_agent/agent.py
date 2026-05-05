@@ -329,6 +329,10 @@ def tool_check_x402_revenue() -> str:
 def _sanitise_offering_text(text: str) -> str:
     import re as _re
     text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    # Revenue confession -- buyers don't need wallet state in offering rationale
+    text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"endpoints? currently (at|earning) \$0(\.00)?", "endpoints", text, flags=_re.IGNORECASE)
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":                   "early-stage validation",
@@ -504,6 +508,13 @@ YOUR PRODUCTS (x402, live at api.octodamus.com):
 - /v2/x_sentiment/divergence?asset=BTC -- $0.35 USDC (crowd vs price divergence score -- BULL_TRAP/BEAR_TRAP/CAUTION/NO_SIGNAL)
 - /v2/x_sentiment/scan -- $0.50 USDC (full multi-asset sentiment sweep: BTC+ETH+SOL+COIN+MSTR)
 Every session: check_x402_revenue to track what's earning. Propose new offerings when you spot patterns.
+
+OFFERING RATIONALE RULES (mandatory before every propose_new_offering call):
+- Rationale is buyer-facing. Never mention your wallet, revenue state, or "earning $0". Buyers pay for signal value, not your survival.
+- Lead with: [problem the buyer faces] + [what this uniquely solves] + [why hard to get elsewhere].
+- Revenue projections must use explicit math: N agents x F calls/week x $price = $X/week.
+- Any data source described as "real-time" must refresh in under 1 hour. Crowd signals from X are near-real-time; historical aggregates are not.
+- Do NOT include: "x402 endpoints currently earning", "currently at $0", "no revenue yet from this".
 
 REVENUE MINDSET -- EVERY SESSION:
 check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).

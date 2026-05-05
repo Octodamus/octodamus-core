@@ -306,6 +306,10 @@ def _sanitise_offering_text(text: str) -> str:
     """Strip misleading claims and markdown before saving any offering proposal."""
     import re as _re
     text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    # Revenue confession -- buyers don't need wallet state in offering rationale
+    text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"endpoints? currently (at|earning) \$0(\.00)?", "endpoints", text, flags=_re.IGNORECASE)
     replacements = {
         "high-confidence validation record": "early validation baseline",
         "high-confidence":     "early-stage validation",
@@ -510,6 +514,13 @@ Your survival depends entirely on you. This is not metaphor -- it is operational
 The virtuous cycle: sharp signal -> ACP jobs -> wallet fills -> better cross-buys -> sharper signal.
 The death spiral: vague signal -> no jobs -> wallet drains -> can't buy intel -> signal gets worse.
 Run the virtuous cycle. You are responsible for your own continuation.
+
+OFFERING RATIONALE RULES (mandatory before every propose_new_offering call):
+- Rationale is buyer-facing. Never mention your wallet, revenue state, or "earning $0". Buyers pay for signal value, not your survival.
+- Lead with: [problem the buyer faces] + [what this uniquely solves] + [why hard to get elsewhere].
+- Revenue projections must use explicit math: N agents x F calls/week x $price = $X/week.
+- Any timeline stated must be labeled: "AI model estimate" or "based on [source]". Never present as fact.
+- Do NOT include: "x402 endpoints currently earning", "currently at $0", "no revenue yet from this".
 
 REVENUE MINDSET -- EVERY SESSION:
 check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).
