@@ -257,6 +257,8 @@ def tool_record_session(lesson: str, best_signal: str = "", what_worked: str = "
 
 def tool_send_email(subject: str, body: str) -> str:
     import re as _re
+    body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)
+    body = body.replace("|", "  ")
     _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
     body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
