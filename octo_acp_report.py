@@ -14,6 +14,7 @@ Usage:
 """
 
 import json
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -100,10 +101,14 @@ def parse_events() -> dict:
             if ev.get("client"):
                 jobs[job_id]["client"] = ev["client"]
 
-        # Completed event
+        # Completed event — also capture ticker/report_type from synthetic events
         if ev.get("type") == "job.completed":
             jobs[job_id]["completed_ts"] = ts_ms / 1000 if ts_ms else None
             jobs[job_id]["status"]       = "completed"
+            if ev.get("ticker") and not jobs[job_id]["ticker"]:
+                jobs[job_id]["ticker"] = ev["ticker"].upper()
+            if ev.get("reportType") and not jobs[job_id]["report_type"]:
+                jobs[job_id]["report_type"] = ev["reportType"]
 
         if ev.get("type") in ("job.rejected", "job.cancelled"):
             jobs[job_id]["status"] = ev["type"].split(".")[1]
@@ -111,28 +116,50 @@ def parse_events() -> dict:
     return jobs
 
 
+def _worker_running() -> bool:
+    """Return True if the Octodamus-ACP-Worker task is running."""
+    try:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", "Octodamus-ACP-Worker", "/fo", "LIST"],
+            capture_output=True, text=True, encoding="utf-8", timeout=10
+        )
+        return "Running" in result.stdout
+    except Exception:
+        return False
+
+
+def _is_current_era(job_id: str) -> bool:
+    """Job IDs 5000+ are post-cache era (all historical expired jobs are < 4000)."""
+    try:
+        return int(job_id) >= 5000
+    except (ValueError, TypeError):
+        return False
+
+
 def build_report(context: str = "manual") -> str:
-    now_utc = datetime.now(timezone.utc)
+    now_utc   = datetime.now(timezone.utc)
+    now_local = datetime.now()  # local time (PST)
     jobs = parse_events()
 
-    # Today window: midnight UTC
-    today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Yesterday for morning report context
-    yesterday_start = today_start - timedelta(days=1)
+    # Use LOCAL midnight for window so the trading-day label matches the user's timezone
+    local_today_start  = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_yest_start   = local_today_start - timedelta(days=1)
 
-    # For 6am report, "today" = yesterday's full day
-    # For 6pm report, "today" = current day so far
+    # Convert local window boundaries to UTC timestamps for comparison
+    import time as _time
+    local_today_start_ts = local_today_start.timestamp()
+    local_yest_start_ts  = local_yest_start.timestamp()
+
+    # For 6am report, "today" = yesterday's full day (local)
+    # For 6pm report, "today" = current local day so far
     if context == "morning":
-        window_start = yesterday_start
-        window_end   = today_start
-        window_label = f"Yesterday ({yesterday_start.strftime('%b %d')})"
+        window_start_ts = local_yest_start_ts
+        window_end_ts   = local_today_start_ts
+        window_label    = f"Yesterday ({local_yest_start.strftime('%b %d')})"
     else:
-        window_start = today_start
-        window_end   = now_utc
-        window_label = f"Today ({today_start.strftime('%b %d')})"
-
-    window_start_ts = window_start.timestamp()
-    window_end_ts   = window_end.timestamp()
+        window_start_ts = local_today_start_ts
+        window_end_ts   = now_local.timestamp()
+        window_label    = f"Today ({now_local.strftime('%b %d')})"
 
     # Categorize jobs
     all_completed   = [j for j in jobs.values() if j["status"] == "completed"]
@@ -156,7 +183,7 @@ def build_report(context: str = "manual") -> str:
     # Ticker breakdown (all-time completed)
     ticker_counts: dict[str, int] = defaultdict(int)
     for j in all_completed:
-        ticker_counts[j["ticker"] or "unknown"] += 1
+        ticker_counts[j["ticker"] or "unclassified"] += 1
 
     # Client breakdown
     client_counts: dict[str, int] = defaultdict(int)
@@ -170,25 +197,53 @@ def build_report(context: str = "manual") -> str:
     currently_open    = [j for j in jobs.values() if j["status"] == "open"]
 
     # Build email
-    ts_str = now_utc.strftime("%Y-%m-%d %H:%M UTC")
-    label  = "MORNING" if context == "morning" else "EVENING"
+    ts_str      = now_local.strftime("%Y-%m-%d %H:%M PST")
+    label       = "MORNING" if context == "morning" else "EVENING"
+    worker_up   = _worker_running()
+    worker_line = "  ACP Worker:        RUNNING" if worker_up else "!! ACP Worker:       DOWN -- check Octodamus-ACP-Worker task"
+
+    funded_gap      = len(all_funded) - len(all_completed)
+    total_funded    = len(all_funded)
+    leakage_pct     = funded_gap / total_funded * 100 if total_funded else 0
+
+    # Current-era leakage: job IDs 5000+ (post-cache era -- all old expired jobs are < 4000)
+    # ACP server replays events with fresh timestamps so time-based filters are unreliable
+    era_funded    = [j for j in all_funded    if _is_current_era(j["id"])]
+    era_completed = [j for j in all_completed if _is_current_era(j["id"])]
+    era_gap       = len(era_funded) - len(era_completed)
+    era_leakage   = era_gap / len(era_funded) * 100 if era_funded else 0
+
+    # Period funnel rates
+    p_funded_rate   = len(period_funded)    / len(period_visits)    * 100 if period_visits    else None
+    p_complete_rate = len(period_completed) / len(period_funded)    * 100 if period_funded    else None
+
+    # Worker alert: escalate if worker is down AND there are open jobs stuck
+    open_stuck = [j for j in jobs.values()
+                  if j["status"] == "open"
+                  and j["first_seen_ts"]
+                  and (now_utc.timestamp() - j["first_seen_ts"]) < 86400]
+    if not worker_up and open_stuck:
+        worker_line += f"\n!! {len(open_stuck)} open job(s) will expire without set-budget -- restart NOW"
 
     lines = [
         f"Octodamus ACP Daily Report -- {label}",
         f"{ts_str}",
+        worker_line,
         f"{'=' * 48}",
         f"",
         f"--- {window_label} ---",
         f"  Agent visits:      {len(period_visits)}",
-        f"  Jobs funded:       {len(period_funded)}",
-        f"  Jobs completed:    {len(period_completed)}",
+        f"  Jobs funded:       {len(period_funded)}" + (f"  ({p_funded_rate:.0f}% of visits)" if p_funded_rate is not None else ""),
+        f"  Jobs completed:    {len(period_completed)}" + (f"  ({p_complete_rate:.0f}% of funded)" if p_complete_rate is not None else ""),
         f"  USDC earned:       ${period_revenue:.2f}",
-        f"  Conversion rate:   {len(period_completed)/len(period_visits)*100:.0f}%" if period_visits else "  Conversion rate:   n/a",
         f"",
         f"--- All-Time Totals ---",
         f"  Total agent visits:    {total_visits}",
-        f"  Total completed jobs:  {total_completed}",
+        f"  Total funded:          {total_funded}",
+        f"  Total completed:       {total_completed}  ({total_completed/total_funded*100:.0f}% of funded)" if total_funded else f"  Total completed:       0",
         f"  Total USDC earned:     ${total_revenue:.2f}",
+        f"  Funded not completed:  {funded_gap} ({leakage_pct:.0f}% all-time -- {funded_gap} are pre-cache expired)" if funded_gap > 0 else f"  Funded not completed:  0",
+        f"  Current-era leakage:   {era_gap} / {len(era_funded)} funded ({era_leakage:.0f}%)" + (" -- HEALTHY" if era_leakage == 0 else ""),
         f"",
     ]
 
@@ -202,17 +257,19 @@ def build_report(context: str = "manual") -> str:
     # Offering breakdown (all-time completed)
     offering_counts: dict[str, int] = defaultdict(int)
     for j in all_completed:
-        rt   = j.get("report_type") or "market_signal"
-        name = REPORT_TYPE_NAMES.get(rt, rt.replace("_", " ").title())
+        rt   = j.get("report_type")
+        name = REPORT_TYPE_NAMES.get(rt, rt.replace("_", " ").title()) if rt else "unclassified"
         offering_counts[name] += 1
     if offering_counts:
-        lines.append("--- Completed Jobs by Offering (all-time) ---")
+        unclassified_n = offering_counts.get("unclassified", 0)
+        note = f"  (note: {unclassified_n} unclassified = reportType not in pre-v2 events)" if unclassified_n else ""
+        lines.append(f"--- Completed Jobs by Offering (all-time) ---{note}")
         for name, count in sorted(offering_counts.items(), key=lambda x: -x[1]):
             lines.append(f"  {count:>3}x  {name}")
         lines.append("")
 
     if client_counts:
-        lines.append("--- Agents by Job Count (all-time) ---")
+        lines.append("--- Agents by Funded Jobs (all-time) ---")
         for addr, count in sorted(client_counts.items(), key=lambda x: -x[1]):
             lines.append(f"  {addr}  {count} job(s)")
         lines.append("")
@@ -224,17 +281,24 @@ def build_report(context: str = "manual") -> str:
         lines.append(f"--- Funded / Awaiting Submission ({len(active_funded)}) ---")
         for j in active_funded:
             mins = (now_utc.timestamp() - j["funded_ts"]) / 60
-            lines.append(f"  Job #{j['id']} ({j['ticker'] or '?'})  {mins:.0f}min ago")
+            lines.append(f"  Job #{j['id']} ({j['ticker'] or '--'})  {mins:.0f}min ago")
         lines.append("")
 
     # Only show open jobs from last 24h (older ones expire automatically)
     recent_open = [j for j in currently_open
                    if j["first_seen_ts"] and (now_utc.timestamp() - j["first_seen_ts"]) < 86400]
     if recent_open:
-        lines.append(f"--- Open / Awaiting Payment ({len(recent_open)}) ---")
+        stale_open = [j for j in recent_open
+                      if (now_utc.timestamp() - j["first_seen_ts"]) > 14400]
+        header = f"--- Open / Awaiting Payment ({len(recent_open)}) ---"
+        # Only show stale warning here if worker is UP (worker DOWN already flagged in header)
+        if stale_open and worker_up:
+            header += f"  !! WARNING: {len(stale_open)} job(s) open >4h -- worker may have missed these"
+        lines.append(header)
         for j in recent_open:
-            mins = (now_utc.timestamp() - j["first_seen_ts"]) / 60
-            lines.append(f"  Job #{j['id']} ({j['ticker'] or '?'})  {mins:.0f}min ago")
+            mins  = (now_utc.timestamp() - j["first_seen_ts"]) / 60
+            flag  = " !!" if mins > 240 else ""
+            lines.append(f"  Job #{j['id']} ({j['ticker'] or '--'})  {mins:.0f}min ago{flag}")
         lines.append("")
 
     lines += [

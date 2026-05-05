@@ -133,8 +133,21 @@ def _get(endpoint: str, params: dict = None, cache_key: str = None) -> dict:
                 _cache[cache_key] = {"ts": time.time(), "data": data}
             return data
         else:
-            log.error(f"Coinglass {endpoint}: code={body.get('code')} msg={body.get('msg')}")
-            return {"error": body.get("msg", "Unknown error"), "code": body.get("code")}
+            code = str(body.get("code", ""))
+            msg  = body.get("msg", "Unknown error")
+            if code == "401" and "upgrade" in msg.lower():
+                # Plan limitation -- cache for 4h so we don't log on every job
+                if cache_key and not (
+                    _cache.get(cache_key) and
+                    (time.time() - _cache[cache_key]["ts"]) < 3600 * 4
+                ):
+                    log.warning(f"Coinglass {endpoint}: plan limit (upgrade required) -- skipping for 4h")
+                    _cache[cache_key] = {"ts": time.time(), "data": {"error": "Upgrade plan", "code": "401"}}
+                elif not cache_key:
+                    log.warning(f"Coinglass {endpoint}: plan limit (upgrade required)")
+            else:
+                log.error(f"Coinglass {endpoint}: code={code} msg={msg}")
+            return {"error": msg, "code": code}
 
     except httpx.TimeoutException:
         log.error(f"Coinglass {endpoint}: timeout")
