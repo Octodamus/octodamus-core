@@ -1621,7 +1621,10 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "ACP: BTC Bull Trap Monitor",       "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_btc_bull_trap_monitor",          "acp_req": {}},
     {"name": "ACP: BTC Strike Proximity Alert",  "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_btc_strike_proximity_alert",     "acp_req": {}},
     {"name": "ACP: Carry Unwind Risk Monitor",   "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_carry_unwind_risk_monitor",      "acp_req": {}},
-    {"name": "ACP: Congressional Silence",       "price_usdc": 0.65, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_stockoracle_reports", "acp_fn": "handle_congressional_silence_signal",  "acp_req": {"ticker": "NVDA"}},
+    {"name": "ACP: Congressional Silence",       "price_usdc": 0.65, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_stockoracle_reports", "acp_fn": "handle_congressional_silence_signal",    "acp_req": {"ticker": "NVDA"}},
+    {"name": "ACP: Cross-Asset Divergence",      "price_usdc": 2.00, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_cross_asset_divergence_alert",    "acp_req": {"ticker": "BTC"}},
+    {"name": "ACP: Macro Event Edge Report",     "price_usdc": 2.00, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_macro_event_edge_report",         "acp_req": {"event_name": "CPI"}},
+    {"name": "ACP: BTC Regime Pulse",            "price_usdc": 1.50, "cat": "acp",        "preview_path": None, "acp_module": "octo_acp_ben_reports",        "acp_fn": "handle_btc_regime_pulse",                "acp_req": {}},
 ]
 
 
@@ -1971,6 +1974,14 @@ def well_known_x402():
             "step2": "Send exact USDC amount to payment_address on Base",
             "step3": "GET /v1/agent-checkout/status?payment_id=xxx -- poll every 15s",
             "step4": "Receive api_key in response when confirmed (~2s on Base)",
+        },
+        "compatibility": {
+            "aws_agentcore_payments": True,
+            "coinbase_cdp_facilitator": True,
+            "virtuals_acp": True,
+            "smithery_mcp": True,
+            "erc8004": True,
+            "notes": "Octodamus is compatible with Amazon Bedrock AgentCore Payments (x402 + Coinbase CDP). Agents built on AgentCore can call any endpoint here using the standard x402 EIP-3009 payment header. No pre-registration required. discoverable at agentic.market.",
         },
     }
 
@@ -2373,7 +2384,7 @@ def _load_calls() -> list:
         if CALLS_FILE.exists():
             calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
             # Belt-and-suspenders: exclude any polymarket entries that slipped in
-            return [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
+            return [c for c in calls if c.get("tx_hash")]
     except Exception:
         pass
     return []
@@ -2404,7 +2415,7 @@ def _call_stats(calls: list) -> dict:
     rate = round(wins / (wins + losses) * 100) if (wins + losses) > 0 else None
 
     # Oracle-only stats also filtered to on-chain verified
-    oracle_calls = [c for c in on_chain if c.get("call_type") != "polymarket"]
+    oracle_calls = [c for c in on_chain if c.get("call_type", "oracle") == "oracle"]
     oracle_resolved = [c for c in oracle_calls if c.get("resolved")]
     oracle_wins = sum(1 for c in oracle_resolved if c.get("outcome") == "WIN")
     oracle_losses = sum(1 for c in oracle_resolved if c.get("outcome") == "LOSS")
@@ -7209,64 +7220,32 @@ def v2_demo():
             "note": "Basic returns BTC only. Premium adds ETH, SOL, NVDA, TSLA, AAPL.",
         }
 
-    # --- Prices (live from CoinGecko, fallback to most recent snapshot) ---
+    # --- Prices (Kraken primary, CoinGecko fallback, 5-min cache) ---
     prices_demo = {}
     try:
-        import httpx as _httpx
-        _r = _httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
-                    "include_24hr_change": "true"},
-            timeout=6,
-        )
-        if _r.status_code == 200:
-            _d = _r.json()
-            live_prices = {
-                "BTC": {"price": round(_d.get("bitcoin", {}).get("usd", 0)),
-                        "change_24h": round(_d.get("bitcoin", {}).get("usd_24h_change", 0), 2)},
-                "ETH": {"price": round(_d.get("ethereum", {}).get("usd", 0), 2),
-                        "change_24h": round(_d.get("ethereum", {}).get("usd_24h_change", 0), 2)},
-                "SOL": {"price": round(_d.get("solana", {}).get("usd", 0), 2),
-                        "change_24h": round(_d.get("solana", {}).get("usd_24h_change", 0), 2)},
-            }
-            prices_demo = {
-                "prices":         live_prices,
-                "premium_assets": {"NVDA": "[premium]", "TSLA": "[premium]", "AAPL": "[premium]"},
-                "note":           "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
-                "timestamp":      datetime.utcnow().isoformat(),
-                "source":         "live",
-            }
-        else:
-            raise ValueError("CoinGecko non-200")
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC", "ETH", "SOL"])
+        prices_demo = {
+            "prices": {
+                "BTC": {"price": round(_p["BTC"].get("usd", 0)),
+                        "change_24h": round(_p["BTC"].get("usd_24h_change", 0), 2)},
+                "ETH": {"price": round(_p["ETH"].get("usd", 0), 2),
+                        "change_24h": round(_p["ETH"].get("usd_24h_change", 0), 2)},
+                "SOL": {"price": round(_p["SOL"].get("usd", 0), 2),
+                        "change_24h": round(_p["SOL"].get("usd_24h_change", 0), 2)},
+            },
+            "premium_assets": {"NVDA": "[premium]", "TSLA": "[premium]", "AAPL": "[premium]"},
+            "note":      "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
+            "timestamp": datetime.utcnow().isoformat(),
+            "source":    "live",
+        }
     except Exception:
-        # Fall back to most recent snapshot on disk
-        try:
-            s = None
-            for i in range(90):
-                d = date.today() - timedelta(days=i)
-                p = DATA_DIR / str(d) / "prices.json"
-                if p.exists():
-                    s = json.loads(p.read_text(encoding="utf-8"))
-                    break
-            if s:
-                data = s.get("data", {})
-                basic_data   = {k: v for k, v in data.items() if k.upper() in {"BTC", "ETH", "SOL"}}
-                premium_keys = [k for k in data if k.upper() not in {"BTC", "ETH", "SOL"}]
-                prices_demo = {
-                    "prices":         basic_data,
-                    "premium_assets": {k: "[premium]" for k in premium_keys},
-                    "note":           "Basic includes BTC, ETH, SOL. Premium adds NVDA, TSLA, AAPL.",
-                    "timestamp":      s.get("timestamp"),
-                    "source":         "cached",
-                }
-            else:
-                prices_demo = {
-                    "prices":    {"BTC": {"price": 0}, "ETH": {"price": 0}, "SOL": {"price": 0}},
-                    "note":      "Price feed initializing — live data loads on first nightly run.",
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-        except Exception:
-            prices_demo = {"note": "Price feed initializing."}
+        prices_demo = {
+            "prices":    {"BTC": {"price": 0}, "ETH": {"price": 0}, "SOL": {"price": 0}},
+            "note":      "Price feed temporarily unavailable.",
+            "timestamp": datetime.utcnow().isoformat(),
+            "source":    "error",
+        }
 
     # --- Brief ---
     briefing_text = ""
@@ -7292,58 +7271,63 @@ def v2_demo():
         "note":            "Basic returns top signal sentence. Premium adds AI market mood + Polymarket context.",
     }
 
-    return {
-        "demo":     True,
-        "signal":   signal_demo,
-        "polymarket": poly_demo,
-        "sentiment": sentiment_demo,
-        "prices":   prices_demo,
-        "brief":    brief_demo,
-        "timestamp": datetime.utcnow().isoformat(),
-        "get_key":  "POST https://api.octodamus.com/v1/signup?email=your@email.com",
-        "upgrade":  "https://octodamus.com/api#pricing",
-        "x402": {
-            "pay_per_call":  "$0.01 USDC on Base — no key, no account",
-            "annual_access": "$29.00 USDC on Base — 365 days, 10k req/day",
-            "endpoint":      "GET https://api.octodamus.com/v2/x402/agent-signal",
-            "how":           "Send PAYMENT-SIGNATURE header with EIP-3009 USDC authorization",
-            "discovery":     "https://api.octodamus.com/.well-known/x402.json",
-            "network":       "Base (eip155:8453)",
-            "pay_to":        _X402_TREASURY,
+    return JSONResponse(
+        content={
+            "demo":     True,
+            "signal":   signal_demo,
+            "polymarket": poly_demo,
+            "sentiment": sentiment_demo,
+            "prices":   prices_demo,
+            "brief":    brief_demo,
+            "timestamp": datetime.utcnow().isoformat(),
+            "free_next_steps": {
+                "1_ask_anything":  "POST https://api.octodamus.com/v2/ask?q=YOUR_QUESTION — 20 free questions/day, no key",
+                "2_macro_regime":  "GET  https://api.octodamus.com/tools/macro — RISK-ON/OFF/NEUTRAL, free, no key",
+                "3_oracle_record": "GET  https://api.octodamus.com/tools/scorecard — win/loss track record, free, no key",
+                "4_mcp_server":    "smithery: octodamusai/market-intelligence — add to Claude/GPT in 60s, rated 90/100",
+                "5_free_key":      "POST https://api.octodamus.com/v1/signup?email=you@example.com — 500 req/day, no card",
+                "6_x402":         "GET  https://api.octodamus.com/.well-known/x402.json — pay $0.01 USDC/call, no account",
+                "7_agent_card":   "GET  https://api.octodamus.com/.well-known/agent.json — ERC-8004 machine-readable capabilities",
+            },
+            "upgrade":  "https://octodamus.com/api#pricing",
+            "x402": {
+                "pay_per_call":  "$0.01 USDC on Base — no key, no account",
+                "annual_access": "$29.00 USDC on Base — 365 days, 10k req/day",
+                "endpoint":      "GET https://api.octodamus.com/v2/x402/agent-signal",
+                "how":           "Send PAYMENT-SIGNATURE header with EIP-3009 USDC authorization",
+                "discovery":     "https://api.octodamus.com/.well-known/x402.json",
+                "network":       "Base (eip155:8453)",
+                "pay_to":        _X402_TREASURY,
+            },
+            "source": {
+                "name":   "OctoData API",
+                "by":     "Octodamus (@octodamusai)",
+                "docs":   "https://api.octodamus.com/docs",
+                "llms":   "https://octodamus.com/llms.txt",
+                "llm":    "https://octodamus.com/llm.txt",
+            },
         },
-        "source": {
-            "name":   "OctoData API",
-            "by":     "Octodamus (@octodamusai)",
-            "docs":   "https://api.octodamus.com/docs",
-            "llms":   "https://octodamus.com/llms.txt",
-        },
-    }
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @app.get("/demo", include_in_schema=False)
 def demo_preview():
     """Human-readable HTML preview of live Octodamus signals. No key required."""
-    # --- Live prices ---
+    # --- Live prices (Kraken primary, CoinGecko fallback) ---
     prices = {}
     fg_val, fg_label = None, None
     try:
-        import httpx as _hx
-        _r = _hx.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin,ethereum,solana", "vs_currencies": "usd",
-                    "include_24hr_change": "true"},
-            timeout=6,
-        )
-        if _r.status_code == 200:
-            _d = _r.json()
-            prices = {
-                "BTC": {"price": round(_d["bitcoin"]["usd"]),
-                        "chg":  round(_d["bitcoin"].get("usd_24h_change", 0), 2)},
-                "ETH": {"price": round(_d["ethereum"]["usd"], 2),
-                        "chg":  round(_d["ethereum"].get("usd_24h_change", 0), 2)},
-                "SOL": {"price": round(_d["solana"]["usd"], 2),
-                        "chg":  round(_d["solana"].get("usd_24h_change", 0), 2)},
-            }
+        from financial_data_client import get_crypto_prices
+        _p = get_crypto_prices(["BTC", "ETH", "SOL"])
+        prices = {
+            "BTC": {"price": round(_p["BTC"].get("usd", 0)),
+                    "chg":  round(_p["BTC"].get("usd_24h_change", 0), 2)},
+            "ETH": {"price": round(_p["ETH"].get("usd", 0), 2),
+                    "chg":  round(_p["ETH"].get("usd_24h_change", 0), 2)},
+            "SOL": {"price": round(_p["SOL"].get("usd", 0), 2),
+                    "chg":  round(_p["SOL"].get("usd_24h_change", 0), 2)},
+        }
     except Exception:
         pass
     try:
@@ -8311,6 +8295,498 @@ def agent_tool_schemas(framework: str = ""):
         "ask_anything": "POST https://api.octodamus.com/v2/ask?q=What+is+your+BTC+read",
         "docs": "https://api.octodamus.com/docs",
     }
+
+
+# -- Mission Control Dashboard ------------------------------------------------
+
+_DASH_ROOT     = Path(__file__).parent
+_DASH_REV_LOG  = _DASH_ROOT / "data" / "x402_agent_revenue.json"
+_DASH_INTEL    = _DASH_ROOT / "data" / "intel_purchase_log.json"
+_DASH_JOBS     = _DASH_ROOT / "data" / "acp_pending_jobs.json"
+_DASH_DRAFTS   = _DASH_ROOT / ".agents" / "profit-agent" / "drafts"
+_DASH_AGENTS   = {
+    "Ben":               _DASH_ROOT / ".agents" / "profit-agent",
+    "NYSE_MacroMind":    _DASH_ROOT / ".agents" / "nyse_macromind",
+    "NYSE_StockOracle":  _DASH_ROOT / ".agents" / "nyse_stockoracle",
+    "NYSE_Tech_Agent":   _DASH_ROOT / ".agents" / "nyse_tech_agent",
+    "Order_ChainFlow":   _DASH_ROOT / ".agents" / "order_chainflow",
+    "X_Sentiment_Agent": _DASH_ROOT / ".agents" / "x_sentiment_agent",
+    "TokenBot_NYSE_Base":_DASH_ROOT / ".agents" / "tokenbot_nyse_base",
+}
+_DASH_BRIEF_KEYS = [
+    "nyse_macromind", "nyse_stockoracle", "nyse_tech_agent",
+    "order_chainflow", "x_sentiment_agent", "tokenbot_nyse_base",
+    "daily_summary", "midday_brief",
+]
+
+
+@app.get("/dashboard/data", tags=["Dashboard"], include_in_schema=False)
+def get_dashboard_data():
+    """Internal dashboard data — agent states, revenue, transactions, briefs."""
+    now_ts = _time.time()
+    ACP_JOB_TTL = 86400  # jobs expire 24h after creation
+
+    # Revenue log: {agent -> [{buyer, service, amount_usdc, date}]}
+    rev_log: dict = {}
+    try:
+        rev_log = json.loads(_DASH_REV_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    agent_totals: dict = {}
+    # Build fast lookup: (buyer, svc_norm, seller) -> amount
+    _rev_lookup: dict = {}
+    for agent, txns in rev_log.items():
+        agent_totals[agent] = round(sum(t.get("amount_usdc", 0) for t in txns), 4)
+        for t in txns:
+            svc = t.get("service", "").removeprefix("Get ").strip()
+            _rev_lookup[(t.get("buyer", ""), svc, agent)] = t.get("amount_usdc", 0)
+
+    # Intel purchase log: "buyer|seller|service" -> ISO timestamp
+    intel_raw: dict = {}
+    try:
+        intel_raw = json.loads(_DASH_INTEL.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    merged: list = []
+    for key, ts in intel_raw.items():
+        parts = key.split("|")
+        if len(parts) != 3:
+            continue
+        buyer, seller, service = parts
+        svc_norm = service.removeprefix("Get ").strip()
+        amount = _rev_lookup.get((buyer, svc_norm, seller), 0.0)
+        merged.append({"buyer": buyer, "seller": seller, "service": svc_norm,
+                       "amount_usdc": amount, "date": ts})
+    merged.sort(key=lambda t: t.get("date", ""), reverse=True)
+
+    # ACP pending jobs — tag expired (older than 24h)
+    pending: list = []
+    try:
+        pending = json.loads(_DASH_JOBS.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    for j in pending:
+        age = now_ts - j.get("created_at", now_ts)
+        j["age_hours"] = round(age / 3600, 1)
+        j["expired"] = age > ACP_JOB_TTL
+
+    active_jobs  = [j for j in pending if not j["expired"]]
+    expired_jobs = [j for j in pending if j["expired"]]
+
+    # Agent states — detect last-run from drafts for agents with empty state
+    agents: dict = {}
+    for name, path in _DASH_AGENTS.items():
+        try:
+            state = json.loads((path / "state.json").read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        # For sub-agents with empty state.json, infer last_run from most recent draft
+        if not state.get("last_run") and _DASH_DRAFTS.exists():
+            key_hint = name.lower().replace(" ", "_").replace("-", "_")
+            matches = sorted(_DASH_DRAFTS.glob(f"{key_hint}_*.md"),
+                             key=lambda p: p.stat().st_mtime, reverse=True)
+            if matches:
+                state["last_run"] = datetime.utcfromtimestamp(
+                    matches[0].stat().st_mtime).strftime("%A %B %d %Y %I:%M %p")
+                state["_inferred_last_run"] = True
+        agents[name] = state
+
+    # Latest brief per key
+    briefs: dict = {}
+    if _DASH_DRAFTS.exists():
+        seen: set = set()
+        for f in sorted(_DASH_DRAFTS.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+            for key in _DASH_BRIEF_KEYS:
+                if f.stem.startswith(key) and key not in seen:
+                    seen.add(key)
+                    try:
+                        age_h = round((now_ts - f.stat().st_mtime) / 3600, 1)
+                        briefs[key] = {
+                            "filename": f.name,
+                            "content": f.read_text(encoding="utf-8")[:6000],
+                            "age_hours": age_h,
+                            "mtime": datetime.utcfromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M UTC"),
+                        }
+                    except Exception:
+                        pass
+                    break
+
+    return {
+        "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "revenue": {
+            "by_agent": agent_totals,
+            "total": round(sum(agent_totals.values()), 4),
+        },
+        "transactions": merged,
+        "acp_jobs": {"active": active_jobs, "expired": expired_jobs},
+        "agents": agents,
+        "briefs": briefs,
+    }
+
+
+_DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Octodamus Mission Control</title>
+<style>
+:root{
+  --bg:#060810;--bg2:#0d1117;--bg3:#111827;
+  --acc:#22d3ee;--txt:#e8f4ff;--txt2:#94a3b8;
+  --grn:#10b981;--red:#ef4444;--ylw:#f59e0b;--orn:#f97316;
+  --bdr:#1e293b;--font:'JetBrains Mono','Fira Code',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5;}
+
+/* Topbar */
+.topbar{background:var(--bg2);border-bottom:1px solid var(--bdr);padding:10px 20px;
+  display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;}
+.logo{color:var(--acc);font-size:14px;font-weight:700;letter-spacing:1px;}
+.logo em{color:var(--txt2);font-style:normal;font-weight:400;}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--grn);display:inline-block;
+  margin-left:8px;animation:blink 2s infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.15;}}
+.topbar-r{color:var(--txt2);font-size:11px;display:flex;gap:14px;align-items:center;}
+.btn{background:var(--bg3);border:1px solid var(--bdr);color:var(--acc);
+  padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:11px;}
+.btn:hover{background:var(--bdr);}
+
+/* Layout */
+.layout{display:grid;grid-template-columns:270px 1fr;height:calc(100vh - 44px);}
+.sidebar{background:var(--bg2);border-right:1px solid var(--bdr);padding:14px;
+  overflow-y:auto;display:flex;flex-direction:column;gap:20px;}
+.main{padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;}
+
+/* Section header */
+.sh{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--txt2);margin-bottom:8px;}
+
+/* Card */
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:6px;overflow:hidden;}
+.ch{background:var(--bg3);border-bottom:1px solid var(--bdr);padding:7px 14px;
+  display:flex;align-items:center;justify-content:space-between;}
+.ch h3{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--txt2);}
+.badge{font-size:10px;background:var(--bdr);padding:1px 8px;border-radius:10px;color:var(--acc);}
+.badge-red{color:var(--red);background:#ef444418;border:1px solid #ef444430;}
+.cb{padding:12px 14px;}
+
+/* Revenue */
+.rev-big{font-size:30px;font-weight:700;color:var(--acc);}
+.rev-sub{font-size:10px;color:var(--txt2);margin-top:3px;}
+.rev-tbl{width:100%;border-collapse:collapse;margin-top:10px;}
+.rev-tbl td{padding:4px 4px;font-size:11px;}
+.rev-tbl tr:not(:last-child) td{border-bottom:1px solid var(--bdr);}
+.rv{color:var(--acc);text-align:right;font-weight:600;}
+
+/* Agent fleet */
+.ai{padding:9px 10px;border:1px solid var(--bdr);border-radius:5px;
+  margin-bottom:7px;display:flex;justify-content:space-between;align-items:flex-start;}
+.ai:last-child{margin-bottom:0;}
+.an{font-size:12px;font-weight:600;}
+.am{font-size:10px;color:var(--txt2);margin-top:2px;}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;}
+.dg{background:var(--grn);}  .dy{background:var(--ylw);}  .dr{background:var(--red);}
+.tag{font-size:10px;padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap;}
+.tg{color:var(--grn);background:#10b98115;border:1px solid #10b98133;}
+.ty{color:var(--ylw);background:#f59e0b15;border:1px solid #f59e0b33;}
+.tr{color:var(--red);background:#ef444415;border:1px solid #ef444433;}
+.ti{color:var(--txt2);background:var(--bg3);border:1px solid var(--bdr);}
+
+/* Transactions */
+.txn{display:grid;grid-template-columns:72px 1fr auto;gap:8px;padding:7px 0;align-items:start;}
+.txn:not(:last-child){border-bottom:1px solid var(--bdr);}
+.tt{font-size:10px;color:var(--txt2);}
+.tm{font-size:12px;}
+.arr{color:var(--acc);margin:0 3px;}
+.ts2{font-size:10px;color:var(--txt2);display:block;margin-top:1px;}
+.ta{font-size:12px;color:var(--grn);font-weight:600;white-space:nowrap;text-align:right;}
+.ta.z{color:var(--txt2);font-size:10px;}
+
+/* ACP jobs */
+.job{display:grid;grid-template-columns:52px 1fr auto;gap:8px;padding:7px 0;align-items:start;}
+.job:not(:last-child){border-bottom:1px solid var(--bdr);}
+.jid{font-size:11px;color:var(--acc);}
+.jb{font-size:12px;}
+.jm{font-size:10px;color:var(--txt2);margin-top:1px;}
+.jr{text-align:right;}
+.js-pend{font-size:10px;color:var(--ylw);background:#f59e0b15;border:1px solid #f59e0b33;padding:2px 6px;border-radius:3px;}
+.js-exp{font-size:10px;color:var(--orn);background:#f9731615;border:1px solid #f9731633;padding:2px 6px;border-radius:3px;}
+.jp{font-size:11px;color:var(--txt2);margin-top:3px;}
+.exp-hdr{font-size:10px;color:var(--txt2);padding:8px 0 4px;border-top:1px solid var(--bdr);margin-top:6px;
+  letter-spacing:1px;text-transform:uppercase;}
+
+/* Briefs — rendered markdown */
+.tab-bar{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;}
+.tab{background:var(--bg3);border:1px solid var(--bdr);color:var(--txt2);
+  padding:5px 10px;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:11px;}
+.tab.on{background:var(--acc);color:var(--bg);border-color:var(--acc);font-weight:700;}
+.tab:hover:not(.on){border-color:var(--acc);color:var(--acc);}
+.bm{font-size:10px;color:var(--txt2);margin-bottom:8px;}
+.brief-body{background:var(--bg3);border:1px solid var(--bdr);border-radius:4px;padding:16px;
+  font-size:12px;line-height:1.8;color:var(--txt);max-height:500px;overflow-y:auto;}
+.brief-body h1,.brief-body h2,.brief-body h3{color:var(--acc);margin:10px 0 4px;font-size:13px;letter-spacing:.5px;}
+.brief-body h1{font-size:14px;border-bottom:1px solid var(--bdr);padding-bottom:4px;margin-bottom:8px;}
+.brief-body strong{color:var(--txt);font-weight:700;}
+.brief-body em{color:var(--ylw);font-style:normal;}
+.brief-body hr{border:none;border-top:1px solid var(--bdr);margin:10px 0;}
+.brief-body p{margin-bottom:6px;}
+.brief-body ul{margin-left:16px;margin-bottom:6px;}
+.brief-body li{margin-bottom:2px;}
+.brief-body code{background:var(--bg2);padding:1px 5px;border-radius:3px;font-size:11px;color:var(--acc);}
+
+/* Two-col */
+.row2{display:grid;grid-template-columns:1fr 350px;gap:14px;}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:#334155;}
+
+.empty{color:var(--txt2);font-size:12px;padding:18px 0;text-align:center;}
+
+@media(max-width:860px){
+  .layout{grid-template-columns:1fr;}
+  .sidebar{height:auto;}
+  .row2{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div>
+    <span class="logo">OCTODAMUS <em>MISSION CONTROL</em></span>
+    <span class="pulse" id="pulse"></span>
+  </div>
+  <div class="topbar-r">
+    <span id="ts">--</span>
+    <button class="btn" onclick="load()">Refresh</button>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="sidebar">
+    <div>
+      <div class="sh">Ecosystem Revenue</div>
+      <div class="rev-big" id="rev-total">--</div>
+      <div class="rev-sub" id="rev-sub"></div>
+      <table class="rev-tbl"><tbody id="rev-rows"></tbody></table>
+    </div>
+    <div>
+      <div class="sh">Agent Fleet</div>
+      <div id="fleet"></div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="row2">
+      <div class="card">
+        <div class="ch">
+          <h3>Inter-Agent Transactions</h3>
+          <span class="badge" id="txn-badge">0</span>
+        </div>
+        <div class="cb" style="padding:0 14px;max-height:340px;overflow-y:auto;">
+          <div id="txn-feed"><div class="empty">Loading...</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ch">
+          <h3>ACP Job Queue</h3>
+          <span class="badge" id="job-badge">0</span>
+        </div>
+        <div class="cb" style="padding:0 14px;max-height:340px;overflow-y:auto;">
+          <div id="job-list"><div class="empty">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><h3>Latest Agent Briefs</h3></div>
+      <div class="cb">
+        <div class="tab-bar" id="brief-tabs"></div>
+        <div class="bm" id="brief-meta"></div>
+        <div class="brief-body" id="brief-body">Select a brief above</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LABELS={
+  nyse_macromind:"MacroMind",nyse_stockoracle:"StockOracle",
+  nyse_tech_agent:"TechAgent",order_chainflow:"ChainFlow",
+  x_sentiment_agent:"Sentiment",tokenbot_nyse_base:"TokenBot",
+  daily_summary:"Ben Daily",midday_brief:"Ben Midday",
+};
+let _briefs={}, _tab=null;
+
+function ago(iso){
+  if(!iso) return "--";
+  try{
+    const h=(Date.now()-new Date(iso))/3600000;
+    if(h<1) return Math.round(h*60)+"m ago";
+    if(h<24) return Math.round(h)+"h ago";
+    return Math.round(h/24)+"d ago";
+  }catch{return iso.slice(0,16);}
+}
+
+function agentStatus(s){
+  if(!s||!Object.keys(s).length) return "no-state";
+  if(s.dead) return "dead";
+  if(s.last_run){
+    const h=(Date.now()-new Date(s.last_run))/3600000;
+    if(h<26) return "live";
+    if(h<73) return "idle";
+  }
+  return "idle";
+}
+
+// Lightweight markdown -> HTML (headers, bold, italic, hr, code, lists)
+function md(text){
+  if(!text) return "";
+  return text
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/^### (.+)$/gm,"<h3>$1</h3>")
+    .replace(/^## (.+)$/gm,"<h2>$1</h2>")
+    .replace(/^# (.+)$/gm,"<h1>$1</h1>")
+    .replace(/^---+$/gm,"<hr>")
+    .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g,"<em>$1</em>")
+    .replace(/`(.+?)`/g,"<code>$1</code>")
+    .replace(/^[-*] (.+)$/gm,"<li>$1</li>")
+    .replace(/(<li>.*<\/li>)/gs, s => "<ul>"+s+"</ul>")
+    .replace(/\n\n/g,"</p><p>")
+    .replace(/^(?!<[hup]|<li|<hr)(.*)/gm, s => s ? "<p>"+s+"</p>" : "");
+}
+
+function render(d){
+  // Revenue
+  document.getElementById("rev-total").textContent="$"+d.revenue.total.toFixed(4);
+  const byAgent=d.revenue.by_agent;
+  document.getElementById("rev-sub").textContent=Object.keys(byAgent).length+" agents earning";
+  document.getElementById("rev-rows").innerHTML=
+    Object.entries(byAgent).sort((a,b)=>b[1]-a[1])
+    .map(([a,v])=>`<tr><td>${a}</td><td class="rv">$${v.toFixed(4)}</td></tr>`)
+    .join("");
+
+  // Fleet
+  document.getElementById("fleet").innerHTML=
+    Object.entries(d.agents).map(([name,s])=>{
+      const st=agentStatus(s);
+      const dot=st==="live"?"dg":st==="dead"?"dr":"dy";
+      const tag=st==="live"?"tg":st==="dead"?"tr":st==="no-state"?"ti":"ty";
+      const label=st==="no-state"?"NO STATE":st.toUpperCase();
+      let meta=[];
+      if(s.sessions!==undefined) meta.push("S#"+s.sessions);
+      if(s.last_balance!==undefined) meta.push("$"+s.last_balance.toFixed(2));
+      if(s.total_pnl!==undefined) meta.push("P&L $"+s.total_pnl.toFixed(2));
+      if(s.last_run) meta.push(ago(s.last_run)+(s._inferred_last_run?" ~":""));
+      return `<div class="ai">
+        <div>
+          <div class="an"><span class="dot ${dot}"></span>${name}</div>
+          <div class="am">${meta.join(" | ")||"—"}</div>
+        </div>
+        <span class="tag ${tag}">${label}</span>
+      </div>`;
+    }).join("");
+
+  // Transactions
+  const txns=d.transactions||[];
+  document.getElementById("txn-badge").textContent=txns.length;
+  document.getElementById("txn-feed").innerHTML=txns.length
+    ? txns.slice(0,50).map(t=>`
+      <div class="txn">
+        <span class="tt">${ago(t.date)}</span>
+        <span class="tm">
+          <strong>${t.buyer}</strong><span class="arr">&#x2192;</span><strong>${t.seller}</strong>
+          <span class="ts2">${t.service}</span>
+        </span>
+        <span class="ta${t.amount_usdc?"":" z"}">${t.amount_usdc?"$"+t.amount_usdc.toFixed(2):"ACP"}</span>
+      </div>`).join("")
+    : '<div class="empty">No transactions yet</div>';
+
+  // ACP jobs — split active / expired
+  const active=(d.acp_jobs&&d.acp_jobs.active)||[];
+  const expired=(d.acp_jobs&&d.acp_jobs.expired)||[];
+  const totalJobs=active.length+expired.length;
+  const jobBadge=document.getElementById("job-badge");
+  jobBadge.textContent=active.length+(expired.length?` (+${expired.length} exp)`:"");
+  if(expired.length) jobBadge.className="badge badge-red";
+
+  let jobHtml="";
+  if(!totalJobs){
+    jobHtml='<div class="empty">No pending jobs</div>';
+  } else {
+    if(active.length){
+      jobHtml+=active.map(j=>`
+        <div class="job">
+          <span class="jid">#${j.job_id}</span>
+          <span><div class="jb">${j.buyer_agent}</div><div class="jm">${j.age_hours}h old</div></span>
+          <span class="jr"><span class="js-pend">pending</span><div class="jp">$${j.price_usdc.toFixed(2)}</div></span>
+        </div>`).join("");
+    }
+    if(expired.length){
+      jobHtml+=`<div class="exp-hdr">Expired on-chain (>${24}h)</div>`;
+      jobHtml+=expired.map(j=>`
+        <div class="job">
+          <span class="jid" style="color:var(--txt2)">#${j.job_id}</span>
+          <span><div class="jb" style="color:var(--txt2)">${j.buyer_agent}</div><div class="jm">${j.age_hours}h old</div></span>
+          <span class="jr"><span class="js-exp">expired</span><div class="jp">$${j.price_usdc.toFixed(2)}</div></span>
+        </div>`).join("");
+    }
+  }
+  document.getElementById("job-list").innerHTML=jobHtml;
+
+  // Briefs
+  _briefs=d.briefs||{};
+  const keys=Object.keys(_briefs);
+  document.getElementById("brief-tabs").innerHTML=keys.map(k=>
+    `<button class="tab${k===(_tab||keys[0])?" on":""}" onclick="showBrief('${k}')">${LABELS[k]||k}</button>`
+  ).join("");
+  if(keys.length) showBrief(_tab&&_briefs[_tab]?_tab:keys[0]);
+}
+
+function showBrief(key){
+  _tab=key;
+  const b=_briefs[key];
+  if(!b) return;
+  document.getElementById("brief-meta").textContent=
+    b.filename+"  |  "+b.mtime+"  |  "+b.age_hours+"h ago";
+  document.getElementById("brief-body").innerHTML=md(b.content);
+  document.querySelectorAll(".tab").forEach(t=>
+    t.classList.toggle("on",t.textContent===(LABELS[key]||key)));
+}
+
+async function load(){
+  const p=document.getElementById("pulse");
+  p.style.background="var(--ylw)";
+  try{
+    const r=await fetch("/dashboard/data");
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    render(await r.json());
+    document.getElementById("ts").textContent=new Date().toLocaleTimeString();
+    p.style.background="var(--grn)";
+  }catch(e){
+    document.getElementById("ts").textContent="error: "+e.message;
+    p.style.background="var(--red)";
+  }
+}
+
+load();
+setInterval(load,30000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/dashboard", response_class=HTMLResponse, tags=["Dashboard"], include_in_schema=False)
+def get_dashboard():
+    """Octodamus Mission Control — live agent fleet, revenue, and transaction dashboard."""
+    return HTMLResponse(content=_DASHBOARD_HTML)
 
 
 # -- Entry point --------------------------------------------------------------
