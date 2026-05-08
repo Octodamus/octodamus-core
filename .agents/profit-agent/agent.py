@@ -196,16 +196,35 @@ def tool_browse_url(url: str) -> str:
 
 
 def tool_get_market_data(asset: str = "ALL") -> str:
-    """Get live price, 24h change, and Fear & Greed. Pass 'ALL' (default) to get BTC+ETH+SOL in one call."""
+    """Get live price, 24h change, Fear & Greed, SPY (S&P500 proxy), and DXY. Pass 'ALL' (default) for full picture."""
     try:
         sys.path.insert(0, str(ROOT))
-        from financial_data_client import get_crypto_prices
+        from financial_data_client import get_crypto_prices, get_current_price
         asset = asset.upper()
         prices = get_crypto_prices(["BTC","ETH","SOL"] if asset in ("ALL","") else
                                    [asset] if asset in ("BTC","ETH","SOL") else ["BTC","ETH","SOL"])
         lines = ["Live market data:"]
         for t, d in prices.items():
-            lines.append(f"  {t}: ${d.get('usd',0):,.2f} ({d.get('usd_24h_change',0):+.2f}% 24h)")
+            price_val = d.get('usd', 0)
+            lines.append(f"  {t}: ${price_val:,.2f} ({d.get('usd_24h_change',0):+.2f}% 24h)")
+            if t == "BTC":
+                _session_market_cache["btc"] = f"{price_val:,.0f}"
+        # Equity + DXY via yfinance (only on ALL fetch)
+        if asset in ("ALL", ""):
+            try:
+                spy = get_current_price("SPY")
+                spy_s = spy.get("snapshot", {})
+                if spy_s.get("price", 0) > 0:
+                    lines.append(f"  SPY (S&P500): ${spy_s['price']:,.2f} ({spy_s.get('day_change_percent', 0):+.2f}% day)")
+            except Exception:
+                pass
+            try:
+                dxy = get_current_price("DX-Y.NYB")
+                dxy_s = dxy.get("snapshot", {})
+                if dxy_s.get("price", 0) > 0:
+                    lines.append(f"  DXY: {dxy_s['price']:.2f} ({dxy_s.get('day_change_percent', 0):+.2f}% day)")
+            except Exception:
+                pass
         # Fear & Greed
         try:
             import httpx
@@ -213,6 +232,7 @@ def tool_get_market_data(asset: str = "ALL") -> str:
             val = fg["data"][0]["value"]
             label = fg["data"][0]["value_classification"]
             lines.append(f"  Fear & Greed: {val}/100 ({label})")
+            _session_market_cache["fg"] = val
         except Exception:
             pass
         return "\n".join(lines)
@@ -429,7 +449,7 @@ def tool_get_polymarket_edges() -> str:
         # Fetch more than needed so we have room to filter
         r = httpx.get(
             "https://gamma-api.polymarket.com/markets",
-            params={"active": True, "closed": False, "limit": 100,
+            params={"active": True, "closed": False, "limit": 250,
                     "order": "volume", "ascending": False},
             timeout=10
         )
@@ -484,9 +504,13 @@ def tool_get_polymarket_edges() -> str:
                         lines.append("     BUY underpriced side, target convergence to 1.0")
                 lines.append("")
             if not edge_markets:
-                lines.append("  No crypto/macro markets in top 50. Try again later or use scan_kalshi for KXBTC/KXETH/KXFED.")
+                lines.append("  No crypto/macro markets in top 250 by volume. Try scan_kalshi for KXBTC/KXETH/KXFED.")
                 lines.append("  (Sports/gaming dominated this scan — all filtered out.)")
             else:
+                high_vol = [m for m in edge_markets if float(m.get("volume", 0) or 0) >= 5000]
+                low_vol  = [m for m in edge_markets if float(m.get("volume", 0) or 0) < 5000]
+                if not high_vol:
+                    lines.append(f"  NOTE: {len(edge_markets)} crypto/macro market(s) found but ALL below $5k volume threshold (condition 3 fails).")
                 for m in edge_markets[:12]:
                     q      = m.get("question", "")[:75]
                     prices = m.get("outcomePrices", [])
@@ -496,10 +520,11 @@ def tool_get_polymarket_edges() -> str:
                         except Exception:
                             prices = []
                     yes    = prices[0] if prices else "?"
-                    vol    = m.get("volume", 0)
+                    vol    = float(m.get("volume", 0) or 0)
                     cid    = m.get("conditionId", "")
                     exp    = m.get("endDateIso", "")[:10]
                     hours_left = ""
+                    vol_flag = "" if vol >= 5000 else " [LOW VOL]"
                     try:
                         if m.get("endDateIso"):
                             exp_dt = datetime.fromisoformat(m["endDateIso"].replace("Z", "+00:00"))
@@ -508,7 +533,7 @@ def tool_get_polymarket_edges() -> str:
                     except Exception:
                         pass
                     lines.append(
-                        f"  conditionId={cid} | YES={yes} | Vol=${float(vol or 0):,.0f}"
+                        f"  conditionId={cid} | YES={yes} | Vol=${vol:,.0f}{vol_flag}"
                         f"{hours_left} | exp={exp} | {q}"
                     )
             lines.append("\nUse paper_trade_polymarket(condition_id, side, size_usdc, price) to paper trade.")
@@ -572,26 +597,16 @@ def tool_buy_octodamus_signal() -> str:
     return tool_buy_x402_service("https://api.octodamus.com/v2/x402/agent-signal", max_price_usdc=0.05)
 
 
-_LIMITLESS_SUSPEND_THRESHOLD = 20   # auto-suspend after this many consecutive zero-crypto sessions
+_LIMITLESS_SUSPEND_THRESHOLD = 20   # kept for reference, not used
 
 
 def tool_scan_limitless(category: str = "crypto") -> str:
-    """
-    Scan Limitless Exchange active markets.
-    Only returns markets with valid Limitless durations: 4h, 1h, 15m, 5m.
-    There are NO multi-day, daily, or weekly markets on Limitless — ever.
-    Results grouped by duration. Pass category='all' to see non-crypto markets.
-    """
-    # Auto-suspension: if we've had many consecutive zero-crypto sessions, skip the API call
-    _st = _load_state()
-    zero_streak = _st.get("limitless_zero_streak", 0)
-    if zero_streak >= _LIMITLESS_SUSPEND_THRESHOLD:
-        return (
-            f"LIMITLESS SUSPENDED ({zero_streak} consecutive sessions with 0 qualifying crypto markets). "
-            f"Limitless is structurally thin on crypto — all markets expire within 2h on evenings/weekends. "
-            f"Do NOT keep scanning. Skip to Polymarket. "
-            f"Owner can reset by setting limitless_zero_streak=0 in state.json when volume returns."
-        )
+    """Limitless permanently suspended by owner decision 2026-05-06. Polymarket-only going forward."""
+    return (
+        "LIMITLESS PERMANENTLY SUSPENDED -- owner decision 2026-05-06. "
+        "25 consecutive sessions with zero qualifying crypto markets. Platform is structurally thin on crypto. "
+        "Do NOT call this tool. Go directly to Polymarket scan."
+    )
 
     def _duration(m: dict) -> str:
         """Detect market duration from slug/title. Returns '4h','1h','15m','5m', or ''."""
@@ -1437,49 +1452,21 @@ def tool_buy_x402_service(url: str, max_price_usdc: float = 1.0) -> str:
         if price_usdc > max_price_usdc:
             return f"Service costs ${price_usdc:.4f} USDC — above your max of ${max_price_usdc}. Increase max_price_usdc or skip."
 
-        # Step 3: Sign EIP-3009 using x402 SDK (correct structure + domain handling)
+        # Step 3: Use x402 SDK to handle signing — same approach as octo_x402_health.py --live
         import time as _t
-        from x402.mechanisms.evm.types import ExactEIP3009Authorization, ExactEIP3009Payload
-        from x402.mechanisms.evm.utils import create_nonce
-        from x402.mechanisms.evm.eip712 import build_typed_data_for_signing
-        from x402.mechanisms.evm.signers import EthAccountSigner
+        from x402.mechanisms.evm.exact.client import ExactEvmScheme
+        from x402.http.x402_http_client import x402HTTPClientSync
+        from x402.client import x402ClientSync
 
-        amount_raw   = str(int(price_usdc * 1_000_000))
-        nonce        = create_nonce()
-        valid_after  = "0"
-        valid_before = str(int(_t.time()) + 300)
+        scheme = ExactEvmScheme(account)
+        x402c  = x402ClientSync()
+        x402c.register("eip155:8453", scheme)
+        http_c = x402HTTPClientSync(x402c)
 
-        authorization = ExactEIP3009Authorization(
-            from_address=account.address,
-            to=pay_to,
-            value=amount_raw,
-            valid_after=valid_after,
-            valid_before=valid_before,
-            nonce=nonce,
-        )
-
-        # SDK signer handles TypedDataDomain → dict and bytes32 nonce conversion
-        sdk_signer = EthAccountSigner(account)
-        domain, types, primary_type, message = build_typed_data_for_signing(
-            authorization, 8453,
-            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "USD Coin", "2",
-        )
-        sig_bytes = sdk_signer.sign_typed_data(domain, types, primary_type, message)
-        signature = "0x" + sig_bytes.hex()
-
-        # Build payload with correct nested structure: payload.authorization.{from,to,value,...}
-        inner = ExactEIP3009Payload(authorization=authorization, signature=signature).to_dict()
-        payment_payload = _j.dumps({
-            "x402Version": 1,
-            "scheme":      "exact",
-            "network":     "eip155:8453",
-            "payload":     inner,
-        })
-        payment_b64 = _b64.b64encode(payment_payload.encode()).decode()
+        pay_headers, _ = http_c.handle_402_response(dict(r.headers), r.content)
 
         # Step 4: Retry with payment
-        r2 = httpx.get(url, headers={"PAYMENT-SIGNATURE": payment_b64}, timeout=15)
+        r2 = httpx.get(url, headers=pay_headers, timeout=15)
 
         # Log the purchase
         trades_file = Path(__file__).parent / "x402_purchases.json"
@@ -1643,12 +1630,13 @@ def tool_list_drafts() -> str:
 
 
 _session_logged_action = [False]   # reset to False at the start of each run_session()
+_session_market_cache: dict = {}   # populated by tool_get_market_data; used for subject line
 
 
 def tool_log_action(action: str, result: str, cost_usd: float = 0.0) -> str:
     """Log an action to the session log for transparency."""
     _session_logged_action[0] = True
-    entry = f"[{datetime.now().strftime('%H:%M:%S')}] {action} | cost=${cost_usd:.4f} | {result[:400]}"
+    entry = f"[{datetime.now().strftime('%H:%M:%S')}] {action} | cost=${cost_usd:.4f} | {result[:600]}"
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(entry + "\n")
     return f"Logged: {action}"
@@ -2792,52 +2780,41 @@ IMPORTANT UPDATE — YOU NOW HAVE:
 STREAM 1 — CREATE AND SELL X402 SERVICES (primary, no risk):
 You buy Octodamus data at $0.01/call, add your own analysis, sell the output at $0.25-$2 via x402.
 Services you can design and pitch to the owner to implement:
-- "Ben's Market Edge" $0.25: Octodamus signal + Grok X sentiment + top Limitless market edge, one call
+- "Ben's Market Edge" $0.25: Octodamus signal + Grok X sentiment + top Polymarket edge, one call
 - "Ben's Derivatives Brief" $1: live funding rates, OI, liquidation map, CME COT — formatted for agents
-- "Ben's Limitless Scan" $0.50: scan Base-native prediction markets for Octodamus-confirmed edges
+- "Ben's Polymarket Scan" $0.50: scan Polymarket prediction markets for Octodamus-confirmed edges
 - Research reports $2-5: deep dives on specific markets, sold as PDF via x402
 The owner implements the x402 endpoint. You design the product and write the spec.
 
 STREAM 2 -- TRADE ON PREDICTION MARKETS (Ben's own paper record — separate from OctoBoto):
 Your trades are YOURS. OctoBoto is a separate Telegram trading bot with its own wallet and records.
-You use paper_trade_polymarket() and place_limitless_bet() — these write to YOUR files only.
+You use paper_trade_polymarket() — this writes to YOUR files only.
 
-PRIMARY: Limitless Exchange (Base-native, USDC, your Franklin wallet works directly)
-- scan_limitless() -- Limitless markets are 5min / 15min / 1hr / 4hr ONLY. 4h is the hard ceiling. NO multi-day markets exist.
-  Results grouped by duration. Real volume is in the 1h-4h window. Gate is >$5k volume. Typical range $5k-$50k.
-- LIMITLESS STRUCTURAL CHECK: Track consecutive sessions with 0 qualifying crypto markets in your session history.
-  If get_session_history shows 10+ consecutive sessions with "Limitless: 0 qualifying" or similar notes:
-  flag this explicitly in your email and daily summary as:
-  "STRUCTURAL FLAG: Limitless 0-market streak = X sessions. Recommend: (1) suspend Limitless scanning until
-  $10K+ confirmed daily crypto volume, OR (2) lower volume threshold from $50K to $5K for a 2-session trial.
-  This is a platform issue, not a market timing issue -- do not keep checking indefinitely."
-  Do not defer this flag to "owner decision needed" without also including your specific recommendation.
+PREDICTION MARKETS: Polymarket ONLY (owner decision 2026-05-06 -- Limitless permanently suspended, 25-session structural zero)
+- DO NOT call scan_limitless(). It is permanently disabled. Polymarket is the only venue.
   KEY EDGE: if current price is ALREADY above (or below) a strike but YES is priced <0.50,
   that's a mispricing. Quantify the gap: (current_price - strike) / strike * 100 = gap%.
   A gap >0.5% with YES priced below 0.65 is potential edge.
-  ALSO check Range Scout (get_octodamus_signal with asset + "range") -- Range Scout fires
-  4h directional calls that map directly to Limitless's longest markets. 6h/8h Range Scout calls
-  do NOT match any Limitless market — use those for Polymarket only.
+  Range Scout fires directional calls — use those for Polymarket only.
   If Range Scout is BULL on BTC (4h): look for BTC "above $X" markets expiring within 4h.
 
-FALLBACK: Polymarket (when Limitless has no qualifying markets)
+Polymarket:
 - get_polymarket_edges() -- shows conditionId, YES price, volume, hours left
 - paper_trade_polymarket(condition_id, side, size_usdc, price) -- Ben's paper record only
-- Polymarket has much deeper market supply (Fed rates, BTC milestones, macro events, sports)
-- Use when Limitless is dry. Same 4-condition gate applies.
+- Deep market supply: Fed rates, BTC milestones, macro events, sports. Same 4-condition gate applies.
 
 TRADING REQUIRES ALL FOUR CONDITIONS -- if any is missing, you DO NOT trade, no exceptions:
   1. EV gap >25% (crowd price is wrong by more than 25 cents on the dollar)
      OR price-vs-strike gap >0.5% with YES priced <0.65 (structural mispricing)
   2. Market expires >2h from now (not near-expiry lockout zone)
-  3. Volume >$5k (real liquidity — Limitless 4h crypto markets typically $5k-$50k)
+  3. Volume >$5k (real liquidity)
   4. Directional signal: Range Scout OR Octodamus main oracle PLUS Grok sentiment aligned
-     - Range Scout (4h): call get_octodamus_signal and check for "range_scout" calls. Only 4h Range Scout maps to Limitless markets. 6h/8h = Polymarket only.
-     - Main oracle: STRONG UP or STRONG DOWN (not HOLD/WATCH — too slow for Limitless TF)
+     - Range Scout (4h/6h/8h): call get_octodamus_signal and check for "range_scout" calls. All Range Scout = Polymarket only.
+     - Main oracle: STRONG UP or STRONG DOWN (not HOLD/WATCH)
      - Grok: must confirm same direction as the signal
      - If main oracle is HOLD/WATCH: Range Scout is your signal source. Use it.
-- If all four met: write a position brief, then place_limitless_bet or paper_trade_polymarket
-- If Limitless dry and Polymarket has no edge either: PASS. Cash is a position.
+- If all four met: write a position brief, then paper_trade_polymarket
+- If Polymarket has no edge: PASS. Cash is a position.
 - Kalshi also available (scan_kalshi/place_kalshi_bet) but requires SSN -- skip for now
 
 WHY YOU USE OCTODAMUS:
@@ -2854,6 +2831,9 @@ HARD RULES:
 - Save everything with save_draft
 - Grok X sentiment is contrarian context -- high crowd bullishness often = top
 - When in doubt, do NOT trade. Protect the wallet.
+- Every session MUST call log_action at least once, even PASS sessions: log_action(action='PASS', result='No qualifying trade -- [brief reason]')
+- NEVER use /markets?event_id=X to look up specific Polymarket markets -- returns incorrect data (wrong market). Always use the bulk /markets endpoint (already used in get_polymarket_edges) or /events?slug=[slug] for specific lookup.
+- Polymarket dead-end rule: if get_polymarket_edges returns sports-only AND one direct browse_url attempt fails to find a known market, STOP. Log the block and move on. Never make more than 2 Polymarket lookup attempts per session when the first confirms sports-only.
 
 WALLET RECONCILIATION:
 - If check_wallet shows a balance different from core memory, DO NOT flag as unexplained.
@@ -2928,16 +2908,18 @@ SESSION_FOCUS = {
 You are waking up. Markets moved overnight. Your job this session:
 1. read_core_memory — read your distilled lessons FIRST before anything else
 2. check_wallet + get_session_history + list_drafts (orient yourself)
-2. get_market_data for BTC, ETH, SOL — what happened overnight?
+2. get_market_data for BTC, ETH, SOL (omit asset arg — returns SPY + DXY too) — what happened overnight?
+   REGIME SYNTHESIS (derive from live data, not oracle status):
+   - RISK-ON:  BTC 24h >+2% OR SPY day >+0.5% (e.g., up 400+ pts = RISK-ON, say so explicitly)
+   - RISK-OFF: BTC 24h <-2% OR SPY day <-1%
+   - NEUTRAL:  BTC and SPY both near flat OR pointing opposite directions
+   - Oracle SILENCE is "oracle withholding call" -- it is NOT a market regime.
+     S&P up 600pts with oracle silent = RISK-ON market, no active oracle call. State both facts separately.
 3. get_grok_sentiment for BTC — what is X saying this morning?
 4. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
-   Range Scout 4h = Limitless signal. Range Scout 6h/8h = Polymarket only (no Limitless market matches).
-   Range Scout is your primary Limitless signal source when main oracle is HOLD/WATCH.
-5. scan_limitless() — tool auto-suspends if streak >= 20. If suspended, skip and go to Polymarket.
-   Markets are 4h/1h/15m/5m ONLY — results grouped by duration, no min_hours needed.
-   Look for: (a) Range Scout direction + matching "above/below $X" market in that timeframe
-             (b) price-vs-strike gap >0.5% where crowd pricing hasn't caught up yet
-6. If Limitless has no qualifying market (or suspended): get_polymarket_edges — check for macro/crypto edges there.
+   Range Scout 4h/6h/8h = Polymarket only. Range Scout is the primary signal source when main oracle is HOLD/WATCH.
+5. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
+6. get_polymarket_edges — check for macro/crypto edges.
    paper_trade_polymarket() writes to YOUR record only, never OctoBoto's.
 7. Trading rule — ALL four must be true or you DO NOT trade:
    - EV >25% OR price-vs-strike gap >0.5% with mispriced YES (<0.65)
@@ -2960,7 +2942,10 @@ You are waking up. Markets moved overnight. Your job this session:
    - Do NOT open with a greeting or date. Open with the sharpest number or contradiction from step 8.
    - If today's sub-agents split on regime, open with that split.
 10. check_memory_status — run this and include the full output in the email
-11. MANDATORY — send_email to owner: market read, sub-agent synthesis, any Limitless/Polymarket edge found + paper trade, service designed, + full memory status. Do NOT do record_lesson first.
+11. MANDATORY — send_email to owner: market read, sub-agent synthesis, any Polymarket edge found + paper trade, service designed, + full memory status. Do NOT do record_lesson first.
+    Email footer — ALWAYS use this exact format (do NOT use "from session 1" or any other baseline):
+    Wallet: $[balance] USDC | Session spend: $[spend] | P&L: $[balance - 201.00] ([pct]%) vs start ($201.00) [USDC only -- ~$24 ETH held separately]
+    Oracle silence counter: say "Xth consecutive session" NOT "Day X" -- sessions and days are not the same (4 sessions/day).
 12. record_lesson — AFTER send_email confirmed. What was the single most important thing learned this session?""",
 
     "midday": """SESSION FOCUS — MIDDAY (12pm)
@@ -2968,18 +2953,19 @@ Markets are open. Your job this session:
 1. read_core_memory — read your distilled lessons FIRST
 2. check_wallet + get_session_history + list_drafts
 3. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
-   Range Scout 4h = Limitless-native signal (fires when main oracle is HOLD/WATCH). 6h/8h = Polymarket only.
-   NOTE: Octodamus NO SIGNAL in a TRANSITION regime is CORRECT behavior — 9/11 consensus rightly withholds
-   in choppy markets. Report it as "Oracle correctly withholding" not as a failure.
+   Range Scout 4h/6h/8h = Polymarket signal (Limitless permanently suspended 2026-05-06).
+   NOTE: Octodamus NO SIGNAL means consensus < 9/11 — no high-conviction setup found.
+   It says NOTHING about whether the market is RISK-ON or RISK-OFF. Never use oracle silence
+   to describe the market regime. Assess regime separately from SPY/BTC price data.
 4. get_grok_sentiment — direction confirmation.
-5. scan_limitless() — markets are 4h/1h/15m/5m ONLY, grouped by duration in output. No multi-day markets exist.
-   Tool auto-suspends if streak >= 20. Volume gate >$5k. Real volume in 1h/4h window.
-   Target: 4h Range Scout direction + matching "above/below $X" market, OR price-vs-strike gap >0.5%.
-   IF result is "0 crypto markets": check if "category='all'" returns any duration matches before moving on.
-   NOTE: On weekends/evenings, crypto market availability is thin — that's normal. Move to step 6.
-6. If no Limitless edge:
-   FIRST: get_polymarket_edges — returns pre-filtered crypto/macro markets only (sports auto-excluded).
-   THEN: scan_kalshi(series="ALL") — ONLY if core memory does NOT say "Kalshi: zero volume. Skip."
+   REGIME SYNTHESIS — use get_market_data output (call it if not yet called this session):
+   - RISK-ON:  BTC 24h >+2% OR SPY day >+0.5%
+   - RISK-OFF: BTC 24h <-2% OR SPY day <-1%
+   - NEUTRAL:  both near flat or conflicting
+   - Oracle SILENCE = oracle withholding, NOT neutral market. S&P up 600pts + oracle silent = RISK-ON market.
+5. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
+6. get_polymarket_edges — returns pre-filtered crypto/macro markets only (sports auto-excluded).
+   scan_kalshi(series="ALL") — ONLY if core memory does NOT say "Kalshi: zero volume. Skip."
          If core memory already labels Kalshi as structurally dead, skip this call entirely.
          (Kalshi KXBTC crypto markets are reliably zero on weekends. Don't waste a turn confirming it.)
    Use paper_trade_polymarket() for Polymarket or place_kalshi_bet() for Kalshi if you find an edge.
@@ -2994,23 +2980,25 @@ Markets are open. Your job this session:
    duplicate auto-named file. Write the content inside the save_draft call.
    Report: "DISTRIBUTION: [action attempted] | [outcome/draft saved]"
    If backlog < 5: design_x402_service OR buy_x402_service as normal.
-8. SESSION NUMBERING: use the session count from state.json (shown in check_wallet output as "Session #X").
-   That number is canonical. Do NOT invent a different count. History entries and state sessions differ
-   because not every session calls record_lesson — both numbers are real, report both:
-   "Session 42 | 18 lessons logged" not "Session 38".
+8. SESSION NUMBERING — CRITICAL: Your session number is injected at the top of this prompt as "SESSION NUMBER: You are Session #X".
+   That is the authoritative number. Use it everywhere -- email subject, completion summary, log entries.
+   get_session_history shows how many lessons are logged -- that is NOT your session number.
+   Example: injected number is #63, history shows 36 entries -> you are Session #63, 36 lessons logged.
+   Always report both: "Session #63 | 36 lessons logged" -- in email subject, in completion summary, everywhere.
 9. MANDATORY — send_email to owner BEFORE record_lesson. Email format — include these sections in order:
    WALLET / TRADES / VERDICT  (Session X | date | PASS/TRADE)
      Header stat line: "Wallet: $X | Trades: N | Distribution drafts: N | Lessons in history: N"
      "Lessons in history" = cumulative count from get_session_history, NOT lessons added this session.
      "Distribution drafts" = number of drafts saved this session via save_draft.
-   MARKET STATE (prices, F&G, Grok, Octodamus verdict — ONE call gets BTC+ETH+SOL)
+   MARKET STATE (prices, F&G, Grok, Octodamus verdict, REGIME read — ONE call gets BTC+ETH+SOL+SPY+DXY)
    KEY SIGNAL (one dominant macro/chart observation)
    SUB-AGENT SYNTHESIS (brief, 1 line per agent)
-   PREDICTION MARKET SCAN (Limitless verdict + diagnosis if 0 + Polymarket + Kalshi if checked)
+   PREDICTION MARKET SCAN (Limitless: permanently suspended | Polymarket + Kalshi if checked)
    DISTRIBUTION (what action was taken this session — not service design specs)
    NEXT SIGNALS TO WATCH (3 bullet max)
    Service designs go in drafts/ files, NOT in the email body.
-10. record_lesson — AFTER send_email confirmed. Log the key insight from this session.""",
+10. record_lesson — AFTER send_email confirmed. Log the key insight from this session.
+    Final turn label: "Session #[state.json number] Complete | [lesson count] lessons" — NOT "Session [lesson count] Complete".""",
 
     "evening": """SESSION FOCUS — EVENING (6pm)
 End of US trading day. Your job this session:
@@ -3088,36 +3076,45 @@ While humans sleep, markets keep moving AND the agent economy keeps transacting.
    - If already sent: use check_acp_competitor_jobs to read deliverables and compare vs Octodamus output
 4. Check Smithery MCP: browse_orbis or web_search for 'Smithery octodamusai market-intelligence' — any reviews, usage, gaps?
 5. get_octodamus_signal — check oracle. Then check get_session_history to count consecutive NO SIGNAL sessions.
-   If NO SIGNAL for 20+ consecutive sessions: mark as !! SYSTEM ALERT in your email — signal engine may be down.
+   If NO SIGNAL for 20-29 consecutive sessions: !! SYSTEM ALERT -- "Oracle silent X sessions; verify signal engine."
+   If NO SIGNAL for 30+ consecutive sessions: !! SYSTEM ALERT -- "Oracle extended silence (X sessions). Engine likely healthy -- 9/11 consensus threshold is strict in choppy markets. No high-conviction setup found."
    If signal fires: call append_core_memory NOW with "SIGNAL FIRED [asset] [direction] [date] -- streak reset to 0" (see SIGNAL STREAK RULE).
-6. scan_limitless() — check for crypto markets (4h/1h/15m/5m only, grouped by duration). Tool auto-suspends if streak >= 20. Volume gate >$5k.
+6. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
 7. get_grok_sentiment for BTC — Asian markets read
-8. get_market_data for BTC, ETH, SOL + DXY — use exact values, no approximations (~)
+8. get_market_data (omit asset arg — returns BTC+ETH+SOL+SPY+DXY in one call)
+   COPY EXACT VALUES from tool output — never add ~ or "approx". Include the 24h change % as returned.
+   SPY overnight: if market closed and tool shows no price, write "SPY: $X.XX (prev close)" using any value from session history — never write "Data unavailable".
+   Fear & Greed format: X/100 (Label) — never reverse label and number, never add "approx".
 9. If a real 4-condition edge exists: write brief, attempt paper trade
 10. send_email (MANDATORY) with this EXACT format:
 
 OVERNIGHT BRIEF -- [Day Month Date Year] | [TIME]
 [Agent_Ben] | Wallet: $X.XX USDC | [TRADE/PASS]
-[!! SYSTEM ALERT: Oracle silent X sessions -- signal engine may be down    <- include ONLY if 20+ consecutive no signal]
+[!! SYSTEM ALERT: Oracle silent X sessions -- signal engine may be down    <- include ONLY if 20+ consecutive no signal; omit otherwise]
 
 ACP PERFORMANCE
 Completed jobs: X | USDC earned: $X.XX
+[Competitor intel: one line summary if checked this session -- do NOT create a separate ACP COMPETITOR INTEL section]
 [New offering: Name ($X.XX/job) -- only if designed this session; else omit]
 [Pending specs: X unimplemented offering specs in drafts -- only if skipped design]
 
 MARKETS (Live, [TIME])
-BTC: $X (+X.XX% 24h)
-ETH: $X (+X.XX% 24h)
-SOL: $X (+X.XX% 24h)
+BTC: $X,XXX.XX (+X.XX% 24h)
+ETH: $X,XXX.XX (+X.XX% 24h)
+SOL: $XXX.XX (+X.XX% 24h)
+SPY: $X,XXX.XX (+X.XX% day) or "SPY: $X,XXX.XX (prev close)" if market closed
 Fear & Greed: X/100 ([label]) -- [one-line trend note]
 BTC Dominance: X%
-DXY: X.XX ([distance to kill-switch note if within 2 points of 119.5])
+DXY: X.XX -- add a parenthetical if any of: (a) >117: note proximity to kill-switch (119.5) + crypto headwind; (b) moved >3pts vs prior session: note direction + "falling = tailwind" or "rising = headwind"; (c) <100: note broad dollar weakness as tailwind
+Regime: [RISK-ON / RISK-OFF / NEUTRAL] -- [one-line basis: e.g., "SPY +1.5% + BTC +3.2% = RISK-ON"]
 
 SENTIMENT & ORACLE
-[lines -- oracle signal or NO SIGNAL + streak count]
+Oracle: [signal or "NO SIGNAL (Xth consecutive session)"]
+[If SYSTEM ALERT was shown in header: do NOT repeat the full alert text here -- one line only]
+Grok BTC: [signal | confidence% | one-line crowd read]
 
 MARKET SCAN -- RESULT: [TRADE/PASS]
-Limitless: [SUSPENDED (X streak) / result -- no inline reset instructions here]
+Limitless: PERMANENTLY SUSPENDED (owner decision 2026-05-06)
 Polymarket:
   [each market: condition | YES/NO price | vol | PASS/TRADE + one-line reason]
 4-condition gate: N of 4 met (passed: [list] | failed: [list])
@@ -3149,6 +3146,29 @@ def _get_session_focus() -> str:
         return SESSION_FOCUS["overnight"]
 
 
+def _microcompact(msgs: list, keep_last: int = 3) -> list:
+    tr_indices = [
+        i for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+    ]
+    to_prune = tr_indices[:-keep_last]
+    if not to_prune:
+        return msgs
+    pruned = list(msgs)
+    for i in to_prune:
+        pruned[i] = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": b["tool_use_id"], "content": "[pruned]"}
+                if isinstance(b, dict) and b.get("type") == "tool_result" else b
+                for b in pruned[i]["content"]
+            ],
+        }
+    return pruned
+
+
 def run_session(dry_run: bool = False, session_type: str = ""):
     _session_logged_action[0] = False  # reset for this session
 
@@ -3175,13 +3195,16 @@ def run_session(dry_run: bool = False, session_type: str = ""):
     client      = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
     date_inject = (
         f"\nCURRENT DATE/TIME: {datetime.now().strftime('%A, %B %d %Y %I:%M %p')}\n"
+        f"SESSION NUMBER: You are Session #{session_num}. Use this exact number everywhere -- email subject, "
+        f"completion summary, log entries. Do not infer the session number from tools or history.\n"
         f"IMPORTANT: Use only this date. Never invent dates or prices. "
-        f"If get_market_data returns a price, that IS the current price — do not override it with training data."
+        f"If get_market_data returns a price, that IS the current price -- do not override it with training data."
     )
     session_sys = SYSTEM + date_inject + f"\n\n{focus}"
     messages    = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
     full_log     = []
     turns        = 0
+    _session_market_cache.clear()
 
     api_error = None
     try:
@@ -3241,6 +3264,7 @@ def run_session(dry_run: bool = False, session_type: str = ""):
                     })
 
                 messages.append({"role": "user", "content": tool_results})
+                messages = _microcompact(messages)
                 time.sleep(0.5)
             else:
                 break
@@ -3274,12 +3298,17 @@ def run_session(dry_run: bool = False, session_type: str = ""):
     import re as _re
     wallet_match = _re.search(r"USDC Balance:\s*\$([0-9.]+)", log_text)
     wallet_str   = f"${wallet_match.group(1)}" if wallet_match else "?"
-    # Extract BTC price
-    btc_match    = _re.search(r"BTC:\s*\$([0-9,]+)", log_text)
-    btc_str      = f"BTC ${btc_match.group(1)}" if btc_match else ""
-    # Extract Fear & Greed
-    fg_match     = _re.search(r"Fear & Greed:\s*(\d+)/100", log_text)
-    fg_str       = f"F&G {fg_match.group(1)}" if fg_match else ""
+    # Prefer live price captured directly from tool_get_market_data; fall back to log regex
+    btc_str = f"BTC ${_session_market_cache['btc']}" if _session_market_cache.get("btc") else ""
+    if not btc_str:
+        btc_matches = _re.findall(r"BTC:\s*\$([0-9,]+)", log_text)
+        btc_match   = btc_matches[-1] if btc_matches else None
+        btc_str     = f"BTC ${btc_match}" if btc_match else ""
+    fg_val = _session_market_cache.get("fg")
+    fg_str = f"F&G {fg_val}" if fg_val else ""
+    if not fg_str:
+        fg_match = _re.search(r"Fear & Greed:\s*(\d+)/100", log_text)
+        fg_str   = f"F&G {fg_match.group(1)}" if fg_match else ""
     # Detect trade vs pass
     traded       = any("BET PLACED" in l or "PAPER TRADE" in l or "BEN PAPER TRADE" in l for l in full_log)
     verdict      = "TRADE" if traded else "PASS"
@@ -3314,7 +3343,7 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         "[\U0001F300-\U0001F9FF\U0001FA00-\U0001FA9F⚠-⛿✂-➰↔-⇿]",
         _re.UNICODE,
     )
-    _MD_RE = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}|>\s?|^\s*[-*]\s", _re.MULTILINE)
+    _MD_RE = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}|>\s?|^\s*[-*]\s", _re.MULTILINE)
 
     def _clean_turn(line: str, limit: int = 420) -> str:
         line = _EMOJI_RE.sub("", line)
