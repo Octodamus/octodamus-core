@@ -3192,13 +3192,42 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         f.write(f"\n{'='*60}\nSession #{session_num} -- {now}\n{'='*60}\n")
 
     import anthropic
-    client      = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
+    client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
+
+    # Pre-fetch live BTC price + F&G and inject into system prompt — prevents LLM from
+    # substituting training-data prices when writing the email body.
+    _live_btc = "unknown (call get_market_data)"
+    _live_fg  = "unknown (call get_market_data)"
+    try:
+        sys.path.insert(0, str(ROOT))
+        from financial_data_client import get_crypto_prices as _gcp
+        _p = _gcp(["BTC"])
+        _btc_usd = _p.get("BTC", {}).get("usd", 0)
+        _btc_24h = _p.get("BTC", {}).get("usd_24h_change", 0)
+        if _btc_usd > 0:
+            _live_btc = f"${_btc_usd:,.0f} ({_btc_24h:+.1f}% 24h)"
+            _session_market_cache["btc"] = f"{_btc_usd:,.0f}"
+    except Exception:
+        pass
+    try:
+        import httpx as _hx
+        _fg = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6).json()
+        _fg_val = _fg["data"][0]["value"]
+        _fg_lbl = _fg["data"][0]["value_classification"]
+        _live_fg = f"{_fg_val}/100 ({_fg_lbl})"
+        _session_market_cache["fg"] = _fg_val
+    except Exception:
+        pass
+
     date_inject = (
         f"\nCURRENT DATE/TIME: {datetime.now().strftime('%A, %B %d %Y %I:%M %p')}\n"
         f"SESSION NUMBER: You are Session #{session_num}. Use this exact number everywhere -- email subject, "
         f"completion summary, log entries. Do not infer the session number from tools or history.\n"
-        f"IMPORTANT: Use only this date. Never invent dates or prices. "
-        f"If get_market_data returns a price, that IS the current price -- do not override it with training data."
+        f"LIVE MARKET SNAPSHOT (verified at session start -- use these exact values, do NOT substitute):\n"
+        f"  BTC: {_live_btc}\n"
+        f"  Fear & Greed: {_live_fg}\n"
+        f"IMPORTANT: Use only this date and the prices above. Never invent prices. "
+        f"get_market_data will confirm these values when called."
     )
     session_sys = SYSTEM + date_inject + f"\n\n{focus}"
     messages    = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
