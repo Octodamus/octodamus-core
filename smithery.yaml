@@ -38,7 +38,7 @@ description: >
 version: 1.2.0
 icon: https://octodamus.com/octo_logo.png
 homepage: https://octodamus.com
-repository: https://github.com/octodamusai/octodamus
+repository: https://github.com/Octodamus/octodamus-core
 license: MIT
 categories:
   - finance
