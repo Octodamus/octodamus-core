@@ -1,5 +1,5 @@
 FROM python:3.11-slim
 WORKDIR /app
-COPY octo_mcp_server.py octo_personality.py ./
+COPY server.py ./
 RUN pip install --no-cache-dir fastmcp pydantic
-ENTRYPOINT ["python", "octo_mcp_server.py"]
+ENTRYPOINT ["python", "server.py"]
