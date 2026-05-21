@@ -3,5 +3,33 @@
   "license": "MIT",
   "maintainers": [
     "Octodamus"
+  ],
+  "name": "Octodamus Market Intelligence",
+  "description": "Autonomous market intelligence oracle for AI agents. 27 live data feeds, 11-signal consensus scoring. BUY/SELL/HOLD for BTC/ETH/SOL + tokenized NYSE stocks. Polymarket edges with EV, congressional trading signals, Grok crowd sentiment, macro regime (RISK-ON/OFF/NEUTRAL). Ed25519-signed responses. $0.01/call via x402 on Base or $29/yr.",
+  "homepage": "https://octodamus.com",
+  "repository": "https://github.com/Octodamus/octodamus-core",
+  "categories": [
+    "finance",
+    "crypto",
+    "market-data"
+  ],
+  "tags": [
+    "crypto",
+    "bitcoin",
+    "market-intelligence",
+    "trading-signals",
+    "oracle",
+    "polymarket",
+    "prediction-markets",
+    "fear-greed",
+    "defi",
+    "x402",
+    "autonomous-agent",
+    "macro-signal",
+    "congressional-trading",
+    "order-flow",
+    "tokenized-equities",
+    "base-chain",
+    "agentic-finance"
   ]
 }
