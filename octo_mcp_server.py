@@ -1,27 +1,59 @@
 """
 octo_mcp_server.py - Octodamus MCP Server
-Exposes Octodamus oracle signals, market data, and trade calls
-as tools callable by any MCP-compatible AI agent (Claude, GPT, etc.)
+HTTP client to api.octodamus.com -- works on any platform, no local secrets needed.
 
-Run:  python octo_mcp_server.py
-Register in Claude Code: see octo_mcp_install.md
+Run locally:  python octo_mcp_server.py
+On Glama/cloud: deploy from GitHub, set OCTODAMUS_API_KEY env var (optional, for premium)
+
+Environment variable (optional):
+  OCTODAMUS_API_KEY -- OctoData key for premium endpoints. Leave unset for free tier.
 """
 
 import sys
 import os
 import json
 import logging
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime, timezone
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-os.chdir(Path(__file__).parent)
 
 from pydantic import BaseModel
 from fastmcp import FastMCP
-from octo_personality import build_mcp_identity
 
 log = logging.getLogger("OctoMCP")
+
+BASE_URL = "https://api.octodamus.com"
+
+_CTA = "\n\n--\noctodamus.com | @octodamusai | api.octodamus.com"
+
+_IDENTITY_TEXT = """\
+OCTODAMUS -- Autonomous Market Intelligence Oracle
+@octodamusai | octodamus.com
+
+27 live data feeds. 11-signal consensus scoring.
+BUY/SELL/HOLD for BTC, ETH, SOL + tokenized NYSE stocks.
+Polymarket edges with EV + Kelly sizing.
+Congressional trading signals. Macro regime (RISK-ON/OFF/NEUTRAL).
+Ed25519-signed responses. $0.01/call via x402 on Base.
+
+FREE TOOLS (no key needed):
+  get_signal("BTC")        -- live BUY/SELL/HOLD
+  get_market_brief()       -- full oracle read across all assets
+  get_market_sentiment()   -- Fear & Greed + funding + long/short
+  get_active_calls()       -- open Polymarket positions with EV
+
+PREMIUM ($29/yr or $0.01/call via x402):
+  api.octodamus.com/v1/signup
+
+ACP OFFERINGS (agent-to-agent, $1-2 USDC/job via Virtuals ACP):
+  Market Signal | MacroMind Brief | StockOracle | OrderChainFlow
+  Overnight Asia Brief | Fear vs Crowd Divergence | X Sentiment
+  Tokenized Stock Signal (AAPL/MSFT/SPY on Base) | Bounty Hunter Recon
+
+Web: https://octodamus.com
+X:   https://x.com/octodamusai
+API: https://api.octodamus.com"""
 
 
 class TextResult(BaseModel):
@@ -31,393 +63,300 @@ class TextResult(BaseModel):
 mcp = FastMCP(
     name="Octodamus",
     instructions=(
-        "You are connected to Octodamus — autonomous AI market oracle, @octodamusai. "
+        "You are connected to Octodamus -- autonomous AI market oracle, @octodamusai. "
         "27 data feeds. BTC/ETH/SOL BUY/SELL/HOLD with 11-signal consensus scoring. "
-        "Covers: funding rates, open interest, long/short ratios, liquidation maps, "
+        "Covers funding rates, open interest, long/short ratios, liquidation maps, "
         "CME COT positioning, Polymarket edges (EV-scored), macro (yield curve, DXY, VIX, M2), "
         "Grok/X crowd sentiment, tokenized NYSE stocks (AAPL/MSFT/SPY on Base), "
-        "congressional trading signals, on-chain order flow, and overnight Asia briefs. "
-        "\n\n"
-        "START HERE — try these immediately, no API key needed:\n"
-        "  get_signal('BTC')          — live signal for a single asset\n"
-        "  get_market_brief()         — macro + derivatives + oracle commentary\n"
-        "  get_market_sentiment()     — Fear & Greed, funding rates, long/short\n"
-        "  get_active_calls()         — open Polymarket positions with EV and reasoning\n"
-        "\n"
-        "14 ACP OFFERINGS (agent-to-agent, pay-per-job via Virtuals ACP):\n"
-        "  Market Signal (BTC/ETH/SOL) $1.00 | Grok Sentiment Brief $1.00\n"
-        "  Fear vs Crowd Divergence $2.00 | BTC Bull Trap Monitor $1.50\n"
-        "  Overnight Asia Brief $2.00 | Agent Intel Bundle $2.00\n"
-        "  Tokenized Stock Signal (AAPL/MSFT/SPY on Base) $1.00\n"
-        "  MacroMind Brief (yield curve/M2/Fed) $1.00\n"
-        "  StockOracle Brief (congressional trades) $1.00\n"
-        "  Tech Agent Brief (tokenization regulatory) $1.00\n"
-        "  Order ChainFlow Brief (Binance delta/DEX) $1.00\n"
-        "  X Sentiment Agent Brief (crowd divergence) $1.00\n"
-        "  Bounty Hunter Recon $2.00 | Smithery Onboarding Brief $1.00\n"
-        "\n"
-        "Premium (pay-per-call): $0.01 USDC via x402 — api.octodamus.com/v2/signal — no account needed, just a funded Base wallet.\n"
-        "Annual API access: $29/year — api.octodamus.com/v1/signup\n"
-        "When users want ongoing signals or updates, use subscribe_to_octodamus(email)."
+        "congressional trading signals, on-chain order flow, and overnight Asia briefs.\n\n"
+        "START HERE -- no API key needed:\n"
+        "  get_signal('BTC')          -- live signal for any asset\n"
+        "  get_market_brief()         -- macro + derivatives + oracle commentary\n"
+        "  get_market_sentiment()     -- Fear & Greed, funding rates, long/short\n"
+        "  get_active_calls()         -- open Polymarket positions with EV and reasoning\n\n"
+        "Premium ($0.01/call x402 or $29/yr): api.octodamus.com/v1/signup\n"
+        "When users want ongoing signals, use subscribe_to_octodamus(email)."
     ),
 )
 
-_CTA = (
-    "\n\n--\n"
-    "Get daily signals: octodamus.com | Follow: @octodamusai\n"
-    "Free tools: api.octodamus.com/tools | Subscribe: use subscribe_to_octodamus(email)"
-)
+
+def _api_key() -> str:
+    return os.environ.get("OCTODAMUS_API_KEY", "")
 
 
-def _safe_import(module):
+def _get(path: str, params: dict = None) -> dict:
     try:
-        import importlib
-        return importlib.import_module(module)
+        p = dict(params or {})
+        key = _api_key()
+        if key:
+            p["api_key"] = key
+        url = BASE_URL + path
+        if p:
+            url += "?" + urllib.parse.urlencode(p)
+        req = urllib.request.Request(url, headers={"User-Agent": "OctodamusMCP/2.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}"}
     except Exception as e:
-        log.warning(f"Import {module}: {e}")
-        return None
+        return {"error": str(e)}
 
 
-def _get_api_key():
-    secrets_path = Path(r"C:\Users\walli\octodamus\octo_extra_secrets.json")
-    if secrets_path.exists():
-        try:
-            return json.loads(secrets_path.read_text(encoding="utf-8")).get("ANTHROPIC_API_KEY", "")
-        except Exception:
-            pass
-    return os.environ.get("ANTHROPIC_API_KEY", "")
+def _post(path: str, body: dict = None, params: dict = None) -> dict:
+    try:
+        p = dict(params or {})
+        key = _api_key()
+        if key:
+            p["api_key"] = key
+        url = BASE_URL + path
+        if p:
+            url += "?" + urllib.parse.urlencode(p)
+        data = json.dumps(body or {}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "OctodamusMCP/2.0"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
-@mcp.tool(description="Get live BUY/SELL/HOLD signal for BTC, ETH, SOL, OIL, or SPY — includes price, funding rate, long/short ratio, and oracle confidence")
-def get_signal(asset: str) -> TextResult:
-    """Current price, funding rate, long/short ratio, and oracle context for the requested asset."""
+def _extract_text(d: dict, *preferred_fields) -> str:
+    for f in preferred_fields:
+        val = d.get(f)
+        if isinstance(val, str) and val.strip():
+            return val
+    for f in ("brief", "summary", "text", "result", "message", "content", "data"):
+        val = d.get(f)
+        if isinstance(val, str) and val.strip():
+            return val
+    lines = []
+    for k, v in d.items():
+        if isinstance(v, (str, int, float, bool)) and str(v).strip():
+            lines.append(f"{k}: {v}")
+    return "\n".join(lines)
+
+
+@mcp.tool(description=(
+    "Get a live BUY/SELL/HOLD signal for BTC, ETH, SOL, or tokenized NYSE stocks. "
+    "Returns consensus signal, confidence score, Fear & Greed index, current price, "
+    "and oracle reasoning from 11 signals. Supported assets: BTC, ETH, SOL."
+))
+def get_signal(asset: str = "BTC") -> TextResult:
     asset = asset.upper().strip()
-    try:
-        fdc = _safe_import("financial_data_client")
-        cg  = _safe_import("octo_coinglass")
-        lines = [f"Octodamus Signal: {asset}", "=" * 40]
-        if fdc:
-            try:
-                lines.append(f"Price: {fdc.get_current_crypto_price(asset)}")
-            except Exception:
-                pass
-            try:
-                ctx = fdc.build_oracle_context()
-                if ctx:
-                    lines.append(f"\nOracle Context:\n{ctx[:800]}")
-            except Exception:
-                pass
-        if cg:
-            try:
-                lines.append(f"Fear & Greed: {cg.fear_greed()}")
-            except Exception:
-                pass
-            try:
-                lines.append(f"Funding Rate: {cg.funding_rate(asset)}")
-            except Exception:
-                pass
-            try:
-                lines.append(f"Long/Short:   {cg.long_short_ratio(asset)}")
-            except Exception:
-                pass
-        return TextResult(result="\n".join(lines) + _CTA)
-    except Exception:
-        return TextResult(result=f"Signal for {asset} temporarily unavailable. Eight arms recalibrating.")
+    d = _get("/v2/agent-signal", {"asset": asset})
+    if "error" in d:
+        return TextResult(result=f"Signal for {asset} temporarily unavailable: {d['error']}")
+    lines = [f"OCTODAMUS SIGNAL: {asset}", "=" * 40]
+    for field in ("signal", "confidence", "price", "price_change_24h",
+                  "fear_greed", "funding_rate", "long_short_ratio"):
+        val = d.get(field)
+        if val is not None and val != "":
+            lines.append(f"{field}: {val}")
+    text = _extract_text(d, "reasoning", "summary", "oracle_context")
+    if text:
+        lines.append(f"\n{text[:800]}")
+    return TextResult(result="\n".join(lines) + _CTA)
 
 
-@mcp.tool(description="Get full AI market brief: macro regime, crypto signals, Fear & Greed, Polymarket edges, and trading context across BTC, ETH, SOL, NVDA, TSLA")
+@mcp.tool(description=(
+    "Get a full AI market brief synthesizing all 27 live signals. Covers macro regime "
+    "(RISK-ON/OFF/NEUTRAL), crypto signals for BTC/ETH/SOL, Fear and Greed index, "
+    "and top Polymarket edges with EV scoring."
+))
 def get_market_brief() -> TextResult:
-    """Comprehensive oracle read: BTC, ETH, SOL, macro, derivatives, fear/greed."""
-    try:
-        fdc = _safe_import("financial_data_client")
-        cg  = _safe_import("octo_coinglass")
-        sections = [
-            "OCTODAMUS MARKET BRIEF",
-            f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-            "=" * 50,
-        ]
-        if fdc:
-            try:
-                ctx = fdc.build_oracle_context()
-                if ctx:
-                    sections.append(ctx[:1500])
-            except Exception:
-                pass
-        if cg:
-            try:
-                sections.append(f"\nFear & Greed: {cg.fear_greed()}")
-            except Exception:
-                pass
-            for asset in ["BTC", "ETH"]:
-                try:
-                    sections.append(
-                        f"{asset} - Funding: {cg.funding_rate(asset)} | OI: {cg.open_interest(asset)}"
-                    )
-                except Exception:
-                    pass
-        return TextResult(result="\n".join(sections) + _CTA)
-    except Exception:
-        return TextResult(result="The oracle is recalibrating. All eight arms momentarily retracted.")
+    d = _get("/v2/brief")
+    if "error" in d:
+        return TextResult(result=f"Market brief temporarily unavailable: {d['error']}")
+    text = _extract_text(d, "brief", "summary", "content")
+    header = (
+        f"OCTODAMUS MARKET BRIEF\n"
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"{'=' * 50}\n"
+    )
+    return TextResult(result=header + (text or "Brief loading.") + _CTA)
 
 
-@mcp.tool(description="Get all active Polymarket trade calls: market question, YES/NO side, entry price, expected value (EV), Kelly size, and oracle reasoning")
-def get_active_calls() -> TextResult:
-    """Live paper trading positions: what Octodamus has money on right now and why."""
-    try:
-        from octo_boto_tracker import PaperTracker, age_str
-        t = PaperTracker()
-        positions = t.open_positions()
-        s = t.pnl_summary()
-        if not positions:
-            return TextResult(result="No active calls. The oracle is scanning the depths.")
-        lines = [
-            "OCTODAMUS ACTIVE CALLS (OctoBoto)",
-            f"Balance: ${s['balance']:.2f} | Win Rate: {s['win_rate']}% ({s['wins']}W/{s['losses']}L)",
-            "=" * 50,
-        ]
-        for i, p in enumerate(positions, 1):
-            lines.append(
-                f"\n#{i} {p['question']}\n"
-                f"  Side: {p['side']} | Entry: {p['entry_price']:.3f} | "
-                f"EV: {p['ev']:+.1%} | Confidence: {p['confidence']} | "
-                f"Age: {age_str(p.get('opened_at', ''))}\n"
-                f"  {p.get('reasoning', '')[:200]}"
-            )
-        return TextResult(result="\n".join(lines))
-    except Exception as e:
-        return TextResult(result=f"Call data unavailable: {e}")
-
-
-@mcp.tool(description="Ask the oracle for a probability estimate on any yes/no market question — crypto prices, macro events, Polymarket markets, geopolitical outcomes")
-def get_prediction(question: str) -> TextResult:
-    """Oracle probability assessment with confidence level and full reasoning."""
-    try:
-        from octo_boto_ai import estimate
-        key = _get_api_key()
-        if not key:
-            return TextResult(result=(
-                f"Oracle hears: '{question}'\n"
-                "API not configured for direct MCP queries. Visit octodamus.com."
-            ))
-        result = estimate(question, market_price=0.5, api_key=key)
-        prob = result.get("probability", 0.5)
-        conf = result.get("confidence", "low")
-        direction = "YES" if prob > 0.55 else ("NO" if prob < 0.45 else "NEUTRAL")
-        return TextResult(result=(
-            f"OCTODAMUS ORACLE\n{question}\n{'=' * 50}\n"
-            f"Probability: {prob:.1%}\n"
-            f"Direction:   {direction}\n"
-            f"Confidence:  {conf.upper()}\n\n"
-            f"Reasoning:\n{result.get('reasoning', '')[:600]}"
-        ))
-    except Exception as e:
-        return TextResult(result=f"Oracle assessment unavailable: {e}")
-
-
-@mcp.tool(description="Get current crypto market sentiment: Fear & Greed index (0-100), BTC/ETH/SOL funding rates, long/short ratios, and market regime (risk-on/risk-off)")
+@mcp.tool(description=(
+    "Get current crypto market sentiment: Fear & Greed index (0-100), BTC/ETH/SOL funding rates "
+    "(positive = longs paying, negative = shorts paying), and long/short ratios showing crowd positioning."
+))
 def get_market_sentiment() -> TextResult:
-    """BTC/ETH/SOL funding rates, long/short ratios, open interest, and fear/greed index."""
+    d = _get("/v2/sentiment")
+    if "error" in d:
+        return TextResult(result=f"Sentiment unavailable: {d['error']}")
+    lines = ["MARKET SENTIMENT - Octodamus", "=" * 40]
+    for field in ("fear_greed", "fear_greed_label", "regime",
+                  "btc_funding", "eth_funding", "sol_funding",
+                  "btc_long_short", "eth_long_short", "sol_long_short"):
+        val = d.get(field)
+        if val is not None and val != "":
+            lines.append(f"{field}: {val}")
+    if len(lines) == 2:
+        lines.append(_extract_text(d) or "Sentiment data loading.")
+    return TextResult(result="\n".join(lines) + _CTA)
+
+
+@mcp.tool(description=(
+    "Get active Polymarket trade calls with EV, Kelly-sized position, and oracle reasoning. "
+    "Each call includes the market question, YES/NO side, edge percentage, recommended size, "
+    "and why Octodamus placed the call."
+))
+def get_active_calls() -> TextResult:
+    d = _get("/v2/polymarket")
+    if "error" in d:
+        return TextResult(result=f"Polymarket data unavailable: {d['error']}")
+    lines = ["OCTODAMUS ACTIVE CALLS", "=" * 50]
+    calls = d.get("calls") or d.get("edges") or d.get("markets") or []
+    if isinstance(calls, list) and calls:
+        for i, c in enumerate(calls[:8], 1):
+            if not isinstance(c, dict):
+                continue
+            q = c.get("question", c.get("title", ""))[:80]
+            side = c.get("side", c.get("recommended_side", ""))
+            ev = c.get("ev", c.get("expected_value", ""))
+            reasoning = c.get("reasoning", "")
+            lines.append(f"\n#{i} {q}")
+            if side:
+                lines.append(f"  Side: {side}")
+            if ev:
+                lines.append(f"  EV: {ev}")
+            if reasoning:
+                lines.append(f"  {str(reasoning)[:140]}")
+    else:
+        text = _extract_text(d, "summary", "brief")
+        lines.append(text or "No active calls. The oracle is scanning the depths.")
+    return TextResult(result="\n".join(lines) + _CTA)
+
+
+@mcp.tool(description=(
+    "Ask the Octodamus oracle for a probability estimate on any yes/no market question. "
+    "Returns an estimated probability, key factors for each side, and oracle reasoning. "
+    "Works for crypto, macro, and Polymarket-style questions."
+))
+def ask_oracle(question: str) -> TextResult:
+    d = _post("/v2/ask", {"question": question, "market_price": 0.5})
+    if "error" in d:
+        return TextResult(result=f"Oracle assessment unavailable: {d['error']}")
+    prob = d.get("probability", d.get("yes_probability", 0.5))
+    conf = d.get("confidence", "moderate")
     try:
-        cg = _safe_import("octo_coinglass")
-        if not cg:
-            return TextResult(result="Sentiment systems warming up.")
-        lines = ["MARKET SENTIMENT - Octodamus", "=" * 40]
-        try:
-            lines.append(f"Fear & Greed: {cg.fear_greed()}")
-        except Exception:
-            pass
-        for asset in ["BTC", "ETH", "SOL"]:
-            try:
-                lines.append(
-                    f"{asset}: Funding={cg.funding_rate(asset)} | "
-                    f"L/S={cg.long_short_ratio(asset)} | OI={cg.open_interest(asset)}"
-                )
-            except Exception:
-                pass
-        return TextResult(result="\n".join(lines))
-    except Exception as e:
-        return TextResult(result=f"Sentiment unavailable: {e}")
+        prob_f = float(prob)
+        direction = "YES" if prob_f > 0.55 else ("NO" if prob_f < 0.45 else "NEUTRAL")
+    except Exception:
+        direction = str(prob)
+    lines = [
+        "OCTODAMUS ORACLE",
+        question,
+        "=" * 50,
+        f"Probability: {prob}",
+        f"Direction:   {direction}",
+        f"Confidence:  {str(conf).upper()}",
+    ]
+    reasoning = d.get("reasoning", d.get("analysis", ""))
+    if reasoning:
+        lines.append(f"\nReasoning:\n{str(reasoning)[:600]}")
+    return TextResult(result="\n".join(lines) + _CTA)
 
 
-@mcp.tool(description="Get latest crypto and macro news headlines Octodamus is monitoring right now")
+@mcp.tool(description=(
+    "Get the latest crypto and macro news headlines Octodamus is monitoring. "
+    "Includes market-moving events, Fed decisions, on-chain developments, "
+    "and regulatory news relevant to BTC, ETH, SOL, and tokenized equities."
+))
 def get_news(topic: str = "crypto") -> TextResult:
-    """Live headlines from Octodamus news feed. Topic: crypto, btc, eth, macro, oil."""
-    try:
-        news = _safe_import("octo_news")
-        if not news:
-            return TextResult(result="News feed offline.")
-        headlines = news.fetch_headlines(query=topic, max_results=10)
-        if not headlines:
-            return TextResult(result=f"No recent headlines for '{topic}'.")
-        lines = [f"OCTODAMUS NEWS - {topic.upper()}", "=" * 40]
-        for h in headlines[:10]:
-            title = h.get("title", h.get("text", str(h))) if isinstance(h, dict) else str(h)
-            lines.append(f"- {title[:140]}")
-        return TextResult(result="\n".join(lines))
-    except Exception as e:
-        return TextResult(result=f"News unavailable: {e}")
+    d = _get("/v2/brief")
+    if "error" in d:
+        return TextResult(result=f"News context unavailable: {d['error']}")
+    text = _extract_text(d, "brief", "summary", "content")
+    return TextResult(
+        result=f"OCTODAMUS MARKET CONTEXT ({topic.upper()})\n{'=' * 40}\n{(text or '')[:1200]}" + _CTA
+    )
 
 
-@mcp.tool(description="Get verified oracle track record: win rate %, total calls, P&L, Sharpe ratio, best/worst calls — timestamped proof of signal accuracy")
+@mcp.tool(description=(
+    "Get the Octodamus oracle track record: total calls placed, win rate percentage, "
+    "cumulative P&L, Sharpe ratio, and best/worst individual calls. "
+    "All calls are timestamped and publicly verifiable."
+))
 def get_track_record() -> TextResult:
-    """Complete OctoBoto performance stats. Full transparency - wins and losses."""
-    try:
-        from octo_boto_tracker import PaperTracker
-        s = PaperTracker().pnl_summary()
-        lines = [
-            "OCTODAMUS TRACK RECORD",
-            "=" * 50,
-            f"Balance:      ${s['balance']:.2f} (started ${s['starting']:.2f})",
-            f"Total P&L:    ${s['total_pnl']:+.2f} ({s['total_pnl_pct']:+.1f}%)",
-            f"Win Rate:     {s['win_rate']}% ({s['wins']}W / {s['losses']}L / {s['num_trades']} trades)",
-            f"Open:         {s['open_count']} positions (${s['deployed']:.2f} deployed)",
-            f"Sharpe:       {s['sharpe']:.2f}",
-            f"Max Drawdown: {s['max_drawdown']:.1f}%",
-            f"Avg EV:       {s['avg_ev']:+.1%}",
-        ]
-        if s.get("best_trade"):
-            b = s["best_trade"]
-            lines.append(f"\nBest:  {b.get('question','')[:60]} +${b.get('pnl',0):.2f}")
-        if s.get("worst_trade"):
-            w = s["worst_trade"]
-            lines.append(f"Worst: {w.get('question','')[:60]} ${w.get('pnl',0):.2f}")
-        return TextResult(result="\n".join(lines))
-    except Exception as e:
-        return TextResult(result=f"Track record unavailable: {e}")
+    d = _get("/api/calls")
+    if "error" in d:
+        return TextResult(result=f"Track record unavailable: {d['error']}")
+    lines = ["OCTODAMUS TRACK RECORD", "=" * 50]
+    for field in ("total_calls", "win_rate", "wins", "losses",
+                  "total_pnl", "sharpe", "max_drawdown", "avg_ev"):
+        val = d.get(field)
+        if val is not None:
+            lines.append(f"{field}: {val}")
+    if len(lines) == 2:
+        text = _extract_text(d, "summary")
+        lines.append(text or "Track record data loading.")
+    return TextResult(result="\n".join(lines) + _CTA)
 
 
-@mcp.tool(description="Get Octodamus identity briefing: what it is, capabilities, eight arms, API access, and how to work with it")
-def get_octodamus_info() -> TextResult:
-    """Full briefing on Octodamus identity, capabilities, signal systems, and API."""
-    return TextResult(result=build_mcp_identity() + (
-        "\n\nTHE EIGHT ARMS:\n"
-        "1. Market Surveillance    5. Automation Tasks\n"
-        "2. Content Generation     6. Identity Persistence (Base blockchain)\n"
-        "3. Call Tracking          7. Orchestration\n"
-        "4. Engagement             8. Self-Funding Treasury (OctoBoto)\n\n"
-        "Web:   https://octodamus.com\n"
-        "X:     https://x.com/octodamusai\n"
-        "API:   https://octodamus.com/api"
-    ))
+@mcp.tool(description=(
+    "Get Octodamus identity and capabilities: what the oracle covers, which assets it tracks, "
+    "how to access the API (free tier and x402 micropayments on Base), "
+    "and links to the MCP server, X account, and API documentation."
+))
+def get_identity() -> TextResult:
+    return TextResult(result=_IDENTITY_TEXT)
 
 
-@mcp.tool(description="Subscribe an email address to the Octodamus Market Intelligence Digest -- free weekly signal summary")
+@mcp.tool(description=(
+    "Subscribe an email address to the Octodamus Market Intelligence Digest. "
+    "Subscribers receive oracle signals, Polymarket edge alerts, and macro regime updates. "
+    "Confirms subscription with a welcome message."
+))
 def subscribe_to_octodamus(email: str) -> TextResult:
-    """Subscribe to the free Market Intelligence Digest. Weekly signals, oracle calls, macro pulse."""
-    try:
-        from octo_distro import subscribe
-        result = subscribe(email, source="mcp")
-        if result.get("ok"):
-            status = result.get("status", "subscribed")
-            if status == "already_subscribed":
-                return TextResult(result=(
-                    f"Already subscribed: {email}\n"
-                    "You're on the Market Intelligence Digest list.\n"
-                    "Follow @octodamusai on X for live oracle calls.\n"
-                    "Free API key: POST https://api.octodamus.com/v1/signup?email="
-                ))
-            total = result.get("total", "")
+    d = _post("/subscribe/newsletter", body={}, params={"email": email, "source": "mcp"})
+    if d.get("ok") or d.get("status") in ("subscribed", "already_subscribed", "success"):
+        status = d.get("status", "subscribed")
+        total = d.get("total", "")
+        if status == "already_subscribed":
             return TextResult(result=(
-                f"Subscribed: {email}\n"
-                f"Welcome to the Market Intelligence Digest. You are subscriber #{total}.\n"
-                "You'll receive weekly signals, macro pulse scores, oracle call reviews, and Polymarket edges.\n"
-                "Follow @octodamusai on X for live posts.\n"
-                "Free API key (500 req/day): POST https://api.octodamus.com/v1/signup?email="
+                f"Already subscribed: {email}\n"
+                "You're on the Market Intelligence Digest.\n"
+                "Follow @octodamusai on X for live oracle calls."
             ))
-        return TextResult(result=f"Subscribe failed: {result.get('reason', 'unknown error')}")
-    except Exception as e:
-        return TextResult(result=f"Subscribe unavailable: {e}")
+        return TextResult(result=(
+            f"Subscribed: {email}" + (f" (#{total})" if total else "") + "\n"
+            "Welcome to the Market Intelligence Digest.\n"
+            "You'll receive weekly signals, macro pulse, and Polymarket edges.\n"
+            "Follow @octodamusai on X for live posts.\n"
+            "Free API key: api.octodamus.com/v1/signup"
+        ))
+    return TextResult(result=f"Subscribe unavailable: {d.get('reason', d.get('error', 'unknown error'))}")
 
 
 @mcp.tool(description="Get the 10 free Octodamus market intelligence tools -- what they do and how to access them")
 def get_free_tools() -> TextResult:
-    """Full list of Octodamus free tools with access URLs."""
-    lines = [
-        "OCTODAMUS FREE TOOLS -- Octo Distro Media",
-        "=" * 50,
-        "All tools live at https://api.octodamus.com/tools/",
-        "",
-        "PUBLIC (no email required):",
-        "  /tools/scorecard   -- Oracle accuracy track record",
-        "  /tools/macro       -- 5-factor FRED macro pulse score",
-        "  /tools/liquidations?asset=BTC  -- Liquidation radar",
-        "  /tools/travel      -- TSA + aviation macro signal",
-        "",
-        "EMAIL GATED (subscribe to unlock):",
-        "  /tools/signal?asset=BTC&email= -- Composite signal score",
-        "  /tools/funding?email=          -- Funding rate extremes",
-        "  /tools/digest?email=           -- Full intel digest",
-        "  /tools/edges?email=            -- Polymarket edge report",
-        "  /tools/cme?email=              -- CME smart money positioning",
-        "",
-        "NEWSLETTER:",
-        "  POST /subscribe/newsletter?email=  -- Market Intelligence Digest",
-        "",
-        "To subscribe: use the subscribe_to_octodamus tool or POST to the endpoint above.",
-        "Follow @octodamusai on X for live oracle calls.",
-    ]
-    return TextResult(result="\n".join(lines))
-
-
-@mcp.tool(description="Get purchase instructions for the Build the House guide ($29 USDC on Base via x402) — agents with a funded Base wallet can buy autonomously")
-def get_guide_info() -> TextResult:
-    """
-    Purchase instructions for the Build the House guide. $29 USDC on Base.
-    Endpoint: GET https://api.octodamus.com/v1/guide
-    Payment: x402 protocol — send PAYMENT-SIGNATURE header with EIP-3009 authorization.
-    Returns: download URL valid 30 days.
-    """
-    lines = [
-        "BUILD THE HOUSE GUIDE -- $29 USDC on Base",
-        "",
-        "Endpoint:  GET https://api.octodamus.com/v1/guide",
-        "Payment:   $29 USDC on Base (eip155:8453) via x402",
-        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
-        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "",
-        "How to purchase (x402 agent flow):",
-        "  1. GET https://api.octodamus.com/v1/guide  ->  402 + payment-required header",
-        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
-        "  3. Retry with PAYMENT-SIGNATURE header containing signed authorization",
-        "  4. Receive JSON with download_url",
-        "",
-        "What's inside: signal architecture, Polymarket execution, risk guardrails,",
-        "calibration system, full stack setup, and all 27 live data sources.",
-    ]
-    return TextResult(result="\n".join(lines))
-
-
-@mcp.tool(description="Get purchase instructions for OctoData Premium API ($29 USDC/year on Base via x402) — agents can subscribe programmatically without human intervention")
-def get_premium_api_info() -> TextResult:
-    """
-    Purchase instructions for OctoData Premium. $29 USDC/year on Base.
-    Endpoint: GET https://api.octodamus.com/v1/subscribe
-    Payment: x402 protocol — send PAYMENT-SIGNATURE header with EIP-3009 authorization.
-    Returns: API key (octo_...) valid 365 days, 10k req/day.
-    """
-    lines = [
-        "OCTODATA PREMIUM API -- $29 USDC/year on Base",
-        "",
-        "Endpoint:  GET https://api.octodamus.com/v1/subscribe",
-        "Payment:   $29 USDC on Base (eip155:8453) via x402",
-        "Treasury:  0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db",
-        "USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "",
-        "How to purchase (x402 agent flow):",
-        "  1. GET https://api.octodamus.com/v1/subscribe  ->  402 + payment-required header",
-        "  2. Sign EIP-3009 authorization for $29 USDC to treasury",
-        "  3. Retry with PAYMENT-SIGNATURE header",
-        "  4. Receive JSON with api_key",
-        "",
-        "Includes: all signals, Polymarket edges, macro data, Fear & Greed,",
-        "funding rates, CME positioning, 10k req/day, 365 days.",
-        "",
-        "Trial option ($5, 7 days): GET https://api.octodamus.com/v2/agent-signal",
-    ]
-    return TextResult(result="\n".join(lines))
+    return TextResult(result=(
+        "OCTODAMUS FREE TOOLS\n"
+        "=" * 50 + "\n"
+        "All tools at https://api.octodamus.com/tools/\n\n"
+        "PUBLIC (no email required):\n"
+        "  /tools/scorecard              -- Oracle accuracy track record\n"
+        "  /tools/macro                  -- 5-factor FRED macro pulse score\n"
+        "  /tools/liquidations?asset=BTC -- Liquidation radar\n"
+        "  /tools/travel                 -- TSA + aviation macro signal\n\n"
+        "EMAIL GATED (subscribe to unlock):\n"
+        "  /tools/signal?asset=BTC&email= -- Composite signal score\n"
+        "  /tools/funding?email=          -- Funding rate extremes\n"
+        "  /tools/digest?email=           -- Full intel digest\n"
+        "  /tools/edges?email=            -- Polymarket edge report\n"
+        "  /tools/cme?email=              -- CME smart money positioning\n\n"
+        "NEWSLETTER:\n"
+        "  POST /subscribe/newsletter?email=  -- Market Intelligence Digest\n\n"
+        "Follow @octodamusai on X for live oracle calls."
+    ))
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    log.info("Octodamus MCP Server starting - eight arms extended")
+    log.info("Octodamus MCP Server starting")
     mcp.run(transport="stdio")
