@@ -35,7 +35,7 @@ _TZ           = ZoneInfo("America/Los_Angeles")
 _MAX_RETRIES  = 3
 _MAX_LOG      = 5_000
 _DAILY_LIMIT  = 20
-MAX_QUEUE_AGE_HOURS = 4
+MAX_QUEUE_AGE_HOURS = 6   # signal posts are stale after 6h; oracle calls are force-posted immediately
 _THREAD_DELAY = 2.0
 
 QUEUE_FILE = Path(__file__).parent / "octo_post_queue.json"
@@ -140,6 +140,74 @@ def upload_image_from_url(image_url: str) -> str | None:
     except Exception as e:
         print(f"[OctoPoster] Image upload failed: {e}")
         return None
+
+
+def upload_video_from_path(file_path: str) -> str | None:
+    """
+    Upload an MP4 to X via v1.1 chunked media upload and wait for processing.
+    Returns media_id string or None on failure.
+
+    MUST be called before creating the tweet — X does not allow adding video
+    via post-edit. The media_id must be in the original tweet creation call.
+    """
+    import tweepy
+
+    path = Path(file_path)
+    if not path.exists():
+        print(f"[OctoPoster] Video file not found: {file_path}")
+        return None
+
+    size_mb = path.stat().st_size / 1_048_576
+    if size_mb > 512:
+        print(f"[OctoPoster] Video too large ({size_mb:.1f} MB, limit 512 MB)")
+        return None
+
+    try:
+        auth = tweepy.OAuth1UserHandler(
+            consumer_key=os.environ.get("TWITTER_API_KEY", ""),
+            consumer_secret=os.environ.get("TWITTER_API_SECRET", ""),
+            access_token=os.environ.get("TWITTER_ACCESS_TOKEN", ""),
+            access_token_secret=os.environ.get("TWITTER_ACCESS_TOKEN_SECRET", ""),
+        )
+        api = tweepy.API(auth)
+
+        print(f"[OctoPoster] Uploading video ({size_mb:.1f} MB): {path.name}")
+        media = api.media_upload(
+            filename=str(path),
+            media_category="tweet_video",
+            chunked=True,
+            wait_for_async_finalize=True,
+        )
+        media_id = str(media.media_id)
+        print(f"[OctoPoster] Video upload complete: media_id={media_id}")
+        return media_id
+    except Exception as e:
+        print(f"[OctoPoster] Video upload failed: {e}")
+        return None
+
+
+def post_with_video(text: str, video_path: str) -> dict:
+    """
+    Upload video then post tweet with it in one call.
+    Use this for oracle call videos, crowd-fade clips, etc.
+    The video MUST be attached at creation time — not via edit.
+    """
+    media_id = upload_video_from_path(video_path)
+    if not media_id:
+        raise RuntimeError(f"Video upload failed, post aborted: {video_path}")
+    return _post_single(text, media_ids=[media_id])
+
+
+def queue_video_post(text: str, video_path: str, post_type: str = "signal", priority: int = 5) -> str | None:
+    """
+    Upload video first, then queue the post with media_id embedded in metadata.
+    process_queue() will attach it at tweet creation time.
+    """
+    media_id = upload_video_from_path(video_path)
+    if not media_id:
+        print(f"[OctoPoster] Video upload failed — post not queued.")
+        return None
+    return queue_post(text, post_type=post_type, metadata={"media_id": media_id}, priority=priority)
 
 
 def check_connection() -> dict:
@@ -686,16 +754,54 @@ def post_oracle_outcome(call: dict, record_wins: int, record_losses: int) -> boo
     win_rate = f"{record_wins/total*100:.0f}%" if total else "N/A"
     arrow   = "UP" if direction == "UP" else "DOWN"
 
-    text = (
-        f"Oracle call closed: {asset} {arrow} from ${entry:,.0f}\n"
-        f"Exit ${exit_p:,.0f} | Move {pct_str} | {result_tag}\n"
-        f"Record: {record_wins}W / {record_losses}L ({win_rate}) — {source}"
-    )
-    if len(text) > 278:
-        text = (
-            f"Oracle: {asset} {arrow} ${entry:,.0f} -> ${exit_p:,.0f} ({pct_str}) {result_tag}\n"
-            f"Record: {record_wins}W/{record_losses}L ({win_rate})"
+    # Generate narrative outcome post using addiction loop — big question then head fake
+    text = None
+    try:
+        import anthropic as _ant
+        _ac = _ant.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        _win_lose = "won" if won else "missed"
+        _prompt = (
+            f"Oracle call result: ${asset} {arrow} from ${entry:,.0f}. "
+            f"Exit at ${exit_p:,.0f} ({pct_str}). Outcome: {result_tag}. "
+            f"Oracle record: {record_wins}W/{record_losses}L ({win_rate}).\n\n"
+            "Write one X post (under 240 chars) announcing this oracle call result. "
+            "Apply the ADDICTION LOOP: "
+            "BIG QUESTION first — open with the NUMBER that loads the reader's prediction "
+            "(the entry, the move, the signal that was named). "
+            "HEAD FAKE second — the reveal that breaks their expectation: for a WIN, "
+            "the part that the crowd didn't believe; for a LOSS, the honest reckoning "
+            "that builds more trust than a win would. "
+            "End on an open implication — never a clean bow. "
+            "Include the record factually. Dry, precise, McGuane. No emoji. No hashtags. "
+            "Output only the post text."
         )
+        _resp = _ac.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=(
+                "You are Octodamus, autonomous AI oracle, @octodamusai on X. "
+                "Druckenmiller precision. McGuane economy. Never brag on wins. "
+                "Never flinch on losses. The record is the brand."
+            ),
+            messages=[{"role": "user", "content": _prompt}],
+        )
+        _candidate = _resp.content[0].text.strip()
+        if _candidate and len(_candidate) <= 280 and not _candidate.upper().startswith("SKIP"):
+            text = _candidate
+    except Exception as _ge:
+        print(f"[OctoPoster] Oracle outcome LLM failed, using template: {_ge}")
+
+    if not text:
+        text = (
+            f"Oracle call closed: {asset} {arrow} from ${entry:,.0f}\n"
+            f"Exit ${exit_p:,.0f} | Move {pct_str} | {result_tag}\n"
+            f"Record: {record_wins}W / {record_losses}L ({win_rate}) — {source}"
+        )
+        if len(text) > 278:
+            text = (
+                f"Oracle: {asset} {arrow} ${entry:,.0f} -> ${exit_p:,.0f} ({pct_str}) {result_tag}\n"
+                f"Record: {record_wins}W/{record_losses}L ({win_rate})"
+            )
 
     try:
         result = _post_single(text)
@@ -773,6 +879,22 @@ def queue_post(text: str, post_type: str = "signal", metadata: dict = None, prio
             from octo_notify import _send
             _send("Octodamus POST BLOCKED — internal reasoning detected",
                   f"Type: {post_type}\nText:\n{text[:500]}")
+        except Exception:
+            pass
+        return None
+
+    # "Oracle call:" / "CALLING IT:" are reserved for the official call system only
+    # (daily_read + oracle_call paths, which record to octo_calls.json and publish
+    # on-chain). Any other mode emitting one means the LLM fabricated a call with an
+    # unverified price -- block it so it never reaches X.
+    _AUTHORIZED_CALL_TYPES = ("daily_read", "oracle_call")
+    _low = text.lower()
+    if ("oracle call:" in _low or "calling it:" in _low) and post_type not in _AUTHORIZED_CALL_TYPES:
+        print(f"[OctoPoster] BLOCKED unauthorized oracle call from '{post_type}' post: {text[:80]}...")
+        try:
+            from octo_notify import _send
+            _send("Octodamus POST BLOCKED -- unauthorized oracle call",
+                  f"Type: {post_type} (not an official call path)\nText:\n{text[:500]}")
         except Exception:
             pass
         return None
@@ -957,8 +1079,8 @@ def process_queue(max_posts: int = 1, force: bool = False) -> int:
                             "\n".join(chunks[:-1]), chunks[-1]
                         )
                         if completion:
-                            chunks.append(completion)
-                            print(f"[OctoPoster] Cliffhanger extended: {completion[:60]}...")
+                            chunks[-1] = completion  # replace fragment, don't append it
+                            print(f"[OctoPoster] Cliffhanger replaced: {completion[:60]}...")
                     print(f"[OctoPoster] Auto-threading ({len(chunks)} tweets): {text[:60]}...")
                     result    = _post_thread(chunks)
                     tweet_url = result.get("url", "")

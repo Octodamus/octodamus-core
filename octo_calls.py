@@ -261,7 +261,19 @@ def record_call(
     # Prevent duplicate open calls on same asset
     for c in calls:
         if not c["resolved"] and c["asset"] == asset.upper():
-            print(f"[OctoCalls] Skipped — already have open call on {asset.upper()} (#{c['id']})")
+            if c["direction"] != direction.upper():
+                # Contradiction: a new call reverses an open call on the same asset.
+                # Don't silently drop it -- surface it so the conflict is visible.
+                msg = (f"CONTRADICTION -- new {asset.upper()} {direction.upper()} call "
+                       f"reverses open #{c['id']} ({c['direction']}). Keeping #{c['id']}, dropping new.")
+                print(f"[OctoCalls] {msg}")
+                try:
+                    from octo_notify import _send
+                    _send("Octodamus oracle call CONTRADICTION", msg)
+                except Exception:
+                    pass
+            else:
+                print(f"[OctoCalls] Skipped -- already have open {direction.upper()} call on {asset.upper()} (#{c['id']})")
             return c
 
     # Auto-fetch market snapshot if not supplied
@@ -272,7 +284,7 @@ def record_call(
             market_snapshot = {"price": entry_price}
 
     call = {
-        "id":                     len(calls) + 1,
+        "id":                     max((c.get("id", 0) for c in calls), default=0) + 1,
         "call_type":              "oracle",
         "asset":                  asset.upper(),
         "direction":              direction.upper(),
@@ -303,6 +315,20 @@ def record_call(
                            target_price or 0, timeframe, edge_score, note)
     except Exception:
         pass
+    # Publish prediction hash on-chain (non-blocking -- fails silently if contract not deployed)
+    try:
+        from octo_oracle_registry import publish_prediction
+        tx = publish_prediction(call)
+        if tx:
+            all_calls = _load()
+            for c in all_calls:
+                if c["id"] == call["id"]:
+                    c["tx_hash"] = tx
+                    call["tx_hash"] = tx
+                    break
+            _save(all_calls)
+    except Exception as _oc_err:
+        print(f"[OctoCalls] On-chain publish skipped: {_oc_err}")
     return call
 
 
@@ -340,6 +366,15 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
                                      c.get("note", ""))
             except Exception:
                 pass
+            # Record outcome on-chain (non-blocking)
+            try:
+                from octo_oracle_registry import resolve_prediction
+                res_tx = resolve_prediction(c["id"], c["won"], exit_price)
+                if res_tx:
+                    c["resolve_tx_hash"] = res_tx
+                    _save(calls)
+            except Exception as _oc_err:
+                print(f"[OctoCalls] On-chain resolve skipped: {_oc_err}")
             return c
     print(f"[OctoCalls] Call #{call_id} not found or already resolved.")
     return None
@@ -398,9 +433,13 @@ def _is_expired(call: dict) -> bool:
 
     now = datetime.now(timezone.utc)
 
-    if "h" in tf:
+    if "h" in tf and "d" not in tf:
         hours = int(re.search(r"(\d+)", tf).group(1)) if re.search(r"(\d+)", tf) else 24
         return now > made_dt + timedelta(hours=hours)
+    elif tf.endswith("d") and re.match(r"^\d+d$", tf):
+        # e.g. "5d" → 5 calendar days from made_at
+        days = int(re.search(r"(\d+)", tf).group(1))
+        return now > made_dt + timedelta(days=days)
     elif "friday" in tf:
         # Expired if it's Saturday or later
         days_until_sat = (5 - made_dt.weekday()) % 7
@@ -427,17 +466,34 @@ def _is_expired(call: dict) -> bool:
         return now > made_dt + timedelta(hours=48)
 
 
+_CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
+
+
+def _is_us_market_open() -> bool:
+    """Return True only during US equity trading hours (Mon-Fri 13:30-20:00 UTC)."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    market_minute = now.hour * 60 + now.minute
+    return 13 * 60 + 30 <= market_minute <= 20 * 60
+
+
 def autoresolve() -> list:
-    """Check open calls against live prices. Resolve expired oracle and range_scout calls."""
+    """Check open calls against live prices. Resolve expired oracle, range_scout, and crowd_fade calls."""
     calls = _load()
     resolved = []
     for c in calls:
         if c["resolved"]:
             continue
         call_type = c.get("call_type", "oracle")
-        if call_type not in ("oracle", "range_scout"):
+        if call_type not in ("oracle", "range_scout", "crowd_fade"):
             continue  # Polymarket calls resolve via Polymarket, not price feeds
         if not _is_expired(c):
+            continue
+        # Stock tickers: only resolve during US market hours to avoid stale yfinance prices
+        asset = c["asset"].upper()
+        if asset not in _CRYPTO_ASSETS and not _is_us_market_open():
+            print(f"[OctoCalls] {asset} is a stock — deferring resolve until US market hours (Mon-Fri 13:30-20:00 UTC)")
             continue
         price = _fetch_price(c["asset"])
         if price is None:
@@ -465,8 +521,8 @@ def autoresolve() -> list:
 
 def get_stats() -> dict:
     calls = _load()
-    # Count oracle calls + range_scout calls (range_scout merges into record after 70%+/20 calls)
-    oracle_calls = [c for c in calls if c.get("call_type", "oracle") in ("oracle", "range_scout")]
+    # Official record: on-chain verified calls only (tx_hash present)
+    oracle_calls = [c for c in calls if c.get("tx_hash")]
     resolved = [c for c in oracle_calls if c["resolved"]]
     wins = sum(1 for c in resolved if c["outcome"] == "WIN")
     losses = sum(1 for c in resolved if c["outcome"] == "LOSS")

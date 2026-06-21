@@ -148,10 +148,9 @@ from octo_skill_log import log_post
 from octo_personality import (
     build_x_system_prompt as _build_x_sys,
     get_voice_instruction,
-    build_thread_prompt,
     parse_thread_output,
 )
-from octo_congress import run_congress_scan, run_full_congress_scan, format_congress_for_prompt
+from octo_congress import run_congress_scan, run_full_congress_scan, format_congress_for_prompt, filter_unposted_trades, mark_trades_posted
 from octo_govcontracts import run_govcontracts_scan, format_govcontracts_for_prompt, get_top_contract_for_post
 try:
     from octo_coinglass import glass as _cg_glass
@@ -317,6 +316,9 @@ except Exception:
 
 def _claw_generate(system: str, user: str, max_tokens: int = 200,
                    model: str = "meta-llama/llama-4-maverick:free") -> str:
+    recent_ctx = _get_recent_posts(12)
+    if recent_ctx:
+        user = f"{recent_ctx}\n---\n{user}"
     if _CLAW_ACTIVE and _claw:
         try:
             r = _claw.chat.completions.create(
@@ -357,6 +359,9 @@ def _is_post_complete(text: str) -> bool:
 
 
 def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
+    recent_ctx = _get_recent_posts(12)
+    if recent_ctx:
+        user = f"{recent_ctx}\n---\n{user}"
     r = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=max_tokens,
@@ -364,7 +369,7 @@ def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
         messages=[{"role": "user", "content": user}],
     )
     if r.stop_reason == "max_tokens":
-        print(f"[Runner] WARNING: _haiku_generate hit max_tokens ({max_tokens}) — post may be truncated")
+        print(f"[Runner] WARNING: _haiku_generate hit max_tokens ({max_tokens}) -- post may be truncated")
     return r.content[0].text.strip()
 
 try:
@@ -422,12 +427,31 @@ def _check_smart_call():
         # ── Win rate circuit breaker ──────────────────────────────────────────
         recent_wr = get_recent_win_rate(n=5)
         if recent_wr is not None and recent_wr < 0.50:
-            print(f"[SmartCall] CIRCUIT BREAKER: last 5 calls at {recent_wr:.0%} win rate — pausing oracle calls.")
-            discord_alert(
-                f"Octodamus circuit breaker: {recent_wr:.0%} on last 5 calls. "
-                f"Smart calls paused until win rate recovers. Review signal quality."
-            )
-            return []
+            # Stale reset: if no oracle call in 14+ days, reset the breaker so system can recover.
+            _oracle_calls = [c for c in _load() if c.get("call_type", "oracle") == "oracle"]
+            _last_oracle = max(_oracle_calls, key=lambda c: c.get("id", 0)) if _oracle_calls else None
+            _last_made = _last_oracle.get("made_at", "") if _last_oracle else ""
+            _days_since = 9999
+            if _last_made:
+                try:
+                    from datetime import datetime as _dt
+                    _ldt = _dt.strptime(_last_made[:16], "%Y-%m-%d %H:%M")
+                    _days_since = (_dt.utcnow() - _ldt).days
+                except Exception:
+                    pass
+            if _days_since >= 14:
+                print(f"[SmartCall] CIRCUIT BREAKER stale ({_days_since}d since last oracle call) — auto-reset. Resuming.")
+                discord_alert(
+                    f"Octodamus circuit breaker stale-reset: {_days_since} days since last oracle call. "
+                    f"Win rate was {recent_wr:.0%} on last 5 calls. Resuming SmartCall."
+                )
+            else:
+                print(f"[SmartCall] CIRCUIT BREAKER: last 5 calls at {recent_wr:.0%} win rate — pausing oracle calls.")
+                discord_alert(
+                    f"Octodamus circuit breaker: {recent_wr:.0%} on last 5 calls. "
+                    f"Smart calls paused until win rate recovers. Review signal quality."
+                )
+                return []
 
         # ── #3: Macro calendar gate ───────────────────────────────────────────
         try:
@@ -500,7 +524,7 @@ def _check_smart_call():
         open_oracle = {
             c["asset"].upper(): c
             for c in calls
-            if not c["resolved"] and c.get("call_type", "oracle") != "polymarket"
+            if not c["resolved"] and c.get("call_type", "oracle") == "oracle"
         }
 
         # Fear & Greed (shared across assets)
@@ -1040,6 +1064,49 @@ def _check_smart_call():
                     if rec:
                         results.append(rec)
 
+                        # On-chain publish
+                        try:
+                            from octo_oracle_registry import publish_prediction
+                            tx = publish_prediction(rec)
+                            if tx:
+                                import json as _json
+                                _cf = Path(__file__).parent / "data" / "octo_calls.json"
+                                _calls = _json.loads(_cf.read_text(encoding="utf-8"))
+                                for _c in _calls:
+                                    if _c["id"] == rec["id"]:
+                                        _c["tx_hash"] = tx
+                                        break
+                                _cf.write_text(_json.dumps(_calls, indent=2), encoding="utf-8")
+                                print(f"[SmartCall] Stock call #{rec['id']} on-chain: {tx[:16]}...")
+                        except Exception as _oc:
+                            print(f"[SmartCall] Stock on-chain skipped: {_oc}")
+
+                        # X post — use Haiku for oracle voice
+                        try:
+                            _sp_system = "You are Octodamus, autonomous AI market oracle. Write sharp, precise stock oracle posts for X. Raw text only, no hashtags, no emojis."
+                            _sp_user = (
+                                f"Write a stock oracle call post.\n\n"
+                                f"Call: {stock} {s_direction}\n"
+                                f"Entry: ${price_s:,.2f} | Target: ${s_target:,.2f} | 5d\n"
+                                f"Signals: {s_bull}/{s_bull + s_bear} bullish, edge {s_edge:+.2f}\n\n"
+                                f"Format:\n"
+                                f"Oracle call: {stock} {s_direction}\n\n"
+                                f"[1-2 sentences -- WHY now, what signal edge is telling you]\n\n"
+                                f"Entry: ${price_s:,.2f} | Target: ${s_target:,.2f} | 5d\n\n"
+                                f"Under 280 chars total."
+                            )
+                            _sp_text = _haiku_generate(_sp_system, _sp_user, max_tokens=120)
+                            if _sp_text and len(_sp_text) > 20:
+                                from octo_x_poster import queue_post, process_queue
+                                queue_post(_sp_text, post_type="oracle_call", priority=0)
+                                _sp_posted = process_queue(max_posts=1, force=True)
+                                if _sp_posted:
+                                    print(f"[SmartCall] Stock oracle posted to X: {_sp_text[:80]}...")
+                                else:
+                                    print("[SmartCall] Stock oracle queued but not posted.")
+                        except Exception as _spe:
+                            print(f"[SmartCall] Stock X post failed: {_spe}")
+
                 except Exception as stock_e:
                     print(f"[SmartCall] {stock} error: {stock_e}")
                     continue
@@ -1053,53 +1120,173 @@ def _check_smart_call():
     return results or None
 
 
+# ─────────────────────────────────────────────
+# STRUCTURAL REDUNDANCY ENGINE
+# The model dodges verbatim dedup but reuses the same rhetorical skeleton with
+# fresh numbers. These templates are measured across the recent window to (a) inject
+# named bans into every prompt and (b) hard-gate a generated post that still trips one.
+# Each entry: label -> (compiled regex, is_structural). Structural skeletons are
+# regenerate-worthy; topical ones (funding/max-pain/yield) recur legitimately and
+# are advisory-only. To extend the detector, add a row here.
+# ─────────────────────────────────────────────
+import re as _re_struct
+_SKELETON_TEMPLATES = {
+    "the 'A ... while B ...' contrast pivot":                    (_re_struct.compile(r"\bwhile\b", _re_struct.I), True),
+    "the retail-vs-smart-money dichotomy":                       (_re_struct.compile(r"(retail|the crowd|insiders?\b|institutions?\b|smart money|the market (sees|reads|thinks))", _re_struct.I), True),
+    "the 'that's not retail / someone is positioning' tag":      (_re_struct.compile(r"(that'?s not retail|isn'?t retail|someone is (sizing|buying|positioning|loading|stacking))", _re_struct.I), True),
+    "the one-line aphorism close ('X doesn't announce itself')": (_re_struct.compile(r"(doesn'?t announce itself|aren'?t protection|coming due|the \w+ doesn'?t)", _re_struct.I), True),
+    "the max-pain / options-wall frame":                         (_re_struct.compile(r"(max pain|options wall|gamma|expires? in|puts? .*(protection|schedule))", _re_struct.I), False),
+    "the funding-divergence frame":                              (_re_struct.compile(r"(funding|shorts? paying|longs? (hold|stack|paying|are)|perp)", _re_struct.I), False),
+    "the 'capital chases yield' migration frame":                (_re_struct.compile(r"(chases? yield|patient capital|capital (migrat|chas|doesn))", _re_struct.I), False),
+}
+
+
+def _recent_texts(n: int = 20) -> list:
+    """Last N posted texts (newest first, truncated), merged from both logs."""
+    texts_with_ts = []
+    try:
+        import json as _j
+        from pathlib import Path as _P
+
+        log_path = _P(__file__).parent / "octo_posted_log.json"
+        if log_path.exists():
+            log = _j.loads(log_path.read_text(encoding="utf-8"))
+            for entry in log.values():
+                t, ts = entry.get("text", ""), entry.get("posted_at", "")
+                if t and ts:
+                    texts_with_ts.append((ts, t))
+
+        skill_path = _P(__file__).parent / "octo_skill_log.json"
+        if skill_path.exists():
+            skill = _j.loads(skill_path.read_text(encoding="utf-8"))
+            seen = {t for _, t in texts_with_ts}
+            for entry in skill:
+                t, ts = entry.get("text", ""), entry.get("timestamp", "")
+                if t and ts and t not in seen:
+                    texts_with_ts.append((ts, t))
+                    seen.add(t)
+    except Exception:
+        pass
+
+    texts_with_ts.sort(key=lambda x: x[0], reverse=True)
+    return [t[:200] for _, t in texts_with_ts[:n]]
+
+
+def _structural_overuse(window: list, threshold: int = 3, structural_only: bool = False) -> list:
+    """Return [(label, regex, hits)] for templates appearing >= threshold in window."""
+    out = []
+    for label, (rx, is_struct) in _SKELETON_TEMPLATES.items():
+        if structural_only and not is_struct:
+            continue
+        hits = sum(1 for t in window if rx.search(t))
+        if hits >= threshold:
+            out.append((label, rx, hits))
+    return out
+
+
+def _post_trips_skeletons(post: str, overused: list) -> list:
+    """Of the over-used skeletons, which does this draft still reuse?"""
+    return [label for label, rx, _ in overused if rx.search(post or "")]
+
+
+def _enforce_originality(post: str, regen_fn, max_retries: int = 1) -> str:
+    """Hard backstop: re-roll a draft that still reuses a *structural* skeleton that
+    is currently over-used. regen_fn(tripped_labels) -> str returns a rewrite.
+    Topical overlap (funding/max-pain) is left to the prompt advisory -- only the
+    structural clones get re-rolled, to avoid pointless regens on legit topics."""
+    if not post:
+        return post
+    overused = _structural_overuse(_recent_texts(8), structural_only=True)
+    if not overused:
+        return post
+    for _ in range(max_retries):
+        tripped = _post_trips_skeletons(post, overused)
+        if not tripped:
+            return post
+        print(f"[Originality] Draft reuses over-used skeleton(s) {tripped} -- re-rolling.")
+        try:
+            new = regen_fn(tripped)
+        except Exception as _e:
+            print(f"[Originality] Re-roll failed ({_e}) -- keeping draft.")
+            return post
+        if new and len(new.strip()) > 20:
+            post = new.strip()
+        else:
+            break
+    still = _post_trips_skeletons(post, overused)
+    if still:
+        print(f"[Originality] Still trips {still} after re-roll -- using best effort.")
+    return post
+
+
+def _reroll_instruction(tripped: list, recent_block: str) -> str:
+    """Compact rewrite prompt body shared by all modes' re-roll closures."""
+    return (
+        "REWRITE REQUEST -- the draft below reuses a rhetorical skeleton the audience "
+        "has already seen repeatedly:\n\n"
+        f"OVER-USED SKELETON(S) IT TRIPS: {', '.join(tripped)}\n"
+        f"{recent_block}\n"
+        "Rewrite the post. KEEP the specific data, ticker, and the forward signal. "
+        "CHANGE the structure completely so it uses NONE of the skeletons listed above -- "
+        "no 'A while B' contrast pivot, no 'retail sees X / insiders see Y' dichotomy, "
+        "no detached one-line aphorism close. Under 240 chars. Output only the rewritten post."
+    )
+
+
 def _get_recent_posts(n: int = 20) -> str:
     """
     Get last N posted texts for dedup in prompts.
     Pulls from both octo_posted_log.json and octo_skill_log.json so nothing slips through.
     Default 20 posts = ~4 days of content. Use this in EVERY post-generating prompt.
     """
-    texts_with_ts = []
-    try:
-        import json as _j
-        from pathlib import Path as _P
-
-        # Source 1: posted log
-        log_path = _P(__file__).parent / "octo_posted_log.json"
-        if log_path.exists():
-            log = _j.loads(log_path.read_text(encoding="utf-8"))
-            for entry in log.values():
-                t = entry.get("text", "")
-                ts = entry.get("posted_at", "")
-                if t and ts:
-                    texts_with_ts.append((ts, t))
-
-        # Source 2: skill log (catches posts logged via log_post that miss the posted_log)
-        skill_path = _P(__file__).parent / "octo_skill_log.json"
-        if skill_path.exists():
-            skill = _j.loads(skill_path.read_text(encoding="utf-8"))
-            seen = {t for _, t in texts_with_ts}
-            for entry in skill:
-                t = entry.get("text", "")
-                ts = entry.get("timestamp", "")
-                if t and ts and t not in seen:
-                    texts_with_ts.append((ts, t))
-                    seen.add(t)
-
-    except Exception:
-        pass
-
-    if not texts_with_ts:
+    recent = _recent_texts(n)
+    if not recent:
         return ""
 
-    texts_with_ts.sort(key=lambda x: x[0], reverse=True)
-    recent = [t[:160] for _, t in texts_with_ts[:n]]
+    # Banned opening words: first word of each of the last 5 posts
+    banned_openers = []
+    for t in recent[:5]:
+        w = t.split()[0].strip("$@#") if t.split() else ""
+        if w and w not in banned_openers:
+            banned_openers.append(w)
+    banned_str = ", ".join(f'"{w}"' for w in banned_openers) if banned_openers else ""
+
+    # Structural redundancy detector -- measure which templates dominate the recent
+    # window and ban the over-used ones by name. Same templates the hard gate uses.
+    _window = recent[:8]
+    _overused, _stale = [], []
+    for _label, (_rx, _is_struct) in _SKELETON_TEMPLATES.items():
+        _hits = sum(1 for _t in _window if _rx.search(_t))
+        if _hits >= 3:
+            _overused.append(f"{_label} (used in {_hits} of last {len(_window)})")
+        elif _hits == 2:
+            _stale.append(_label)
+
+    _struct_lines = []
+    if _overused:
+        _struct_lines.append("BANNED SKELETONS for this post -- these are worn out; do NOT reuse the frame even with new numbers:")
+        _struct_lines += [f"  - {x}" for x in _overused]
+    if _stale:
+        _struct_lines.append("Going stale (avoid if you can): " + "; ".join(_stale) + ".")
+    data_first = sum(1 for t in _window if t.strip() and (t[0] == "$" or t[0].isdigit()))
+    if data_first >= 3:
+        _struct_lines.append("Recent posts lead with a ticker/number -- open this one differently: implication, irony, a verb, or a proper noun first.")
+    structure_warning = ("\n".join(_struct_lines) + "\n") if _struct_lines else ""
+
     numbered = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(recent))
     return (
-        f"\n\nRECENT POSTS — last {len(recent)} posts (do NOT repeat these topics, angles, or data points):\n"
-        f"{numbered}\n"
-        "If any recent post already covered a specific number, asset + data combination, or narrative angle — "
-        "pick something COMPLETELY DIFFERENT. Repetition kills reach.\n"
+        f"\n\nRECENT OCTODAMUS POSTS (last {len(recent)} published -- the reader has already seen all of these):\n"
+        f"{numbered}\n\n"
+        f"ANTI-REPETITION MANDATE:\n"
+        f"- BANNED opening words for this post: {banned_str}\n"
+        f"- Do not reuse a sentence skeleton from any 2+ posts above -- a new number in an old frame still reads as a repeat\n"
+        f"- Do not reference the same asset + data combination as the preceding 3 posts\n"
+        f"{structure_warning}"
+        f"TRADEABLE MANDATE -- the post must carry NEW, forward-looking information:\n"
+        f"- Name a specific level, trigger, or catalyst the reader can act on (e.g. 'under 62,400 funding flips') -- not just a description of where things sit now\n"
+        f"- Say what happens NEXT and roughly when; a restatement of current positioning is not a signal\n"
+        f"- If you cannot name a forward level or catalyst, this signal isn't ready -- pick a different one\n"
+        "If any recent post covered the same narrative -- pick a structurally different approach.\n"
     )
 
 
@@ -1234,7 +1421,7 @@ def mode_monitor() -> None:
                 _wp_news_section = ""
                 try:
                     from octo_firecrawl import get_precall_news_multi
-                    _wp_news = get_precall_news_multi(["BTC", "ETH", "SOL"], cache_hours=1.5)
+                    _wp_news = get_precall_news_multi(["BTC", "ETH", "SOL", "QCOM", "NVDA"], cache_hours=1.5)
                     if _wp_news and len(_wp_news) > 50:
                         _wp_news_section = f"\nRecent market news:\n{_wp_news[:600]}"
                 except Exception as _wpne:
@@ -1249,15 +1436,24 @@ def mode_monitor() -> None:
                     pass
 
                 _wp_voice = get_voice_instruction()
+                # QCOM price for watchpost
+                _qcom_snap = ""
+                try:
+                    _qp = get_current_price("QCOM").get("snapshot", {})
+                    if _qp.get("price", 0) > 0:
+                        _qcom_snap = f"\n- QCOM: ${_qp['price']:,.2f} ({_qp.get('day_change_percent', 0):+.1f}% today) — Sara Jacobs (D) sold $1M+ May 6-7"
+                except Exception:
+                    pass
+
                 _watchpost_prompt = f"""You are Octodamus, autonomous AI market oracle. Write a market watchpost for X (Twitter).
 {_get_recent_posts(n=20)}
 Current market snapshot:
 - BTC: ${_btc.get('usd',0):,.0f} ({_btc.get('usd_24h_change',0):+.1f}% 24h)
 - ETH: ${_eth.get('usd',0):,.0f} ({_eth.get('usd_24h_change',0):+.1f}% 24h)
 - SOL: ${_sol.get('usd',0):,.2f} ({_sol.get('usd_24h_change',0):+.1f}% 24h)
-- Fear & Greed: {_fng_val}/100 ({_fng_label})
+- Fear & Greed: {_fng_val}/100 ({_fng_label}){_qcom_snap}
 
-Open oracle calls:
+Open oracle calls (context only — do NOT issue new calls):
 {_call_lines}{_wp_news_section}
 
 VOICE THIS POST: {_wp_voice}
@@ -1273,12 +1469,29 @@ Rules:
 - Do NOT repeat any topic, data point, OR STRUCTURE from the RECENT POSTS list above
 - Do NOT mention posting the watchpost or that no signal fired
 - Do NOT say 'no new signal' or similar
+- CRITICAL: This is a market OBSERVATION post, NOT an oracle call. Do NOT say "Oracle call:", do NOT issue a price target ("holds $X", "breaks $X by [date]"), do NOT say BUY, SELL, or HOLD. Observe and comment — never predict with a timestamped target.
+ADDICTION LOOP (apply to this post):
+- BIG QUESTION first: open with the signal nobody is watching — the number behind the headline that loads a prediction into the reader's brain.
+- HEAD FAKE second: break that prediction with a fact that's surprising but immediately logical. Don't announce it — just state the fact. The gap IS the hook.
+- If the reader is likely holding one of these assets, open with "If you're long [ASSET] right now..." to activate their self-interest first.
+- End on an implication that stays OPEN — never a clean resolution. Leave one question dangling.
 - Output only the post text, nothing else"""
 
                 _wp_text = _haiku_generate(
                     OCTO_SYSTEM, _watchpost_prompt, max_tokens=450
                 )
-                if not _is_post_complete(_wp_text):
+
+                # Gate: reject any watchpost that slipped through with oracle-call language
+                _wp_lower = _wp_text.lower()
+                _oracle_leak = any(phrase in _wp_lower for phrase in [
+                    "oracle call:", "oracle call —", "oracle call-",
+                    "buy signal", "sell signal", "hold signal",
+                    "price target", "breaks lower by", "holds $",
+                    "i'm calling", "calling it now",
+                ])
+                if _oracle_leak:
+                    print(f"[Runner] Watchpost blocked — contains oracle-call language: {_wp_text[:100]}...")
+                elif not _is_post_complete(_wp_text):
                     print(f"[Runner] Watchpost appears truncated, skipping: {_wp_text[-80:]}")
                 else:
                     queue_post(_wp_text, post_type="watchpost", priority=3)
@@ -1345,7 +1558,7 @@ Rules:
 # MODE: DAILY — morning oracle read
 # ─────────────────────────────────────────────
 
-DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA", "HYPE"]
+DAILY_TICKERS = ["BTC", "ETH", "SOL", "NVDA", "HYPE", "SPY", "QCOM"]
 
 
 def mode_daily() -> None:
@@ -1417,10 +1630,18 @@ def mode_daily() -> None:
         # Core memory + skill performance — what you've learned about yourself
         skill_section = ""
         try:
+            from octo_loop import AgentLoop as _AgentLoop
+            _oracle_loop = _AgentLoop("octodamus", Path(__file__).parent / "data")
+            _loop_ctx = _oracle_loop.get_context()
+            if _loop_ctx:
+                skill_section = f"\n\n{_loop_ctx}"
+        except Exception:
+            pass
+        try:
             from octo_memory_db import read_core_memory
             _core = read_core_memory("octodamus")
             if _core and "No entries yet" not in _core:
-                skill_section = f"\n\nYOUR CORE MEMORY (distilled lessons):\n{_core}"
+                skill_section += f"\n\nYOUR CORE MEMORY (distilled lessons):\n{_core}"
         except Exception:
             pass
         if not skill_section:
@@ -1461,6 +1682,57 @@ def mode_daily() -> None:
 
         recent_posts_section = _get_recent_posts(n=20)
 
+        # Asset rotation: find assets covered in the last 2 daily reads so we avoid repeating
+        _recent_daily_assets = []
+        try:
+            _pdlog = json.loads(Path(r"C:\Users\walli\octodamus\octo_posted_log.json").read_text(encoding="utf-8"))
+            _dr_items = sorted(
+                [(v.get("posted_at", ""), v.get("text", "")) for v in _pdlog.values() if v.get("type") == "daily_read"],
+                key=lambda x: x[0], reverse=True
+            )
+            for _, _txt in _dr_items[:3]:
+                for _a in ["$BTC", "$ETH", "$SOL", "$NVDA", "$HYPE", "SPY"]:
+                    if _a in _txt and _a not in _recent_daily_assets:
+                        _recent_daily_assets.append(_a)
+                        break
+        except Exception:
+            pass
+        _avoid_str = (
+            f"ASSET ROTATION: The last {len(_recent_daily_assets)} daily read(s) covered "
+            f"{', '.join(_recent_daily_assets)}. Pick a DIFFERENT asset today unless the signal is dramatically stronger.\n"
+        ) if _recent_daily_assets else ""
+
+        # Opener rotation: detect recent daily read opener patterns, ban repeats
+        _opener_avoid_str = ""
+        try:
+            _pdlog2 = json.loads(Path(r"C:\Users\walli\octodamus\octo_posted_log.json").read_text(encoding="utf-8"))
+            _dr_recent = sorted(
+                [(v.get("posted_at", ""), v.get("text", "")) for v in _pdlog2.values() if v.get("type") == "daily_read"],
+                key=lambda x: x[0], reverse=True
+            )
+            _banned_openers = []
+            for _, _txt in _dr_recent[:3]:
+                _lead = _txt.strip()[:80].lower()
+                if _lead.startswith("here's why") or _lead.startswith("here is why"):
+                    if "heres_why" not in _banned_openers:
+                        _banned_openers.append("heres_why")
+                elif _lead.startswith("what ") and ("signal" in _lead or "means" in _lead or "tell" in _lead):
+                    if "what_question" not in _banned_openers:
+                        _banned_openers.append("what_question")
+            if "heres_why" in _banned_openers:
+                _opener_avoid_str = (
+                    "OPENER ROTATION — HARD RULE: Your last daily read(s) opened with 'Here's why...'. "
+                    "You are BANNED from starting this post with 'Here's why', 'Here is why', or any "
+                    "explanatory-formula opener. Use one of these instead:\n"
+                    "  - Lead with the raw number: '15,886 short contracts...' then explain the implication.\n"
+                    "  - Declarative statement: 'The crowd is wrong about X.' then the data.\n"
+                    "  - Tension/irony first: 'Price up. Sellers in control. Something doesn't add up.'\n"
+                    "  - Single sharp line that stands alone: no setup required.\n"
+                    "Violation = post rejected. No tutorial openers. No formula openers.\n"
+                )
+        except Exception:
+            pass
+
         response = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=500,
@@ -1489,13 +1761,17 @@ def mode_daily() -> None:
                     f"{delta_section}\n\n"
                     f"{tv_ta_section}\n\n"
                     f"{(_chosen_voice_inst := get_voice_instruction())}\n"
-                    "One post, under 280 chars.\n"
+                    f"{_avoid_str}"
+                    f"{_opener_avoid_str}"
+                    "One post, under 240 chars. Do NOT pad to fill the limit — stop when the thought is complete.\n"
                     "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, $HYPE, etc.) when citing any price, percentage, or market data — never let a number float without a ticker.\n"
+                    "REQUIRED: When citing a ratio like '73% long' or '68% longs', always name the source — e.g. '73% of Binance perp traders long' not just '73%'. Readers need context or the number is meaningless.\n"
+                    "NO RELATIVE DATE REFERENCES: never write 'today', 'tomorrow', 'this week', 'today's expiry' — use the actual date (e.g. 'Friday's $81K max pain') or drop the timeframe entirely.\n"
                     "PRIME DIRECTIVE: Every post must give the reader a clue about what the market or world is going to do next. "
                     "Not what already happened. Not what everyone is already saying. What is COMING.\n"
                     "Ask before writing: 'Does this tell the reader something they don't already know?' If no — do not write it.\n"
                     "The best posts: a divergence nobody has connected yet, a leading indicator being ignored, a number that reframes the situation, the thing that will matter in 48h that nobody is talking about today.\n"
-                    "VARY THE STRUCTURE — do not always lead with a number:\n"
+                    "VARY THE STRUCTURE — do not always lead with a number. COT hedge fund data is NOT always the lead. If the most interesting signal is OI divergence, lead with that. If it's options skew, lead with that:\n"
                     "  - Sometimes: tension or irony first, then the data that explains it.\n"
                     "  - Sometimes: the number first, then what it means for what's coming.\n"
                     "  - Sometimes: a single declarative clue that stands alone.\n"
@@ -1503,7 +1779,13 @@ def mode_daily() -> None:
                     "The post that got 500 views: '27 data feeds agree on the move. Nine systems align. I size accordingly. Then retail discovers a Discord channel and everything inverts. Being right about the math and wrong about the crowd's collective psychosis is its own kind of education.' — specific, dry, grounded, real tension arc, tells you something about how markets work.\n"
                     "CRITICAL: Check the RECENT POSTS list above. NEVER repeat the same asset AND same data point. Rotate topics: ETH ecosystem, SOL activity, macro divergence, cross-market correlation, OI shifts, liquidation patterns, options positioning, contrarian read, leading indicators.\n"
                     "If a headline reveals something ironic, contradictory, or ahead of where the crowd is — use it.\n"
-                    "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the clue."
+                    "Do NOT write Oracle call: or CALLING IT: — those are reserved for the official call system only. Just give the clue.\n"
+                    "ENGAGEMENT GOALS — hit these, but do NOT reach for them with the same skeleton every time. There is no fixed template; vary the shape post to post:\n"
+                    "- Surface the signal nobody is watching — the number behind the headline, not the headline.\n"
+                    "- Make the read non-obvious: the thing BEHIND the consensus, logical in retrospect. State the fact; don't announce 'the surprise.'\n"
+                    "- WARNING: the 'retail sees X, insiders see Y' reveal and the 'A while B' contrast are now over-used. They are ONE option among many, not the default. Reaching for either when the BANNED SKELETONS list flags them is a failure.\n"
+                    "- Vary the close: a clean verdict, a single forward level, or an open question are all fine. Do NOT end every post on a detached one-line aphorism ('X doesn't announce itself').\n"
+                    "5 LAWS: (1) relevant to THIS trader watching THIS asset NOW — not generic (2) non-obvious — the thing BEHIND the consensus (3) validated with exact numbers (4) one signal, one implication — grasped in 10 seconds (5) gives something forward to WATCH FOR — a level, trigger, or catalyst, not a closed conclusion."
                 ),
             }],
         )
@@ -1515,13 +1797,31 @@ def mode_daily() -> None:
         if not _is_post_complete(post):
             print(f"[Runner] WARNING: Daily read post appears truncated, skipping: {post[-100:]}")
             return
+
+        # Hard originality backstop -- re-roll once if the draft still reuses an
+        # over-used structural skeleton (preserves data + ticker + forward signal).
+        def _daily_reroll(tripped):
+            _rr = claude.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                system=OCTO_SYSTEM,
+                messages=[{"role": "user", "content":
+                    f"DRAFT: {post}\n\n{_reroll_instruction(tripped, _get_recent_posts(8))}"}],
+            )
+            return _rr.content[0].text.strip()
+        post = _enforce_originality(post, _daily_reroll)
+
         # Auto-record directional call from post
+        recorded = None
         if _CALLS_ACTIVE:
             try:
                 recorded = parse_call_from_post(post)
                 if ("Oracle call:" in post or "oracle call:" in post) and not recorded:
-                    print(f"[Runner] WARNING: Oracle call in post but parse_call_from_post returned None — not recorded!")
-                    print(f"[Runner] Post tail: {post[-200:]}")
+                    # LLM used the Oracle call: label but it's not a real directional call.
+                    # Do not post — this protects the oracle brand.
+                    print(f"[Runner] BLOCKED: post contains 'Oracle call:' but is not a parseable directional call — not posting.")
+                    print(f"[Runner] Blocked post: {post[:300]}")
+                    return
             except Exception as _ce:
                 print(f"[Runner] ERROR recording oracle call: {_ce}")
 
@@ -1579,20 +1879,73 @@ def mode_daily() -> None:
                 print(f"[Runner] Call log failed (non-fatal): {_cl_e}")
 
         else:
-            # Normal posts go through the queue as before
-            queue_post(post, post_type="daily_read", priority=1)
-            posted = process_queue(max_posts=1, force=True)
-            if posted:
+            # 3:30am window: attempt Grok image -> Runway video post
+            _video_posted = False
+            if datetime.now().hour == 3:
                 try:
-                    import json as _json
-                    from pathlib import Path as _Path
-                    _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
-                    _last_entry = list(_plog.values())[-1]
-                    log_post(_last_entry["text"], "daily_read", "daily", _is_card_daily, _last_entry.get("url", ""))
-                except Exception:
-                    log_post(post, "daily_read", "daily", _is_card_daily)
+                    from octo_video_gen import generate_video as _gen_video
+                    from octo_x_poster import post_with_video as _post_with_video
+                    _dominant = next(
+                        (a for a in ("BTC", "ETH", "SOL", "HYPE", "SPX", "NVDA", "TSLA") if a in post.upper()),
+                        "BTC",
+                    )
+                    _img_prompt = (
+                        f"Dark futuristic trading terminal, {_dominant} price chart spiking on holographic display, "
+                        "cyan and gold neon glow, data streams, cinematic 16:9, no text, no watermarks"
+                    )
+                    _motion = "slow cinematic zoom in, subtle particle drift, glowing pulses on the chart"
+                    _mp4 = _gen_video(_img_prompt, _motion, duration=5, ratio="1280:720")
+                    if _mp4:
+                        _post_with_video(post, _mp4)
+                        _video_posted = True
+                        posted = True
+                        log_post(post, "daily_read", "daily", _is_card_daily)
+                        print(f"[Runner] Daily read posted with video: {_mp4}")
+                except Exception as _ve:
+                    print(f"[Runner] Video post failed, falling back to text: {_ve}")
+
+            if not _video_posted:
+                # Normal text post through the queue
+                queue_post(post, post_type="daily_read", priority=1)
+                posted = process_queue(max_posts=1, force=True)
+                if posted:
+                    try:
+                        import json as _json
+                        from pathlib import Path as _Path
+                        _plog = _json.loads((_Path(__file__).parent / "octo_posted_log.json").read_text(encoding="utf-8"))
+                        _last_entry = list(_plog.values())[-1]
+                        log_post(_last_entry["text"], "daily_read", "daily", _is_card_daily, _last_entry.get("url", ""))
+                    except Exception:
+                        log_post(post, "daily_read", "daily", _is_card_daily)
 
         print(f"[Runner] Daily read {'posted' if posted else 'queued'}:\n  {post}")
+
+        # Save oracle agentic loop reflection (auto-generated, no extra Claude call)
+        try:
+            from octo_loop import AgentLoop as _AgentLoop
+            _oracle_loop = _AgentLoop("octodamus", Path(__file__).parent / "data")
+            _session_num = len(_oracle_loop._state.get("entries", [])) + 1
+            _price_str = ", ".join(
+                f"{k}=${v.get('price',0):,.0f}" for k,v in list(snapshots.items())[:3] if v.get("price")
+            )
+            _oracle_loop.save_reflection(
+                session=_session_num,
+                plan=_oracle_loop.last_next_plan() or "Monitor all 13 signals for directional consensus",
+                acted=f"Generated daily oracle read. Posted: {bool(posted)}. Oracle call detected: {has_oracle_call}.",
+                observed=f"Market snapshot: {_price_str}. Post: {post[:120]}",
+                lesson=(
+                    f"Oracle call issued: {post[:100]}"
+                    if has_oracle_call
+                    else "No oracle call this session — no 9/11 signal consensus reached."
+                ),
+                next_plan=(
+                    "Monitor next session for signal alignment — oracle call live"
+                    if has_oracle_call
+                    else "Watch for signal consensus: funding rate, OI shift, or liquidation map alignment"
+                ),
+            )
+        except Exception as _le:
+            print(f"[Runner] Oracle loop reflection failed (non-fatal): {_le}")
 
     except Exception as e:
         print(f"[Runner] mode_daily failed: {e}")
@@ -1674,6 +2027,18 @@ WISDOM_PROMPTS = [
     "What does the VIX actually tell you vs what people think it tells you?",
     "The analysts were wrong again. What pattern are they missing this cycle?",
     "Name something specific about crypto adoption that most people are measuring wrong.",
+    "What does open interest diverging from price actually mean? Most people misread it.",
+    "Name the one number in any earnings report that retail traders never look at but should.",
+    "The last time the market did this, what happened 30 days later? Connect the current setup to a real historical parallel.",
+    "What is the crowd getting structurally wrong about the Fed right now?",
+    "Funding rates are flashing something. What does the number actually tell you about positioning?",
+    "Name a leading indicator that nobody is talking about this week. What is it showing?",
+    "Why do liquidation cascades accelerate? Explain the mechanical loop most traders don't understand.",
+    "What does the CME-to-spot BTC price gap actually signal about institutional vs retail sentiment?",
+    "Congressional trading data revealed something unusual recently. What does the silence or activity pattern imply?",
+    "The spread between asset manager and hedge fund positioning on BTC is at an extreme. What historically follows?",
+    "Name one crypto metric that peaked before the last major move — is it repeating now?",
+    "BTC dominance is at a specific level right now. Name it. The last two times dominance hit a similar inflection, what happened to ETH and alts in the following 30 days? What does the current reading imply for the rotation trade?",
 ]
 
 
@@ -1728,7 +2093,7 @@ def mode_wisdom() -> None:
 
         _chosen_voice_inst = get_voice_instruction()
         user_msg = (
-            f"Oracle post: {prompt}"
+            f"{prompt}"
             f"{news_section}\n\n"
             f"{build_youtube_context()}\n\n"
             f"{build_builders_context()}\n\n"
@@ -1738,14 +2103,25 @@ def mode_wisdom() -> None:
             f"{build_call_context()}\n\n"
             f"{_core_memory_section()}\n\n"
             f"{_chosen_voice_inst}\n"
-            "One post, under 280 chars.\n"
-            "Anchor the insight to a real fact or current market behavior.\n"
-            "Do NOT just restate the prompt. Answer it with a sharp take."
+            "One post, under 240 chars. Do NOT pad to fill the limit — stop when the thought is complete.\n"
+            "Anchor to a specific number, level, or recent event — not a vague assertion.\n"
+            "Your answer must imply what comes NEXT — not just what is happening now.\n"
+            "Do NOT start with a label, header, or format name. Output only the post text."
         )
-        post = _haiku_generate(OCTO_SYSTEM, user_msg, max_tokens=150)
-        # Auto-record directional call from post
-        if _CALLS_ACTIVE:
-            parse_call_from_post(post)
+        post = _haiku_generate(OCTO_SYSTEM, user_msg, max_tokens=250)
+        # Hard originality backstop: if the draft still reuses an over-used structural
+        # skeleton, re-roll it once preserving the data but changing the shape.
+        post = _enforce_originality(
+            post,
+            lambda tripped: _haiku_generate(
+                OCTO_SYSTEM,
+                f"{user_msg}\n\nYOUR DRAFT: {post}\n\n{_reroll_instruction(tripped, _get_recent_posts(8))}",
+                max_tokens=250,
+            ),
+        )
+        # Wisdom is commentary only -- oracle calls are reserved for the official
+        # call system (mode_daily + stock smartcall). queue_post() hard-blocks any
+        # stray "Oracle call:" text from this mode, so do not record here.
 
         # Wrap in Oracle Signal Card
         try:
@@ -1934,8 +2310,19 @@ def mode_scorecard() -> None:
         resolved = autoresolve()
         if resolved:
             for r in resolved:
-                print(f"[Runner] #{r['id']} {r['asset']} {r['direction']} → {r['outcome']} "
-                      f"(${r['entry_price']:,.2f} → ${r['exit_price']:,.2f})")
+                print(f"[Runner] #{r['id']} {r['asset']} {r['direction']} -> {r['outcome']} "
+                      f"(${r['entry_price']:,.2f} -> ${r['exit_price']:,.2f})")
+            # Auto-post WIN announcements immediately -- drives organic engagement
+            wins_just_resolved = [r for r in resolved if r.get("outcome") == "WIN"
+                                  and r.get("call_type", "oracle") == "oracle"]
+            for win in wins_just_resolved:
+                try:
+                    win_post = _build_win_post(win)
+                    queue_post(win_post, post_type="oracle_win", priority=0)
+                    process_queue(max_posts=1)
+                    print(f"[Runner] WIN post queued and sent for #{win['id']} {win['asset']}.")
+                except Exception as _wp_err:
+                    print(f"[Runner] WIN post failed for #{win['id']}: {_wp_err}")
         else:
             print("[Runner] No calls ready to resolve.")
 
@@ -1980,6 +2367,28 @@ def mode_scorecard() -> None:
     except Exception as e:
         print(f"[Runner] mode_scorecard failed: {e}")
         discord_alert(f"scorecard mode failed: {e}")
+
+
+def _build_win_post(call: dict) -> str:
+    """Build an X post announcing an oracle WIN resolution."""
+    asset   = call["asset"]
+    entry   = call["entry_price"]
+    exit_p  = call["exit_price"]
+    direct  = call["direction"]
+    pct     = (exit_p - entry) / entry * 100 if direct == "UP" else (entry - exit_p) / entry * 100
+    stats   = get_stats()
+    note    = (call.get("note") or "")[:80]
+    arrow   = "^" if direct == "UP" else "v"
+
+    post = (
+        f"{asset} {direct} {arrow} -- WIN.\n\n"
+        f"Entry: ${entry:,.0f}  Exit: ${exit_p:,.0f} ({pct:+.1f}%)\n\n"
+        f"{note}\n\n"
+        f"Oracle: {stats['wins']}W/{stats['losses']}L. Receipts on-chain."
+    ).strip()
+    if len(post) > 280:
+        post = post[:277] + "..."
+    return post
 
 
 def _build_scorecard_post() -> str | None:
@@ -2174,11 +2583,64 @@ def mode_liquidation_radar() -> None:
         print(f"[Runner] mode_liquidation_radar failed: {e}")
 
 
+def mode_defi_signal() -> None:
+    """
+    Signal-driven DeFi yield post. Pulls live APYs from Morpho, Moonwell,
+    Aerodrome, and Avantis on Base. Frames them through the current macro signal.
+    Posts max 1x per day via dedup.
+    """
+    print("\n[Runner] DeFi signal scan...")
+    try:
+        from octo_defi_yield import get_defi_post_context
+        from octo_macro import get_macro_signal
+
+        macro = get_macro_signal() if _MACRO_ACTIVE else {}
+        macro_signal = macro.get("signal", "NEUTRAL")
+        macro_score  = macro.get("score", 0)
+
+        # Surface any active oracle call for Avantis execution angle
+        active_call = None
+        if _CALLS_ACTIVE:
+            try:
+                from octo_calls import get_open_calls
+                open_calls = get_open_calls()
+                if open_calls:
+                    active_call = open_calls[0]
+            except Exception:
+                pass
+
+        defi_ctx = get_defi_post_context(macro_signal, macro_score, active_call)
+        if not defi_ctx:
+            print("[Runner] No DeFi yield data available.")
+            return
+
+        macro_ctx = get_macro_context() if _MACRO_ACTIVE else ""
+
+        post = _haiku_generate(
+            OCTO_SYSTEM,
+            (
+                f"{macro_ctx}\n\n"
+                f"{defi_ctx}\n\n"
+                "Write one sharp oracle post about where capital is actually working right now on Base. "
+                "Lead with a specific number (APY or yield). Connect it to the macro signal. "
+                "The oracle sees the signal AND the opportunity -- that is what makes this post valuable. "
+                "One protocol mention with their @handle. Under 280 chars. No hashtags. "
+                "Do NOT write 'Oracle call:' -- this is market intelligence, not a directional bet. "
+                "Do NOT sound promotional. The number earns the mention."
+            ),
+            max_tokens=220,
+        )
+        queue_post(post, post_type="defi_signal", priority=3)
+        process_queue(max_posts=1, force=True)
+        print(f"[Runner] DeFi signal posted:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_defi_signal failed: {e}")
+
+
 def mode_congress() -> None:
     import re as _re
     print(f"\n[Runner] Scanning congressional trades (full House + Senate)...")
     try:
-        # Full scan: all tickers, all members -- not limited to 7-ticker watchlist
         data = run_full_congress_scan(days_back=14)
         if data.get("error"):
             print(f"[Runner] Congress error: {data['error']}")
@@ -2186,13 +2648,28 @@ def mode_congress() -> None:
         if data["total"] == 0:
             print("[Runner] No notable congressional trades found.")
             return
-        context = format_congress_for_prompt(data)
+
+        # Filter to trades not yet posted and politicians not in 7-day cooldown
+        fresh_trades = filter_unposted_trades(data.get("trades", []))
+        if not fresh_trades:
+            print("[Runner] Congress: all recent trades already posted or politicians in cooldown. Skipping.")
+            return
+
+        # Build a pruned data snapshot for Claude — only fresh trades
+        fresh_data = dict(data)
+        fresh_data["trades"]  = fresh_trades
+        fresh_data["total"]   = len(fresh_trades)
+        fresh_data["signals"] = [
+            s for s in data.get("signals", [])
+            if any(s.get("politician") == t["politician"] and s.get("ticker") == t["ticker"]
+                   and s.get("date") == t["date"] for t in fresh_trades)
+        ][:8]
+
+        context = format_congress_for_prompt(fresh_data)
+        print(f"[Runner] Congress: {len(fresh_trades)} fresh trades (filtered from {data['total']} total)")
         print(context)
 
-        # Build ground-truth sets for validation
-        valid_tickers = {t["ticker"].upper() for t in data.get("trades", [])}
-        valid_names   = {t["politician"].split()[-1] for t in data.get("trades", [])}
-
+        valid_tickers = {t["ticker"].upper() for t in fresh_trades}
         from datetime import date
         today = date.today().strftime("%B %d, %Y")
         post = _claw_generate(OCTO_SYSTEM, (
@@ -2204,8 +2681,14 @@ def mode_congress() -> None:
             "CONTRARIAN voice. One post under 280 chars.\n"
             "Core belief: Congress members don't predict markets -- they front-run them. "
             "They trade on what they know is coming. Follow the money, not the narrative.\n"
-            "Name the politician and ticker. Call out the timing. "
-            "What do they know that the market doesn't yet? No price targets. No hashtags."
+            "REQUIRED: Use the politician's FULL name (first + last) and include their party: (D) or (R). "
+            "Example: 'Sara Jacobs (D) just dumped $1M of $QCOM.' NOT just 'Jacobs'.\n"
+            "ADDICTION LOOP for this post:\n"
+            "- BIG QUESTION: open with the trade itself as the signal nobody has connected yet -- the SIZE, the TIMING, the specific ticker. Load the reader's prediction ('why that stock? why now?').\n"
+            "- HEAD FAKE: the reveal is what the politician likely KNOWS that the market doesn't. Break the obvious read ('routine diversification') with the uncomfortable implication.\n"
+            "- The politician IS the character -- the reader's self-interest IS the stake.\n"
+            "- End on an open implication -- what does the market NOT know yet that explains this trade? Never close the loop cleanly.\n"
+            "No price targets. No hashtags."
         ), max_tokens=200)
 
         # Validate: any $TICKER in post must be in actual congress data
@@ -2213,13 +2696,16 @@ def mode_congress() -> None:
         hallucinated = mentioned - valid_tickers
         if hallucinated:
             print(f"[Runner] BLOCKED congress post -- hallucinated tickers: {hallucinated}")
-            print(f"[Runner] Blocked post was:\n  {post}")
             discord_alert(f"Congress post blocked: hallucinated {hallucinated} -- not in data {valid_tickers}")
             return
 
         queue_post(post, post_type="congress_signal", priority=2)
         process_queue(max_posts=1, force=True)
         print(f"[Runner] Congress signal posted:\n  {post}")
+
+        # Mark all fresh trades as posted so they won't repeat
+        mark_trades_posted(fresh_trades)
+
     except Exception as e:
         print(f"[Runner] mode_congress failed: {e}")
 
@@ -2508,7 +2994,7 @@ def mode_thread(topic: str = "") -> None:
     If no topic given, auto-selects based on current market conditions.
     """
     try:
-        from octo_personality import build_thread_prompt, parse_thread_output
+        from octo_personality import build_x_system_prompt, build_thread_user_prompt, parse_thread_output
 
         # Build live data context
         context_parts = []
@@ -2578,10 +3064,13 @@ def mode_thread(topic: str = "") -> None:
 
         print(f"[Runner] Thread topic: {topic}")
 
-        prompt = build_thread_prompt(topic, live_data_block) + _core_memory_section()
+        # System prompt and user prompt must be separate — passing combined as user
+        # causes Haiku to respond with an identity acknowledgment instead of the thread.
+        thread_system = build_x_system_prompt(live_data_block)
+        thread_user = build_thread_user_prompt(topic) + _core_memory_section()
 
         raw = _haiku_generate(
-            "", prompt, max_tokens=900
+            thread_system, thread_user, max_tokens=900
         )
         tweets = parse_thread_output(raw)
 
@@ -2610,7 +3099,8 @@ if __name__ == "__main__":
             "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot",
             "mentions", "youtube", "format", "qrt", "morning_flow",
             "strategy_monitor", "strategy_sunday", "thread", "ceo_research",
-            "liquidation_radar", "range_scout", "xengage",
+            "liquidation_radar", "range_scout", "xengage", "sentiment", "spacex",
+            "funding_extreme", "crowd_fade", "signal_polymarket", "defi_signal", "avantis",
         ],
         default="monitor",
     )
@@ -2701,15 +3191,77 @@ if __name__ == "__main__":
         targets = [args.ticker.upper()] if args.ticker and args.ticker.upper() in ("BTC", "ETH", "SOL") else None
         run_range_scout(assets=targets, dry=False)
 
+    elif args.mode == "funding_extreme":
+        from octo_funding_extreme import run_funding_extreme
+        targets = [args.ticker.upper()] if args.ticker and args.ticker.upper() in ("BTC", "ETH", "SOL") else None
+        fired = run_funding_extreme(assets=targets, dry=False)
+        if fired:
+            from octo_signal_polymarket import run_signal_polymarket
+            for r in fired:
+                run_signal_polymarket(direction=r["direction"], asset=r["asset"])
+
+    elif args.mode == "crowd_fade":
+        from octo_crowd_fade import run_crowd_fade
+        targets = [args.ticker.upper()] if args.ticker and args.ticker.upper() in ("BTC", "ETH", "SOL") else None
+        fired = run_crowd_fade(assets=targets, dry=False)
+        if fired:
+            from octo_signal_polymarket import run_signal_polymarket
+            for r in fired:
+                run_signal_polymarket(direction=r["direction"], asset=r["asset"])
+
+    elif args.mode == "signal_polymarket":
+        from octo_signal_polymarket import run_signal_polymarket
+        direction = args.ticker.upper() if args.ticker and args.ticker.upper() in ("UP", "DOWN") else None
+        run_signal_polymarket(direction=direction)
+
     elif args.mode == "xengage":
         from octo_x_engage import run_session as xengage_run
         xengage_run(dry_run=args.force)  # --force acts as dry-run for xengage
+
+    elif args.mode == "sentiment":
+        from octo_data_aggregator import run_sentiment
+        run_sentiment(secrets)
+        print("[Runner] Sentiment snapshot written.")
 
     elif args.mode == "spacex":
         from octo_spacex import check_spacex_ipo
         result = check_spacex_ipo(silent=False)
         if result.get("signal"):
-            print(f"[SpaceX] IPO signal: {result['headline'][:100]}")
-            print(f"[SpaceX] High-signal: {result['high_signal']}")
+            print(f"[SpaceX] signal: {result['headline'][:100]}")
+            print(f"[SpaceX] High-signal: {result['high_signal']}  topic: {result.get('topic','ipo')}")
+            if result.get("high_signal"):
+                headline = result["headline"]
+                topic = result.get("topic", "ipo")
+                if topic == "datacenter":
+                    prompt = (
+                        f"Breaking: {headline}\n\n"
+                        "Write ONE post under 280 chars for @octodamusai. "
+                        "Frame this as an oracle signal: space-based AI compute is the next frontier. "
+                        "Contrarian voice. Implication: whoever owns the orbital compute layer owns the AI stack. "
+                        "No hashtags. No price targets. End on an open question or unsettling implication."
+                    )
+                else:
+                    prompt = (
+                        f"Breaking: {headline}\n\n"
+                        "Write ONE post under 280 chars for @octodamusai. "
+                        "Use the SPACEX IPO ORACLE FRAMING from your context. "
+                        "The lockup expiry (Sep-Dec 2026) is the real event, not the IPO date. "
+                        "Meta 2012 parallel if relevant. Burry puts as the tell. "
+                        "Contrarian. No hashtags. No price targets. Plant the seed — don't close the loop."
+                    )
+                post = _haiku_generate(OCTO_SYSTEM, prompt, max_tokens=200)
+                from octo_x_poster import _post_single, _log_post
+                result = _post_single(post)
+                if result.get("id"):
+                    _log_post(post, {"post_type": "spacex_signal", "tweet_id": result["id"]})
+                    print(f"[SpaceX] Posted to X:\n  {post}")
+                else:
+                    print(f"[SpaceX] Post failed: {result}")
         else:
-            print("[SpaceX] No IPO signals. SpaceX remains private.")
+            print("[SpaceX] No signals found.")
+    elif args.mode == "defi_signal":
+        mode_defi_signal()
+    elif args.mode == "avantis":
+        from octo_avantis import run_avantis_sync
+        result = run_avantis_sync(live=False)
+        print(f"[Avantis] opened={result['opened']} closed={result['closed']} pnl=${result['stats']['pnl_usdc']:+.2f}")
