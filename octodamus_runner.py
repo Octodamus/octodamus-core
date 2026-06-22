@@ -65,8 +65,7 @@ import anthropic
 from financial_data_client import get_current_price, get_current_crypto_price
 from octo_eyes_market import run_market_monitor, generate_deep_dive_post
 try:
-    from octo_calls import build_call_context, build_open_calls_awareness, parse_call_from_post, autoresolve
-    from octo_post_templates import build_template_prompt_context
+    from octo_calls import build_call_context, build_open_calls_awareness, parse_call_from_post, autoresolve, build_template_prompt_context
     _CALLS_ACTIVE = True
 except ImportError:
     _CALLS_ACTIVE = False
@@ -248,7 +247,7 @@ except ImportError:
     def parse_call_from_post(*a, **k): return None
 
 try:
-    from octo_post_templates import build_template_prompt_context
+    from octo_calls import build_template_prompt_context
 except ImportError:
     def build_template_prompt_context(): return ""
 
@@ -1140,6 +1139,45 @@ _SKELETON_TEMPLATES = {
     "the 'capital chases yield' migration frame":                (_re_struct.compile(r"(chases? yield|patient capital|capital (migrat|chas|doesn))", _re_struct.I), False),
 }
 
+# Topic-freshness: a post's subject is its (asset, metric) pair. Same asset + same
+# metric inside the recent window reads as "you already told me this," even when the
+# rhetorical shape is fresh. Used to hard-gate topic repeats and steer first drafts.
+_ASSET_RX = _re_struct.compile(
+    r"\$?\b(BTC|ETH|SOL|NVDA|HYPE|SPX|SPY|XRP|DOGE|AVAX|LINK|MSTR|COIN|TSLA|AAPL|MSFT|WTI|GOLD|Bitcoin|Ethereum|Solana)\b",
+    _re_struct.I,
+)
+_ASSET_NORM = {"bitcoin": "BTC", "ethereum": "ETH", "solana": "SOL"}
+_METRIC_TEMPLATES = {
+    "open-interest":   _re_struct.compile(r"\bOI\b|open interest", _re_struct.I),
+    "funding":         _re_struct.compile(r"funding|perp", _re_struct.I),
+    "options/max-pain":_re_struct.compile(r"max pain|options wall|gamma|\bstrike\b|expir", _re_struct.I),
+    "COT/positioning": _re_struct.compile(r"\bCOT\b|hedge fund|managed money|positioning|short contracts|long contracts|whale accounts", _re_struct.I),
+    "ETF-flows":       _re_struct.compile(r"inflow|outflow|\bETF\b|IBIT|FBTC|ETHA", _re_struct.I),
+    "liquidations":    _re_struct.compile(r"liquidat", _re_struct.I),
+    "technicals":      _re_struct.compile(r"\bRSI\b|moving average|\b200d\b|\bMACD\b|support|resistance|breakout|breakdown", _re_struct.I),
+    "ratio/relative":  _re_struct.compile(r"ratio|/BTC\b|vs BTC|dominance", _re_struct.I),
+}
+
+
+def _primary_topic(text: str):
+    """A post's subject as (ASSET, metric), or None. First asset + first metric found."""
+    if not text:
+        return None
+    am = _ASSET_RX.search(text)
+    if not am:
+        return None
+    asset = am.group(1).upper()
+    asset = _ASSET_NORM.get(asset.lower(), asset)
+    for label, rx in _METRIC_TEMPLATES.items():
+        if rx.search(text):
+            return (asset, label)
+    return None
+
+
+def _recent_topics(n: int = 6) -> set:
+    """Set of (asset, metric) subjects covered in the last n posts."""
+    return {tp for tp in (_primary_topic(t) for t in _recent_texts(n)) if tp}
+
 
 def _recent_texts(n: int = 20) -> list:
     """Last N posted texts (newest first, truncated), merged from both logs."""
@@ -1190,22 +1228,29 @@ def _post_trips_skeletons(post: str, overused: list) -> list:
 
 
 def _enforce_originality(post: str, regen_fn, max_retries: int = 1) -> str:
-    """Hard backstop: re-roll a draft that still reuses a *structural* skeleton that
-    is currently over-used. regen_fn(tripped_labels) -> str returns a rewrite.
-    Topical overlap (funding/max-pain) is left to the prompt advisory -- only the
-    structural clones get re-rolled, to avoid pointless regens on legit topics."""
+    """Hard backstop: re-roll a draft that either (a) reuses a currently over-used
+    *structural* skeleton, or (b) re-reports a *topic* (asset + metric) already
+    covered in the recent window. regen_fn(tripped_labels, topic_clash) -> str.
+    Topical FRAME overlap (funding/max-pain wording) stays advisory; this gate fires
+    on structural clones and on same-asset+same-metric subject repeats."""
     if not post:
         return post
     overused = _structural_overuse(_recent_texts(8), structural_only=True)
-    if not overused:
-        return post
+    recent_topics = _recent_topics(6)
     for _ in range(max_retries):
         tripped = _post_trips_skeletons(post, overused)
-        if not tripped:
+        topic = _primary_topic(post)
+        topic_clash = topic if (topic and topic in recent_topics) else None
+        if not tripped and not topic_clash:
             return post
-        print(f"[Originality] Draft reuses over-used skeleton(s) {tripped} -- re-rolling.")
+        reasons = []
+        if tripped:
+            reasons.append(f"skeleton{'s' if len(tripped) > 1 else ''} {tripped}")
+        if topic_clash:
+            reasons.append(f"stale topic {topic_clash[0]} {topic_clash[1]}")
+        print(f"[Originality] Re-rolling -- {'; '.join(reasons)}.")
         try:
-            new = regen_fn(tripped)
+            new = regen_fn(tripped, topic_clash)
         except Exception as _e:
             print(f"[Originality] Re-roll failed ({_e}) -- keeping draft.")
             return post
@@ -1213,24 +1258,36 @@ def _enforce_originality(post: str, regen_fn, max_retries: int = 1) -> str:
             post = new.strip()
         else:
             break
-    still = _post_trips_skeletons(post, overused)
-    if still:
-        print(f"[Originality] Still trips {still} after re-roll -- using best effort.")
+    # Final state after the last re-roll
+    still_skel = _post_trips_skeletons(post, overused)
+    _t = _primary_topic(post)
+    still_topic = _t if (_t and _t in recent_topics) else None
+    if still_skel or still_topic:
+        print(f"[Originality] Still imperfect after re-roll (skeleton={still_skel}, topic={still_topic}) -- using best effort.")
     return post
 
 
-def _reroll_instruction(tripped: list, recent_block: str) -> str:
-    """Compact rewrite prompt body shared by all modes' re-roll closures."""
-    return (
-        "REWRITE REQUEST -- the draft below reuses a rhetorical skeleton the audience "
-        "has already seen repeatedly:\n\n"
-        f"OVER-USED SKELETON(S) IT TRIPS: {', '.join(tripped)}\n"
-        f"{recent_block}\n"
-        "Rewrite the post. KEEP the specific data, ticker, and the forward signal. "
-        "CHANGE the structure completely so it uses NONE of the skeletons listed above -- "
-        "no 'A while B' contrast pivot, no 'retail sees X / insiders see Y' dichotomy, "
-        "no detached one-line aphorism close. Under 240 chars. Output only the rewritten post."
+def _reroll_instruction(tripped: list, recent_block: str, topic_clash=None) -> str:
+    """Compact rewrite prompt body shared by all modes' re-roll closures. Handles a
+    structural-skeleton repeat, a stale-topic repeat, or both."""
+    parts = ["REWRITE REQUEST -- the draft below repeats something the audience just saw:\n"]
+    if tripped:
+        parts.append(f"OVER-USED SKELETON(S) IT TRIPS: {', '.join(tripped)}")
+    if topic_clash:
+        parts.append(
+            f"STALE TOPIC: it covers {topic_clash[0]} {topic_clash[1]} again, already posted "
+            "in the last few posts. Pick a DIFFERENT asset OR a different metric/signal entirely "
+            "(e.g. rotate to options skew, COT positioning, ETF flows, a macro read, or another ticker)."
+        )
+    parts.append(recent_block)
+    parts.append(
+        "Rewrite the post. KEEP it grounded in the real data you were given -- invent no numbers. "
+        + ("CHANGE the structure so it uses NONE of the skeletons above (no 'A while B' pivot, "
+           "no retail-vs-insider dichotomy, no detached aphorism close). " if tripped else "")
+        + ("CHANGE the subject to a fresh signal -- do not re-report the stale topic. " if topic_clash else "")
+        + "Under 240 chars. Output only the rewritten post."
     )
+    return "\n".join(parts)
 
 
 def _get_recent_posts(n: int = 20) -> str:
@@ -1271,6 +1328,13 @@ def _get_recent_posts(n: int = 20) -> str:
     data_first = sum(1 for t in _window if t.strip() and (t[0] == "$" or t[0].isdigit()))
     if data_first >= 3:
         _struct_lines.append("Recent posts lead with a ticker/number -- open this one differently: implication, irony, a verb, or a proper noun first.")
+    # Topic-freshness advisory -- steer the first draft off recently-covered subjects
+    _covered = {tp for tp in (_primary_topic(t) for t in recent[:6]) if tp}
+    if _covered:
+        _struct_lines.append(
+            "ALREADY COVERED (rotate to a different asset OR metric -- do NOT re-report these): "
+            + "; ".join(f"{a} {m}" for a, m in sorted(_covered)) + "."
+        )
     structure_warning = ("\n".join(_struct_lines) + "\n") if _struct_lines else ""
 
     numbered = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(recent))
@@ -1733,13 +1797,7 @@ def mode_daily() -> None:
         except Exception:
             pass
 
-        response = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=500,
-            system=OCTO_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": (
+        _daily_user = (
                     "Generate the morning oracle market read for @octodamusai.\n"
                     f"{recent_posts_section}"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
@@ -1786,8 +1844,12 @@ def mode_daily() -> None:
                     "- WARNING: the 'retail sees X, insiders see Y' reveal and the 'A while B' contrast are now over-used. They are ONE option among many, not the default. Reaching for either when the BANNED SKELETONS list flags them is a failure.\n"
                     "- Vary the close: a clean verdict, a single forward level, or an open question are all fine. Do NOT end every post on a detached one-line aphorism ('X doesn't announce itself').\n"
                     "5 LAWS: (1) relevant to THIS trader watching THIS asset NOW — not generic (2) non-obvious — the thing BEHIND the consensus (3) validated with exact numbers (4) one signal, one implication — grasped in 10 seconds (5) gives something forward to WATCH FOR — a level, trigger, or catalyst, not a closed conclusion."
-                ),
-            }],
+        )
+        response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            system=OCTO_SYSTEM,
+            messages=[{"role": "user", "content": _daily_user}],
         )
 
         post = response.content[0].text.strip()
@@ -1798,18 +1860,21 @@ def mode_daily() -> None:
             print(f"[Runner] WARNING: Daily read post appears truncated, skipping: {post[-100:]}")
             return
 
-        # Hard originality backstop -- re-roll once if the draft still reuses an
-        # over-used structural skeleton (preserves data + ticker + forward signal).
-        def _daily_reroll(tripped):
+        # Hard originality backstop -- re-roll if the draft reuses an over-used
+        # structural skeleton OR re-reports a recently-covered (asset, metric) topic.
+        # Replays the FULL prompt (_daily_user) so the model has all the market data
+        # to actually rotate to a different signal, not just rework the draft.
+        def _daily_reroll(tripped, topic_clash):
             _rr = claude.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=300,
+                max_tokens=500,
                 system=OCTO_SYSTEM,
                 messages=[{"role": "user", "content":
-                    f"DRAFT: {post}\n\n{_reroll_instruction(tripped, _get_recent_posts(8))}"}],
+                    f"{_daily_user}\n\nYOUR DRAFT (do not just reword it): {post}\n\n"
+                    f"{_reroll_instruction(tripped, _get_recent_posts(8), topic_clash)}"}],
             )
             return _rr.content[0].text.strip()
-        post = _enforce_originality(post, _daily_reroll)
+        post = _enforce_originality(post, _daily_reroll, max_retries=2)
 
         # Auto-record directional call from post
         recorded = None
@@ -2113,9 +2178,9 @@ def mode_wisdom() -> None:
         # skeleton, re-roll it once preserving the data but changing the shape.
         post = _enforce_originality(
             post,
-            lambda tripped: _haiku_generate(
+            lambda tripped, topic_clash: _haiku_generate(
                 OCTO_SYSTEM,
-                f"{user_msg}\n\nYOUR DRAFT: {post}\n\n{_reroll_instruction(tripped, _get_recent_posts(8))}",
+                f"{user_msg}\n\nYOUR DRAFT: {post}\n\n{_reroll_instruction(tripped, _get_recent_posts(8), topic_clash)}",
                 max_tokens=250,
             ),
         )
