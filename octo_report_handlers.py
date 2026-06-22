@@ -14,7 +14,7 @@ import os
 import statistics
 from datetime import datetime
 from pathlib import Path
-from octo_acp_ben_reports import handle_grok_sentiment_brief, handle_fear_crowd_divergence, handle_btc_bull_trap_monitor, handle_btc_strike_proximity_alert, handle_carry_unwind_risk_monitor
+from octo_acp_ben_reports import handle_grok_sentiment_brief, handle_fear_crowd_divergence, handle_btc_bull_trap_monitor, handle_btc_strike_proximity_alert, handle_carry_unwind_risk_monitor, handle_perp_funding_rate_signal
 from octo_acp_stockoracle_reports import handle_congressional_silence_signal
 
 # ── Results page link ────────────────────────────────────────────────────────
@@ -264,30 +264,30 @@ def _fetch_coinglass_compact(ticker: str) -> dict:
     except Exception:
         pass
 
-    # ── Coins Markets (OI + prices in 1 API call — replaces CoinGecko) ──
+    # ── Prices + OI from Hobbyist-safe endpoints ───────────────────────
+    # (coins-markets requires a Coinglass tier above Hobbyist: price client for
+    #  prices, per-exchange OI endpoint for open interest)
     try:
-        mkts = octo_coinglass.coins_markets()
-        if isinstance(mkts, list) and mkts:
-            # Build price map for all major coins (used by market_signal handler)
-            prices_map = {}
-            for sym in ["BTC", "ETH", "SOL"]:
-                c = next((x for x in mkts if x.get("symbol") == sym), None)
-                if c:
-                    px = float(c.get("current_price", 0) or 0)
-                    chg = float(c.get("price_change_percent_24h", 0) or 0)
-                    if px > 0:
-                        prices_map[sym] = {"price": px, "chg_24h": chg}
-            if prices_map:
-                result["prices"] = prices_map
+        from financial_data_client import get_crypto_prices
+        _cp = get_crypto_prices(["BTC", "ETH", "SOL"])
+        prices_map = {}
+        for sym in ["BTC", "ETH", "SOL"]:
+            d = _cp.get(sym, {})
+            px = float(d.get("usd", 0) or 0)
+            if px > 0:
+                prices_map[sym] = {"price": px, "chg_24h": round(float(d.get("usd_24h_change", 0) or 0), 2)}
+        if prices_map:
+            result["prices"] = prices_map
 
-            # OI data for the requested ticker
-            coin = next((c for c in mkts if c.get("symbol") == ticker), None)
-            if coin:
-                oi_usd = float(coin.get("open_interest_usd", 0) or 0)
-                oi_ratio = float(coin.get("open_interest_market_cap_ratio", 0) or 0)
-                oi_chg_24h = float(coin.get("open_interest_change_percent_24h", 0) or 0)
+        # OI data for the requested ticker (aggregate across exchanges)
+        _oi = octo_coinglass.open_interest_exchange(ticker)
+        if isinstance(_oi, list) and _oi:
+            _all = next((e for e in _oi if e.get("exchange") == "All"), None) or {}
+            oi_usd = float(_all.get("open_interest_usd", 0) or 0) or \
+                     sum(float(e.get("open_interest_usd", 0) or 0) for e in _oi if e.get("exchange") != "All")
+            oi_chg_24h = float(_all.get("open_interest_change_percent_24h", 0) or 0)
+            if oi_usd:
                 result["oi_usd"] = round(oi_usd / 1e9, 2)
-                result["oi_mcap_ratio"] = round(oi_ratio * 100, 1)
                 result["oi_chg_24h"] = round(oi_chg_24h, 1)
     except Exception:
         pass
@@ -556,9 +556,10 @@ def handle_crypto_market_signal(req: dict) -> dict:
         except Exception:
             pass
 
-    fx_pairs = (fx.get("key_pairs") or {})
-    usd_eur  = (fx_pairs.get("EUR") or {}).get("rate", "N/A")
-    usd_jpy  = (fx_pairs.get("JPY") or {}).get("rate", "N/A")
+    fx_rates = (fx.get("rates") or fx.get("key_pairs") or {})
+    _eur = fx_rates.get("EUR"); _jpy = fx_rates.get("JPY")
+    usd_eur = f"{float(_eur):.4f}" if _eur else "N/A"
+    usd_jpy = f"{float(_jpy):.2f}" if _jpy else "N/A"
 
     momentum = "N/A"
     if ta:
@@ -566,7 +567,9 @@ def handle_crypto_market_signal(req: dict) -> dict:
         macd = float(ta.get("macd", 0) or 0)
         e20  = float(ta.get("ema20", 0) or 0)
         e50  = float(ta.get("ema50", 0) or 0)
-        if rsi > 70:            momentum = "Overbought"
+        if rsi > 80:            momentum = "Extreme Overbought"
+        elif rsi > 70:          momentum = "Overbought"
+        elif rsi < 20:          momentum = "Extreme Oversold"
         elif rsi < 30:          momentum = "Oversold"
         elif macd > 0 and e20 > e50: momentum = "Leaning Bullish"
         elif macd < 0 and e20 < e50: momentum = "Leaning Bearish"
@@ -750,7 +753,9 @@ def handle_bitcoin_analysis(req: dict) -> dict:
         macd = float(ta.get("macd", 0) or 0)
         e20  = float(ta.get("ema20", 0) or 0)
         e50  = float(ta.get("ema50", 0) or 0)
-        if rsi > 70:            momentum = "Overbought"
+        if rsi > 80:            momentum = "Extreme Overbought"
+        elif rsi > 70:          momentum = "Overbought"
+        elif rsi < 20:          momentum = "Extreme Oversold"
         elif rsi < 30:          momentum = "Oversold"
         elif macd > 0 and e20 > e50: momentum = "Leaning Bullish"
         elif macd < 0 and e20 < e50: momentum = "Leaning Bearish"
@@ -1052,10 +1057,11 @@ def handle_conviction_score(req: dict) -> dict:
 
 def handle_ask(req: dict) -> dict:
     """
-    Answer a free-form market question via /v2/ask.
+    Answer a free-form market question via direct Haiku inference.
     Expects req["question"] or req["q"] — falls back to req["ticker"] context.
     """
-    import httpx
+    import anthropic, json as _json
+    from pathlib import Path as _Path
 
     question = (
         req.get("question") or
@@ -1064,34 +1070,54 @@ def handle_ask(req: dict) -> dict:
         f"What is your current read on {req.get('ticker', 'BTC')}?"
     )
 
+    # Load secrets for API key
     try:
-        r = httpx.post(
-            "https://api.octodamus.com/v2/ask",
-            params={"q": question},
-            timeout=30,
+        _sec_file = _Path(__file__).parent / ".octo_secrets"
+        _sec = _json.loads(_sec_file.read_text(encoding="utf-8"))
+        _sec = _sec.get("secrets", _sec)
+        api_key = _sec.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        api_key = ""
+
+    # Inject live BTC price for grounding
+    price_context = ""
+    try:
+        from financial_data_client import get_crypto_prices
+        prices = get_crypto_prices(["BTC"])
+        btc = prices.get("BTC", {})
+        if btc.get("usd"):
+            price_context = f"\nLive context: BTC ${btc['usd']:,.0f} ({btc.get('usd_24h_change', 0):+.1f}% 24h)."
+    except Exception:
+        pass
+
+    system = (
+        "You are Octodamus, an AI crypto oracle. You give sharp, direct market intelligence. "
+        "You do not hedge with disclaimers. You speak in the voice of a seasoned trader who has studied "
+        "McGuane, Druckenmiller, Livermore, and Taleb. One to three sentences max unless the question demands more."
+        + price_context
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": question}],
         )
-        if r.status_code == 200:
-            body = r.json()
-            return {
-                "type":     "ask",
-                "question": question,
-                "answer":   body.get("answer", ""),
-                "suggested_endpoints": body.get("suggested_endpoints", []),
-                "footer":   FOOTER,
-            }
-        else:
-            return {
-                "type":   "ask",
-                "question": question,
-                "error":  f"Ask endpoint returned {r.status_code}",
-                "footer": FOOTER,
-            }
+        answer = msg.content[0].text if msg.content else ""
+        return {
+            "type":     "ask",
+            "question": question,
+            "answer":   answer,
+            "footer":   FOOTER,
+        }
     except Exception as e:
         return {
-            "type":   "ask",
+            "type":     "ask",
             "question": question,
-            "error":  str(e),
-            "footer": FOOTER,
+            "error":    str(e),
+            "footer":   FOOTER,
         }
 
 
@@ -1261,17 +1287,49 @@ def handle_agent_market_intel_bundle(req: dict) -> dict:
     fg_val   = int(fg.get("value", 50) or 50)
     fg_label = str(fg.get("label", "Unknown") or "Unknown")
 
-    from financial_data_client import get_crypto_prices
+    from financial_data_client import get_crypto_prices, get_current_price
     prices  = get_crypto_prices(["BTC", "ETH"])
     btc_p   = prices.get("BTC", {})
     btc_px  = round(btc_p.get("usd", 0), 2)
     btc_chg = round(btc_p.get("usd_24h_change", 0), 2)
     eth_px  = round((prices.get("ETH") or {}).get("usd", 0), 2)
 
+    # SPY (equity regime context)
+    spy_px, spy_chg = 0.0, 0.0
+    try:
+        spy_data = get_current_price("SPY")
+        spy_s = spy_data.get("snapshot", {})
+        spy_px  = round(spy_s.get("price", 0) or 0, 2)
+        spy_chg = round(spy_s.get("day_change_percent", 0) or 0, 2)
+    except Exception:
+        pass
+
+    # Macro regime (FRED cross-asset signal)
+    macro_signal, macro_score, macro_brief = "UNAVAILABLE", 0, ""
+    try:
+        from octo_macro import get_macro_signal as _get_macro
+        ms = _get_macro()
+        if ms.get("status") == "live":
+            macro_signal = ms.get("signal", "NEUTRAL")
+            macro_score  = ms.get("score", 0)
+            macro_brief  = ms.get("brief", "")
+    except Exception:
+        pass
+
+    # BTC perp funding rate
+    btc_funding_regime, btc_funding_rate = "UNAVAILABLE", None
+    try:
+        from octo_funding_rates import get_funding_rate_signal
+        fr = get_funding_rate_signal("BTC")
+        btc_funding_regime = fr.get("regime", "UNAVAILABLE")
+        btc_funding_rate   = fr.get("rate_8h_pct")
+    except Exception:
+        pass
+
     # Oracle
     calls_file = _pl.Path(__file__).parent / "data" / "octo_calls.json"
     calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
-    calls = [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
+    calls = [c for c in calls if c.get("call_type", "oracle") == "oracle"]
     open_calls = [c for c in calls if not c.get("resolved")]
     resolved   = [c for c in calls if c.get("resolved")]
     wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
@@ -1302,10 +1360,21 @@ def handle_agent_market_intel_bundle(req: dict) -> dict:
         best = max(pm_edges, key=lambda c: abs(float(c.get("edge_score", 0) or 0)))
         top_edge = {"market": best.get("asset",""), "direction": best.get("direction",""), "ev": round(float(best.get("edge_score",0) or 0), 3)}
 
+    # Regime synthesis: derive actionable regime from live prices
+    if btc_chg >= 2.0 or spy_chg >= 0.5:
+        live_regime = "RISK-ON"
+    elif btc_chg <= -2.0 or spy_chg <= -1.0:
+        live_regime = "RISK-OFF"
+    else:
+        live_regime = "NEUTRAL"
+
     reasoning = [
-        f"BTC ${btc_px:,.0f} ({btc_chg:+.1f}% 24h) | Fear & Greed {fg_val}/100 ({fg_label}) | Oracle: {oracle_note}",
-        f"Grok X crowd {crowd_pct:.0f}% {crowd_label}{'— CONTRARIAN DIVERGENCE ACTIVE' if contrarian_flag else ' — aligned with price'}. "
-        f"Record: {wins}W/{losses}L (oracle calls only)."
+        f"BTC ${btc_px:,.0f} ({btc_chg:+.1f}% 24h) | SPY ${spy_px:,.2f} ({spy_chg:+.2f}% day) | Fear & Greed {fg_val}/100 ({fg_label})",
+        f"Macro regime: {macro_signal} (FRED score {macro_score:+d}/5){' -- ' + macro_brief if macro_brief else ''}",
+        f"BTC perp funding: {btc_funding_regime}" + (f" ({btc_funding_rate:+.4f}% 8h)" if btc_funding_rate is not None else ""),
+        f"Oracle: {oracle_note} | Record: {wins}W/{losses}L",
+        f"Grok X crowd {crowd_pct:.0f}% {crowd_label}{'-- CONTRARIAN DIVERGENCE ACTIVE' if contrarian_flag else ' -- aligned with price'}.",
+        f"Live regime synthesis: {live_regime}",
     ]
 
     return {
@@ -1314,7 +1383,12 @@ def handle_agent_market_intel_bundle(req: dict) -> dict:
         "btc_price":        btc_px,
         "btc_24h_change":   btc_chg,
         "eth_price":        eth_px,
+        "spy_price":        spy_px,
+        "spy_24h_change":   spy_chg,
         "fear_greed":       {"value": fg_val, "label": fg_label},
+        "macro_regime":     {"signal": macro_signal, "score": macro_score, "brief": macro_brief},
+        "btc_funding":      {"regime": btc_funding_regime, "rate_8h_pct": btc_funding_rate},
+        "live_regime":      live_regime,
         "oracle_signal":    signal_str,
         "oracle_record":    f"{wins}W/{losses}L",
         "oracle_note":      oracle_note,
@@ -1392,16 +1466,33 @@ def _handle_subarc_brief(agent_key: str, agent_display: str, req: dict) -> dict:
                 f"Check back after the next session."
             ),
         }
-    latest    = files[-1]
-    date_str  = "_".join(latest.stem.split("_")[-3:])  # YYYY-MM-DD
-    content   = latest.read_text(encoding="utf-8")
+    latest = files[-1]
+    # Extract YYYY-MM-DD from filename — look for three consecutive numeric segments
+    stem_parts = latest.stem.split("_")
+    date_str = ""
+    for i in range(len(stem_parts) - 2):
+        candidate = "_".join(stem_parts[i:i+3])
+        if len(candidate) == 10 and candidate[4] == "-" and candidate[7] == "-":
+            date_str = candidate
+            break
+    if not date_str:
+        date_str = latest.stem
+
+    import os as _os
+    mtime      = _os.path.getmtime(latest)
+    age_hours  = round((datetime.utcnow().timestamp() - mtime) / 3600, 1)
+    data_as_of = datetime.utcfromtimestamp(mtime).strftime("%Y-%m-%d %H:%M UTC")
+
+    content = latest.read_text(encoding="utf-8")
     return {
-        "type":       f"{agent_key}_brief",
-        "agent":      agent_display,
-        "date":       date_str,
-        "brief":      content,
-        "generated":  "5:30am PST daily — NYSE pre-market runner",
-        "powered_by": "@octodamusai ecosystem",
+        "type":           f"{agent_key}_brief",
+        "agent":          agent_display,
+        "date":           date_str,
+        "data_as_of":     data_as_of,
+        "data_age_hours": age_hours,
+        "brief":          content,
+        "generated":      "5:30am PST daily -- NYSE pre-market runner",
+        "powered_by":     "@octodamusai ecosystem",
     }
 
 def handle_nyse_macromind_brief(req: dict) -> dict:
@@ -1416,8 +1507,8 @@ def handle_nyse_tech_brief(req: dict) -> dict:
 def handle_order_chainflow_brief(req: dict) -> dict:
     return _handle_subarc_brief("order_chainflow", "Order_ChainFlow", req)
 
-def handle_x_sentiment_brief(req: dict) -> dict:
-    return _handle_subarc_brief("x_sentiment_agent", "X_Sentiment_Agent", req)
+def handle_nyse_earningsedge_brief(req: dict) -> dict:
+    return _handle_subarc_brief("nyse_earningsedge", "NYSE_EarningsEdge", req)
 
 
 def handle_tokenized_stock_signal(req: dict) -> dict:
@@ -1426,7 +1517,25 @@ def handle_tokenized_stock_signal(req: dict) -> dict:
     Covers current price, macro positioning, and the agentic finance lens.
     Accepts: { "ticker": "AAPL" } or { "ticker": "SPY" }
     """
+    _DINARI_LIVE = {
+        "AAPL", "TSLA", "NVDA", "AMZN", "MSFT", "GOOGL", "GOOG", "META",
+        "NFLX", "COIN", "HOOD", "MSTR", "SPY", "QQQ", "AMD", "INTC",
+    }
+
     ticker = str(req.get("ticker") or req.get("asset") or "AAPL").upper().strip()
+    on_chain = ticker in _DINARI_LIVE
+    dtc_pipeline_status = {
+        "ticker": ticker,
+        "on_chain_now": on_chain,
+        "chain": "Base (Dinari wrapper)" if on_chain else None,
+        "status": "LIVE_VIA_DINARI" if on_chain else "PENDING_REGULATORY",
+        "blocking_gate": (
+            None if on_chain else
+            "Securitize transfer agent 8-K filing + SEC/FINRA approval (target: late 2026)"
+        ),
+        "detail_endpoint": f"GET /v2/nyse_tech/dtc_monitor?ticker={ticker} ($0.25)",
+    }
+
     try:
         import anthropic, os
         from financial_data_client import get_current_price, build_oracle_context
@@ -1481,12 +1590,13 @@ def handle_tokenized_stock_signal(req: dict) -> dict:
         chg   = 0.0
 
     return {
-        "type":           "tokenized_stock_signal",
-        "ticker":         ticker,
-        "price":          price,
-        "day_change_pct": chg,
-        "analysis":       analysis,
-        "oracle":         "@octodamusai",
+        "type":                "tokenized_stock_signal",
+        "ticker":              ticker,
+        "price":               price,
+        "day_change_pct":      chg,
+        "analysis":            analysis,
+        "dtc_pipeline_status": dtc_pipeline_status,
+        "oracle":              "@octodamusai",
         "settlement_note": (
             "NYSE tokenized equities settle 24/7 on Base. "
             "This signal is priced for agent consumption via x402."
@@ -1505,16 +1615,23 @@ def get_handler(report_type: str):
         return handle_polymarket_alpha
     if any(k in t for k in ["conviction", "conviction_score"]):
         return handle_conviction_score
+    if any(k in t for k in ["silence_signal", "congressional_silence", "congress_silence", "execution_risk"]):
+        return handle_congressional_silence_signal
     if any(k in t for k in ["congressional", "congress", "stock_trade", "stock_alert"]):
         return handle_congressional
+    if any(k in t for k in ["nyse_earningsedge_brief", "earnings_edge_brief", "earningsedge_brief"]):
+        return handle_nyse_earningsedge_brief
+    if any(k in t for k in ["grok_sentiment", "grok_brief", "x_sentiment", "twitter_sentiment"]):
+        return handle_grok_sentiment_brief
+    if any(k in t for k in ["cross_asset_divergence", "cross_asset", "sessions_persistent", "persistent_divergence"]):
+        from octo_acp_ben_reports import handle_cross_asset_divergence_alert
+        return handle_cross_asset_divergence_alert
+    if any(k in t for k in ["divergence", "fear_crowd", "crowd_divergence", "fear_vs_crowd"]):
+        return handle_fear_crowd_divergence
     if any(k in t for k in ["fear_greed", "sentiment", "fear"]):
         return handle_fear_greed
     if any(k in t for k in ["bitcoin", "deep_dive", "analysis", "forecast"]):
         return handle_bitcoin_analysis
-    if any(k in t for k in ["grok_sentiment", "grok_brief", "x_sentiment", "twitter_sentiment"]):
-        return handle_grok_sentiment_brief
-    if any(k in t for k in ["divergence", "fear_crowd", "crowd_divergence", "fear_vs_crowd"]):
-        return handle_fear_crowd_divergence
     if any(k in t for k in ["smithery", "onboarding", "quickstart", "quick_start", "getting_started"]):
         return handle_smithery_onboarding_brief
     if any(k in t for k in ["overnight", "asia_session", "asia", "night_brief", "overnight_brief"]):
@@ -1531,8 +1648,12 @@ def get_handler(report_type: str):
         return handle_carry_unwind_risk_monitor
     if any(k in t for k in ["nyse_macromind", "macromind", "macro_mind"]):
         return handle_nyse_macromind_brief
-    if any(k in t for k in ["silence_signal", "congressional_silence", "silence signal", "congress_silence", "execution_risk"]):
-        return handle_congressional_silence_signal
+    if any(k in t for k in ["macro_event_edge", "macro_event", "event_edge", "cpi_edge", "nfp_edge", "pre_event"]):
+        from octo_acp_ben_reports import handle_macro_event_edge_report
+        return handle_macro_event_edge_report
+    if any(k in t for k in ["btc_regime_pulse", "regime_pulse", "regime_read", "sunday_brief", "monday_brief", "monday_asia"]):
+        from octo_acp_ben_reports import handle_btc_regime_pulse
+        return handle_btc_regime_pulse
     if any(k in t for k in ["nyse_stockoracle", "stockoracle", "stock_oracle"]):
         return handle_nyse_stockoracle_brief
     if any(k in t for k in ["tokenized_stock", "stock_signal", "equity_signal", "base_equity", "onchain_stock"]):
@@ -1541,8 +1662,8 @@ def get_handler(report_type: str):
         return handle_nyse_tech_brief
     if any(k in t for k in ["order_chainflow", "chainflow", "chain_flow"]):
         return handle_order_chainflow_brief
-    if any(k in t for k in ["x_sentiment_brief", "sentiment_agent_brief"]):
-        return handle_x_sentiment_brief
+    if any(k in t for k in ["perp_funding", "funding_rate_signal", "funding_regime", "perp_rate", "perpetual_funding"]):
+        return handle_perp_funding_rate_signal
     return handle_crypto_market_signal
 
 

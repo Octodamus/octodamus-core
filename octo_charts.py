@@ -141,9 +141,9 @@ def funding_rate_chart(symbol="BTC"):
     coin = next((c for c in fr_data if c.get("symbol") == symbol), fr_data[0])
     ml = coin.get("stablecoin_margin_list", [])
     if not ml: return ""
-    mkts = coins_markets(); price = 0
-    if isinstance(mkts, list):
-        m = next((c for c in mkts if c.get("symbol") == symbol), {}); price = m.get("current_price", 0)
+    # coins-markets needs a Coinglass tier above Hobbyist -- use the price client instead
+    from financial_data_client import get_current_crypto_price
+    price = get_current_crypto_price(symbol) or 0
     valid = [(ex.get("exchange","?"), float(ex.get("funding_rate",0) or 0)*100) for ex in ml if ex.get("funding_rate",0)]
     valid.sort(key=lambda x: x[1]); names=[v[0] for v in valid]; rates=[v[1] for v in valid]
 
@@ -367,10 +367,23 @@ def market_dashboard(symbol="BTC"):
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.subplots_adjust(top=0.87, hspace=0.38, wspace=0.28, bottom=0.06)
 
-    mkts = coins_markets()
-    coin = next((c for c in mkts if c.get("symbol")==symbol),{}) if isinstance(mkts,list) else {}
-    price=coin.get("current_price",0); oi_usd=coin.get("open_interest_usd",0) or 0
-    fr_avg=coin.get("avg_funding_rate_by_oi",0) or 0
+    # coins-markets requires a Coinglass tier above Hobbyist -- derive the header
+    # summary from Hobbyist-available endpoints instead (price client + per-exchange OI/funding).
+    from financial_data_client import get_current_crypto_price
+    price = get_current_crypto_price(symbol) or 0
+    _oi = open_interest_exchange(symbol)
+    oi_usd = 0
+    if isinstance(_oi, list) and _oi:
+        _all = next((e for e in _oi if e.get("exchange") == "All"), None)
+        oi_usd = float((_all or {}).get("open_interest_usd", 0) or 0) or \
+                 sum(float(e.get("open_interest_usd", 0) or 0) for e in _oi if e.get("exchange") != "All")
+    _fr = funding_rate_exchange(symbol)
+    fr_avg = 0
+    if isinstance(_fr, list) and _fr:
+        _c = next((c for c in _fr if c.get("symbol") == symbol), _fr[0])
+        _rates = [float(x.get("funding_rate", 0) or 0) for x in _c.get("stablecoin_margin_list", [])
+                  if x.get("funding_rate") is not None]
+        fr_avg = sum(_rates) / len(_rates) if _rates else 0
 
     # ── [0,0] Funding Rates ───────────────────────────────────────────────
     ax = axes[0][0]
