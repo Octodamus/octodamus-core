@@ -1190,13 +1190,8 @@ def _primary_topic(text: str):
     return None
 
 
-def _recent_topics(n: int = 6) -> set:
-    """Set of (asset, metric) subjects covered in the last n posts."""
-    return {tp for tp in (_primary_topic(t) for t in _recent_texts(n)) if tp}
-
-
-def _recent_texts(n: int = 20) -> list:
-    """Last N posted texts (newest first, truncated), merged from both logs."""
+def _recent_text_pairs(limit: int = 40) -> list:
+    """(timestamp_str, text) for recent posts, newest first, merged + deduped from both logs."""
     texts_with_ts = []
     try:
         import json as _j
@@ -1223,7 +1218,35 @@ def _recent_texts(n: int = 20) -> list:
         pass
 
     texts_with_ts.sort(key=lambda x: x[0], reverse=True)
-    return [t[:200] for _, t in texts_with_ts[:n]]
+    return [(ts, t[:200]) for ts, t in texts_with_ts[:limit]]
+
+
+def _recent_texts(n: int = 20) -> list:
+    """Last N posted texts (newest first, truncated), merged from both logs."""
+    return [t for _, t in _recent_text_pairs(n)]
+
+
+def _recent_topics(n: int = 8, hours: float = 24.0) -> set:
+    """(asset, metric) subjects covered recently -- the UNION of the last n posts AND
+    everything within the last `hours`. So the same subject won't recur within ~a day
+    even across many posts (tighter than a fixed post count)."""
+    from datetime import datetime, timezone, timedelta
+    pairs = _recent_text_pairs(60)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    picked = []
+    for i, (ts, text) in enumerate(pairs):
+        if i < n:
+            picked.append(text)
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt >= cutoff:
+                picked.append(text)
+        except Exception:
+            pass
+    return {tp for tp in (_primary_topic(t) for t in picked) if tp}
 
 
 def _structural_overuse(window: list, threshold: int = 3, structural_only: bool = False) -> list:
@@ -1252,7 +1275,7 @@ def _enforce_originality(post: str, regen_fn, max_retries: int = 1) -> str:
     if not post:
         return post
     overused = _structural_overuse(_recent_texts(8), structural_only=True)
-    recent_topics = _recent_topics(6)
+    recent_topics = _recent_topics()
     for _ in range(max_retries):
         tripped = _post_trips_skeletons(post, overused)
         topic = _primary_topic(post)
@@ -1372,7 +1395,8 @@ def _get_recent_posts(n: int = 20) -> str:
     if data_first >= 3:
         _struct_lines.append("Recent posts lead with a ticker/number -- open this one differently: implication, irony, a verb, or a proper noun first.")
     # Topic-freshness advisory -- steer the first draft off recently-covered subjects
-    _covered = {tp for tp in (_primary_topic(t) for t in recent[:6]) if tp}
+    # (last n posts unioned with the last 24h, so nothing repeats within ~a day)
+    _covered = _recent_topics()
     if _covered:
         _struct_lines.append(
             "ALREADY COVERED (rotate to a different asset OR metric -- do NOT re-report these): "
