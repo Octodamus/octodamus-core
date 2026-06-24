@@ -314,32 +314,41 @@ except Exception:
     _CLAW_ACTIVE = False
 
 def _claw_generate(system: str, user: str, max_tokens: int = 200,
-                   model: str = "meta-llama/llama-4-maverick:free") -> str:
+                   model: str = "meta-llama/llama-4-maverick:free",
+                   enforce_originality: bool = False) -> str:
     recent_ctx = _get_recent_posts(12)
     if recent_ctx:
         user = f"{recent_ctx}\n---\n{user}"
-    if _CLAW_ACTIVE and _claw:
-        try:
-            r = _claw.chat.completions.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user},
-                ],
-                timeout=30,
-            )
-            return r.choices[0].message.content.strip()
-        except Exception:
-            pass
-    # Fallback to Haiku
-    r = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return r.content[0].text.strip()
+
+    def _call(addendum: str = "") -> str:
+        _u = user + addendum
+        if _CLAW_ACTIVE and _claw:
+            try:
+                r = _claw.chat.completions.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": _u},
+                    ],
+                    timeout=30,
+                )
+                return r.choices[0].message.content.strip()
+            except Exception:
+                pass
+        # Fallback to Haiku
+        r = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": _u}],
+        )
+        return r.content[0].text.strip()
+
+    out = _call()
+    if enforce_originality:
+        out = _structural_reroll(out, _call)
+    return out
 
 def _is_post_complete(text: str) -> bool:
     """Return False if the post looks truncated mid-sentence."""
@@ -357,19 +366,26 @@ def _is_post_complete(text: str) -> bool:
     return True
 
 
-def _haiku_generate(system: str, user: str, max_tokens: int = 200) -> str:
+def _haiku_generate(system: str, user: str, max_tokens: int = 200, enforce_originality: bool = False) -> str:
     recent_ctx = _get_recent_posts(12)
     if recent_ctx:
         user = f"{recent_ctx}\n---\n{user}"
-    r = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    if r.stop_reason == "max_tokens":
-        print(f"[Runner] WARNING: _haiku_generate hit max_tokens ({max_tokens}) -- post may be truncated")
-    return r.content[0].text.strip()
+
+    def _call(addendum: str = "") -> str:
+        r = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user + addendum}],
+        )
+        if r.stop_reason == "max_tokens":
+            print(f"[Runner] WARNING: _haiku_generate hit max_tokens ({max_tokens}) -- post may be truncated")
+        return r.content[0].text.strip()
+
+    out = _call()
+    if enforce_originality:
+        out = _structural_reroll(out, _call)
+    return out
 
 try:
     from octo_tv_brief import get_tv_brief
@@ -1288,6 +1304,33 @@ def _reroll_instruction(tripped: list, recent_block: str, topic_clash=None) -> s
         + "Under 240 chars. Output only the rewritten post."
     )
     return "\n".join(parts)
+
+
+def _structural_reroll(post: str, call_fn, max_retries: int = 1) -> str:
+    """Re-roll a draft once if it reuses a currently over-used *structural* skeleton.
+    call_fn(addendum) -> str re-invokes the same LLM with the escalation appended to its
+    user prompt. Structural-only (NO topic gate), so it's safe for topic-locked modes
+    (congress always = Congress, defi always = yields) -- it varies rhetoric, not subject."""
+    if not post:
+        return post
+    overused = _structural_overuse(_recent_texts(8), structural_only=True)
+    if not overused:
+        return post
+    for _ in range(max_retries):
+        tripped = _post_trips_skeletons(post, overused)
+        if not tripped:
+            return post
+        print(f"[Runner] Originality re-roll -- draft trips {tripped}")
+        try:
+            new = call_fn("\n\n" + _reroll_instruction(tripped, ""))
+        except Exception as _e:
+            print(f"[Runner] Re-roll failed ({_e}) -- keeping draft.")
+            return post
+        if new and len(new.strip()) > 20:
+            post = new.strip()
+        else:
+            break
+    return post
 
 
 def _get_recent_posts(n: int = 20) -> str:
@@ -2694,6 +2737,7 @@ def mode_defi_signal() -> None:
                 "Do NOT sound promotional. The number earns the mention."
             ),
             max_tokens=220,
+            enforce_originality=True,
         )
         queue_post(post, post_type="defi_signal", priority=3)
         process_queue(max_posts=1, force=True)
@@ -2748,13 +2792,15 @@ def mode_congress() -> None:
             "They trade on what they know is coming. Follow the money, not the narrative.\n"
             "REQUIRED: Use the politician's FULL name (first + last) and include their party: (D) or (R). "
             "Example: 'Sara Jacobs (D) just dumped $1M of $QCOM.' NOT just 'Jacobs'.\n"
-            "ADDICTION LOOP for this post:\n"
-            "- BIG QUESTION: open with the trade itself as the signal nobody has connected yet -- the SIZE, the TIMING, the specific ticker. Load the reader's prediction ('why that stock? why now?').\n"
-            "- HEAD FAKE: the reveal is what the politician likely KNOWS that the market doesn't. Break the obvious read ('routine diversification') with the uncomfortable implication.\n"
-            "- The politician IS the character -- the reader's self-interest IS the stake.\n"
-            "- End on an open implication -- what does the market NOT know yet that explains this trade? Never close the loop cleanly.\n"
+            "ENGAGEMENT GOALS (do NOT force the same template every time -- vary the shape; "
+            "check the RECENT POSTS list and avoid any framing you've already used):\n"
+            "- Lead with the most arresting concrete detail -- the SIZE, the TIMING, or the specific ticker.\n"
+            "- Surface the non-obvious read: what the trade implies that the market hasn't priced.\n"
+            "- WARNING: 'they front-run / they trade on what they know' is now an over-used framing. "
+            "It is ONE option, not the default opener. Find a fresh angle on this specific trade.\n"
+            "- Vary the close: a sharp verdict, a specific date to watch, or an open question all work.\n"
             "No price targets. No hashtags."
-        ), max_tokens=200)
+        ), max_tokens=200, enforce_originality=True)
 
         # Validate: any $TICKER in post must be in actual congress data
         mentioned = {m.upper() for m in _re.findall(r'\$([A-Z]{1,5})', post)}
@@ -2849,8 +2895,9 @@ def mode_format() -> None:
         from octo_format_engine import run_format_post, format_engine_status
         print(format_engine_status())
 
-        # Build extra context from call record
-        call_ctx = build_call_context() if _CALLS_ACTIVE else ""
+        # Build extra context from call record + recent-posts awareness so the format
+        # engine avoids repeating recent subjects/openers (it rotates structure already).
+        call_ctx = (build_call_context() if _CALLS_ACTIVE else "") + _get_recent_posts(12)
         result   = run_format_post(context=call_ctx)
 
         if not result:
