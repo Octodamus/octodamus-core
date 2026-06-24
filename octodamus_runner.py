@@ -2729,16 +2729,26 @@ def mode_defi_signal() -> None:
             (
                 f"{macro_ctx}\n\n"
                 f"{defi_ctx}\n\n"
-                "Write one sharp oracle post about where capital is actually working right now on Base. "
-                "Lead with a specific number (APY or yield). Connect it to the macro signal. "
-                "The oracle sees the signal AND the opportunity -- that is what makes this post valuable. "
-                "One protocol mention with their @handle. Under 280 chars. No hashtags. "
-                "Do NOT write 'Oracle call:' -- this is market intelligence, not a directional bet. "
-                "Do NOT sound promotional. The number earns the mention."
+                "Write ONE market-intelligence post about what on-chain yields are SIGNALING -- not a product pitch.\n"
+                "Lead with the specific yield number, then read what it MEANS: what the level reveals about capital "
+                "rotation, risk appetite, or the macro regime. The insight is the rotation, not the rate.\n"
+                "HARD RULES -- this is intelligence, NOT promotion:\n"
+                "- NO protocol @handles, tagging, or shilling. You may name a venue plainly for context "
+                "(e.g. 'on Aave') but never promote it. Do not tell the reader where to put money.\n"
+                "- BANNED promotional language: 'opportunity', 'capital is working', 'safety lives', 'don't miss', "
+                "'capital preservation with a coupon', and any marketing-copy aphorism close.\n"
+                "- Frame it as what the yield is telling you about the market, not as a yield to go chase.\n"
+                "- Under 280 chars. No hashtags. Do NOT write 'Oracle call:'.\n"
+                "Right altitude: 'Stablecoin yields on Base pushed past 10% as equity vol picked up. When cash pays "
+                "double digits in crypto terms, the rotation out of risk isn't fear -- it's math.'\n"
+                "Output ONLY the final post text -- no preamble, no reasoning, no lists, no meta-commentary."
             ),
             max_tokens=220,
             enforce_originality=True,
         )
+        # Defensive de-shill: strip the '@' from any handle so no protocol gets tagged/promoted
+        import re as _re
+        post = _re.sub(r'@([A-Za-z]\w+)', r'\1', post).strip()
         queue_post(post, post_type="defi_signal", priority=3)
         process_queue(max_posts=1, force=True)
         print(f"[Runner] DeFi signal posted:\n  {post}")
