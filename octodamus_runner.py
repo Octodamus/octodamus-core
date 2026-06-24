@@ -3111,11 +3111,11 @@ def mode_thread(topic: str = "") -> None:
 
         live_data_block = "\n".join(p for p in context_parts if p)
 
-        # Auto-select topic if none given
+        # Auto-select topic if none given. NOTE: this used to be topics[day % len],
+        # which locked every Wednesday (and Monday) to the SAME subject forever --
+        # that's why the threads kept repeating. Now: pick at random, excluding the
+        # last several used, tracked in a small history file.
         if not topic:
-            # Pick based on day of week / market conditions
-            from datetime import datetime
-            day = datetime.now().weekday()
             topics = [
                 "why derivatives data leads price action by 24-48 hours",
                 "what funding rates actually tell you vs what people think they tell you",
@@ -3124,15 +3124,38 @@ def mode_thread(topic: str = "") -> None:
                 "why the Fear & Greed index is most useful at its extremes",
                 "what on-chain stablecoin flows reveal about institutional positioning",
                 "how to read open interest divergence from price",
+                "what the spot-futures basis signals about institutional demand",
+                "how options dealer gamma positioning pins or accelerates price",
+                "reading the CME vs offshore exchange divergence for institutional intent",
+                "what ETF flows do to spot price and on what lag",
+                "how to separate a real breakout from a liquidity grab",
+                "what long/short ratios reveal at crowded extremes",
+                "why perp funding and spot premium disagree, and which one to trust",
             ]
-            topic = topics[day % len(topics)]
+            _hist_f = Path(__file__).parent / "data" / "thread_topic_history.json"
+            try:
+                _hist = json.loads(_hist_f.read_text(encoding="utf-8")) if _hist_f.exists() else []
+            except Exception:
+                _hist = []
+            _avail = [t for t in topics if t not in set(_hist[-6:])] or topics
+            topic = random.choice(_avail)
+            try:
+                _hist.append(topic)
+                _hist_f.write_text(json.dumps(_hist[-30:]), encoding="utf-8")
+            except Exception:
+                pass
 
         print(f"[Runner] Thread topic: {topic}")
 
         # System prompt and user prompt must be separate — passing combined as user
         # causes Haiku to respond with an identity acknowledgment instead of the thread.
         thread_system = build_x_system_prompt(live_data_block)
-        thread_user = build_thread_user_prompt(topic) + _core_memory_section()
+        thread_user = (
+            build_thread_user_prompt(topic) + _core_memory_section() + _get_recent_posts(12)
+            + "\n\nTHREAD DISCIPLINE: each tweet must ADVANCE the argument with a NEW fact, "
+              "mechanism, or example -- do NOT restate the same headline number across multiple "
+              "tweets. No tweet may be paraphrasable as a prior tweet or as any RECENT POST listed above."
+        )
 
         raw = _haiku_generate(
             thread_system, thread_user, max_tokens=900
