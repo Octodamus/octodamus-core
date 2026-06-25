@@ -236,6 +236,17 @@ except ImportError:
         return ""
 
 try:
+    from octo_coinglass import get_stock_perp_digest as _stock_perp_digest_fn
+    def _get_stock_perp_digest():
+        try:
+            return _stock_perp_digest_fn()
+        except Exception:
+            return ""
+except ImportError:
+    def _get_stock_perp_digest():
+        return ""
+
+try:
     from octo_calls import build_call_context, build_open_calls_awareness, parse_call_from_post, autoresolve, get_stats
     _SCORECARD_ACTIVE = True
 except ImportError:
@@ -1869,6 +1880,7 @@ def mode_daily() -> None:
                     f"{recent_posts_section}"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
                     f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
+                    f"\n\n{_get_stock_perp_digest()}"
                     f"\n\nOptions Intelligence:\n{_get_deribit_context('BTC')}"
                     f"\n\nCME Institutional Positioning (COT):\n{_get_cot_context('BTC')}"
                     f"{macro_section}"
@@ -1891,6 +1903,7 @@ def mode_daily() -> None:
                     "One post, under 240 chars. Do NOT pad to fill the limit — stop when the thought is complete.\n"
                     "REQUIRED: Name the specific asset ($BTC, $ETH, $SOL, $NVDA, $HYPE, etc.) when citing any price, percentage, or market data — never let a number float without a ticker.\n"
                     "REQUIRED: When citing a ratio like '73% long' or '68% longs', always name the source — e.g. '73% of Binance perp traders long' not just '73%'. Readers need context or the number is meaningless.\n"
+                    "REQUIRED: For ANY stock-perp funding, open interest, or long/short claim (NVDA, TSLA, AAPL, MSFT, etc.), use ONLY the STOCK-PERP SIGNALS (Coinglass, verified) data above. If a stock is not listed there, do NOT cite its perp funding/OI — you have no source for it. Never invent stock-perp numbers.\n"
                     "NO RELATIVE DATE REFERENCES: never write 'today', 'tomorrow', 'this week', 'today's expiry' — use the actual date (e.g. 'Friday's $81K max pain') or drop the timeframe entirely.\n"
                     "PRIME DIRECTIVE: Every post must give the reader a clue about what the market or world is going to do next. "
                     "Not what already happened. Not what everyone is already saying. What is COMING.\n"

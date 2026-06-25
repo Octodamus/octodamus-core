@@ -462,6 +462,113 @@ def build_oracle_context(symbol: str = "BTC") -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# STOCK-EQUITY PERPS — verified funding/OI/positioning for tokenized stock perps
+# Coinglass carries perp derivatives for these equity tickers. Use this so the
+# oracle never cites stock-perp funding/OI it can't source (see the bad NVDA post).
+# ══════════════════════════════════════════════════════════════════════════════
+
+STOCK_PERP_TICKERS = ("NVDA", "TSLA", "AAPL", "MSFT", "SPY", "COIN", "MSTR")
+
+
+def get_stock_perp_signal(ticker: str) -> dict:
+    """Verified stock-perp funding/OI/positioning from Coinglass. Returns {} if no data.
+    Machine-usable dict so callers can VERIFY numbers before citing them."""
+    ticker = ticker.upper()
+    out = {"ticker": ticker}
+
+    fr = funding_rate_exchange(ticker)
+    if isinstance(fr, list) and fr:
+        c = next((x for x in fr if x.get("symbol") == ticker), fr[0])
+        ml = c.get("stablecoin_margin_list", []) if isinstance(c, dict) else []
+        tier1 = {e.get("exchange"): round(float(e.get("funding_rate", 0) or 0) * 100, 3)
+                 for e in ml if e.get("exchange") in ("Binance", "OKX", "Bybit")
+                 and e.get("funding_rate") is not None}
+        if tier1:
+            out["funding_tier1_pct"] = tier1
+            out["funding_tier1_avg_pct"] = round(sum(tier1.values()) / len(tier1), 3)
+
+    oi = open_interest_exchange(ticker)
+    if isinstance(oi, list) and oi:
+        _all = next((e for e in oi if e.get("exchange") == "All"), None)
+        total = float((_all or {}).get("open_interest_usd", 0) or 0) or \
+                sum(float(e.get("open_interest_usd", 0) or 0) for e in oi if e.get("exchange") != "All")
+        if total:
+            out["oi_usd"] = total
+            venues = sorted([e for e in oi if e.get("exchange") != "All"],
+                            key=lambda e: float(e.get("open_interest_usd", 0) or 0), reverse=True)
+            if venues:
+                top = venues[0]
+                out["oi_top_venue"] = top.get("exchange")
+                out["oi_top_venue_pct"] = round(float(top.get("open_interest_usd", 0) or 0) / total * 100, 1)
+            out["oi_chg_24h_pct"] = round(float((_all or {}).get("open_interest_change_percent_24h", 0) or 0), 1)
+
+    ls = long_short_ratio(ticker, "4h")
+    if isinstance(ls, list) and ls:
+        latest = ls[-1]
+        lp = latest.get("global_account_long_percent")
+        if lp is not None:
+            out["long_pct"] = round(float(lp), 1)
+            out["short_pct"] = round(float(latest.get("global_account_short_percent", 100 - float(lp))), 1)
+
+    return out if len(out) > 1 else {}
+
+
+def get_stock_perp_context(ticker: str) -> str:
+    """Formatted verified stock-perp block for oracle prompts. '' if no data."""
+    s = get_stock_perp_signal(ticker)
+    if not s:
+        return ""
+    t = s["ticker"]
+    lines = [f"=== {t} PERP DERIVATIVES (Coinglass, verified) ==="]
+    if "funding_tier1_pct" in s:
+        fr = ", ".join(f"{k} {v:+.2f}%" for k, v in s["funding_tier1_pct"].items())
+        lines.append(f"Funding (tier-1, current): {fr} | avg {s['funding_tier1_avg_pct']:+.2f}%")
+    if "oi_usd" in s:
+        oi_str = f"${s['oi_usd']/1e9:.2f}B" if s["oi_usd"] >= 1e9 else f"${s['oi_usd']/1e6:.0f}M"
+        line = f"Open interest: {oi_str} total"
+        if s.get("oi_top_venue"):
+            line += f" ({s['oi_top_venue']} {s['oi_top_venue_pct']:.0f}%)"
+        if "oi_chg_24h_pct" in s:
+            line += f", 24h {s['oi_chg_24h_pct']:+.1f}%"
+        lines.append(line)
+    if "long_pct" in s:
+        lines.append(f"Positioning: {s['long_pct']:.1f}% long / {s['short_pct']:.1f}% short")
+    return "\n".join(lines)
+
+
+def get_stock_perp_digest(max_tickers: int = 3) -> str:
+    """Scan the stock-perp tickers and surface the most NOTABLE (crowded positioning
+    or extreme funding), so the daily read can cite real stock-perp signals. Cached 30m."""
+    cache_key = "stock_perp_digest"
+    cached = _cache.get(cache_key)
+    if cached and (time.time() - cached["ts"]) < 1800:
+        return cached["data"]
+
+    scored = []
+    for tk in STOCK_PERP_TICKERS:
+        try:
+            s = get_stock_perp_signal(tk)
+        except Exception:
+            s = {}
+        if not s:
+            continue
+        crowd = abs(s.get("long_pct", 50) - 50)                 # 0..50, higher = more one-sided
+        fund = abs(s.get("funding_tier1_avg_pct", 0))           # funding extremity
+        score = crowd + fund * 2
+        scored.append((score, tk, s))
+    scored.sort(reverse=True)
+
+    notable = [s for sc, tk, s in scored if sc >= 12][:max_tickers]   # only genuinely notable
+    if not notable:
+        out = ""
+    else:
+        blocks = [get_stock_perp_context(s["ticker"]) for s in notable]
+        out = "=== STOCK-PERP SIGNALS (Coinglass, verified) ===\n" + "\n\n".join(b for b in blocks if b)
+    _cache[cache_key] = {"ts": time.time(), "data": out}
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ALERT ENGINE — Spike Detection for Event-Driven Posts
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -614,6 +721,15 @@ if __name__ == "__main__":
     import sys
 
     logging.basicConfig(level=logging.INFO)
+
+    # Verify a stock-equity perp on demand: python octo_coinglass.py stock NVDA
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "stock":
+        tk = sys.argv[2].upper() if len(sys.argv) > 2 else None
+        if tk:
+            print("\n" + (get_stock_perp_context(tk) or f"No Coinglass perp data for {tk}."))
+        else:
+            print("\n" + (get_stock_perp_digest(max_tickers=7) or "Nothing notable across stock perps."))
+        sys.exit(0)
 
     symbol = sys.argv[1] if len(sys.argv) > 1 else "BTC"
 
