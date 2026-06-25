@@ -3408,39 +3408,66 @@ if __name__ == "__main__":
     elif args.mode == "spacex":
         from octo_spacex import check_spacex_ipo
         result = check_spacex_ipo(silent=False)
-        if result.get("signal"):
-            print(f"[SpaceX] signal: {result['headline'][:100]}")
-            print(f"[SpaceX] High-signal: {result['high_signal']}  topic: {result.get('topic','ipo')}")
-            if result.get("high_signal"):
-                headline = result["headline"]
-                topic = result.get("topic", "ipo")
+        if result.get("signal") and result.get("high_signal"):
+            headline = result["headline"]
+            topic = result.get("topic", "ipo")
+            print(f"[SpaceX] high-signal headline: {headline[:100]} (topic: {topic})")
+
+            # Anti-repeat: the SpaceX IPO is ONE slow-moving story, and check_spacex_ipo
+            # returns a signal on any matching headline -- so it kept re-posting the same
+            # lockup/Burry/insider-exit thesis. Only post if we haven't covered SpaceX in
+            # the last 7 days, OR the headline carries a genuinely new development.
+            from datetime import datetime, timezone, timedelta
+            _cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            _recent_spacex = []
+            for _ts, _t in _recent_text_pairs(150):
+                if any(k in _t.lower() for k in ("spcx", "spacex", "starlink")):
+                    try:
+                        _dt = datetime.fromisoformat(str(_ts).replace("Z", "+00:00"))
+                        if _dt.tzinfo is None:
+                            _dt = _dt.replace(tzinfo=timezone.utc)
+                        if _dt >= _cutoff:
+                            _recent_spacex.append(_t)
+                    except Exception:
+                        _recent_spacex.append(_t)
+            _NEW_EVENT_KW = ("prices", "priced", "begins trading", "first day", "lockup expir",
+                             "opens at", "debut", "raised $", "ipo date", "set price", "delays",
+                             "postpone", "withdraw", "amended", "shares sold", "valuation cut", "pop")
+            _is_new_event = any(kw in headline.lower() for kw in _NEW_EVENT_KW)
+
+            if _recent_spacex and not _is_new_event:
+                print(f"[SpaceX] Skipping -- covered SpaceX within 7 days and no new development in headline.")
+            else:
+                _seen_block = ""
+                if _recent_spacex:
+                    _seen_block = ("SpaceX posts you've ALREADY made -- do NOT repeat their thesis or angle:\n"
+                                   + "\n".join(f"- {t}" for t in _recent_spacex[:4]) + "\n\n")
                 if topic == "datacenter":
                     prompt = (
-                        f"Breaking: {headline}\n\n"
+                        f"Breaking: {headline}\n\n{_seen_block}"
                         "Write ONE post under 280 chars for @octodamusai. "
                         "Frame this as an oracle signal: space-based AI compute is the next frontier. "
-                        "Contrarian voice. Implication: whoever owns the orbital compute layer owns the AI stack. "
+                        "Contrarian voice. Lead with what is NEW in THIS headline, not a generic thesis. "
                         "No hashtags. No price targets. End on an open question or unsettling implication."
                     )
                 else:
                     prompt = (
-                        f"Breaking: {headline}\n\n"
-                        "Write ONE post under 280 chars for @octodamusai. "
-                        "Use the SPACEX IPO ORACLE FRAMING from your context. "
-                        "The lockup expiry (Sep-Dec 2026) is the real event, not the IPO date. "
-                        "Meta 2012 parallel if relevant. Burry puts as the tell. "
-                        "Contrarian. No hashtags. No price targets. Plant the seed — don't close the loop."
+                        f"Breaking: {headline}\n\n{_seen_block}"
+                        "Write ONE post under 280 chars for @octodamusai about what is NEW in THIS headline. "
+                        "If the only story is the lockup/Burry/insider-exit thesis you've already posted, either "
+                        "find a genuinely DIFFERENT angle (a specific new number, a second-order effect, a fresh "
+                        "comparison) or do NOT restate that thesis. Contrarian. No hashtags. No price targets."
                     )
                 post = _haiku_generate(OCTO_SYSTEM, prompt, max_tokens=200)
                 from octo_x_poster import _post_single, _log_post
-                result = _post_single(post)
-                if result.get("id"):
-                    _log_post(post, {"post_type": "spacex_signal", "tweet_id": result["id"]})
+                _pr = _post_single(post)
+                if _pr.get("id"):
+                    _log_post(post, {"post_type": "spacex_signal", "tweet_id": _pr["id"]})
                     print(f"[SpaceX] Posted to X:\n  {post}")
                 else:
-                    print(f"[SpaceX] Post failed: {result}")
+                    print(f"[SpaceX] Post failed: {_pr}")
         else:
-            print("[SpaceX] No signals found.")
+            print("[SpaceX] No high-signal SpaceX news.")
     elif args.mode == "defi_signal":
         mode_defi_signal()
     elif args.mode == "avantis":
