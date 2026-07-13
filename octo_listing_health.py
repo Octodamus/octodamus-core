@@ -73,6 +73,17 @@ LISTINGS = [
     },
 ]
 
+# External discovery directories — one-time manual submissions, not HTTP-verifiable.
+# These stay flagged as PENDING in every report until MANUAL_LISTINGS_CONFIRMED lists them.
+# Set a name here once you've verified Octodamus actually appears in the directory.
+MANUAL_LISTINGS_CONFIRMED = set()  # e.g. {"x402scan.com", "awesome-x402"}
+
+MANUAL_LISTINGS = [
+    {"name": "x402scan.com",   "url": "https://www.x402scan.com",                          "action": "Add/refresh listing; confirm hero URL + OpenAPI + payment path"},
+    {"name": "awesome-x402",   "url": "https://github.com/coinbase/x402/blob/main/README.md", "action": "PR one line: name + agent card + Bazaar URL"},
+    {"name": "agentic.market", "url": "https://agentic.market",                            "action": "Confirm /v2/x402/agent-signal appears in discovery JSON after a real CDP settle"},
+]
+
 
 # ── Checks ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +117,26 @@ def check_orbis() -> dict:
         }
     except Exception as e:
         return {"ok": False, "status": 0, "latency_ms": 0, "error": str(e)[:80]}
+
+
+def check_build() -> dict:
+    """Compare the running server's build commit against the latest local commit.
+    Flags STALE when a git pull landed but the process was never restarted."""
+    try:
+        import subprocess
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(Path(__file__).parent),
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
+        ).stdout.strip()
+        r = httpx.get("https://api.octodamus.com/health/version", timeout=10)
+        running    = r.json().get("commit", "unknown") if r.status_code == 200 else "unreachable"
+        started_at = r.json().get("started_at", "") if r.status_code == 200 else ""
+        stale      = bool(local) and running not in ("unknown", "unreachable") and running != local
+        return {"ok": r.status_code == 200, "local": local, "running": running,
+                "started_at": started_at, "stale": stale}
+    except Exception as e:
+        return {"ok": False, "local": "", "running": "error", "started_at": "", "stale": False, "error": str(e)[:80]}
 
 
 def check_wallet() -> dict:
@@ -147,7 +178,7 @@ def status_icon(ok: bool) -> str:
     return "OK" if ok else "DOWN"
 
 
-def build_report(results: list, orbis: dict, wallet: dict, prev_state: dict) -> str:
+def build_report(results: list, orbis: dict, wallet: dict, prev_state: dict, build: dict = None) -> str:
     now      = datetime.now(timezone.utc)
     ts       = now.strftime("%A, %B %d %Y %I:%M %p UTC")
     prev_bal = prev_state.get("usdc", wallet["usdc"])
@@ -179,10 +210,31 @@ def build_report(results: list, orbis: dict, wallet: dict, prev_state: dict) -> 
         err   = f"  ERROR: {r['error']}" if r.get("error") else ""
         lines.append(f"  [{icon}] {r['name']:<35} HTTP {code}  {lat}{err}")
 
+    if build is not None:
+        b_run = (build.get("running") or "")[:8] or "?"
+        b_loc = (build.get("local")   or "")[:8] or "?"
+        b_icon = "STALE -- restart API server" if build.get("stale") else status_icon(build.get("ok", False))
+        lines += [
+            f"",
+            f"RUNNING BUILD",
+            f"  [{b_icon}]  serving {b_run}  |  latest commit {b_loc}",
+            f"  Started: {build.get('started_at', '?')}",
+        ]
+
+    pending = [m for m in MANUAL_LISTINGS if m["name"] not in MANUAL_LISTINGS_CONFIRMED]
+    lines += ["", "DISCOVERY DIRECTORIES (manual submissions)"]
+    for m in MANUAL_LISTINGS:
+        if m["name"] in MANUAL_LISTINGS_CONFIRMED:
+            lines.append(f"  [LISTED]  {m['name']:<16} {m['url']}")
+        else:
+            lines.append(f"  [PENDING] {m['name']:<16} {m['action']}")
+            lines.append(f"            -> {m['url']}")
+
     all_ok = all(r["ok"] for r in results) and orbis.get("ok", False) and wallet["ok"]
+    pending_note = f"  |  {len(pending)} discovery listing(s) still PENDING" if pending else ""
     lines += [
         f"",
-        f"OVERALL: {'ALL SYSTEMS GO' if all_ok else 'ISSUES DETECTED — review above'}",
+        f"OVERALL: {'ALL SYSTEMS GO' if all_ok else 'ISSUES DETECTED — review above'}{pending_note}",
         f"",
         f"LINKS",
         f"  Orbis:    https://orbisapi.com/apis/{ORBIS_ID}",
@@ -217,11 +269,13 @@ def run():
 
     orbis  = check_orbis()
     wallet = check_wallet()
+    build  = check_build()
     print(f"  Orbis: {'OK' if orbis['ok'] else 'FAIL'} | calls={orbis.get('total_calls',0)} subs={orbis.get('subscribers',0)}")
     print(f"  Wallet: ${wallet['usdc']:.4f} USDC")
+    print(f"  Build: running {(build.get('running') or '?')[:8]} | {'STALE' if build.get('stale') else 'current'}")
 
     prev_state = load_state()
-    report     = build_report(results, orbis, wallet, prev_state)
+    report     = build_report(results, orbis, wallet, prev_state, build)
 
     save_state({
         "usdc":      wallet["usdc"],
@@ -231,8 +285,11 @@ def run():
     })
 
     from octo_notify import _send
-    all_ok  = all(r["ok"] for r in results) and orbis.get("ok", False)
-    subject = f"Octodamus Listing Health — {'ALL OK' if all_ok else 'ISSUES'} | ${wallet['usdc']:.2f} USDC"
+    all_ok   = all(r["ok"] for r in results) and orbis.get("ok", False)
+    pending   = [m for m in MANUAL_LISTINGS if m["name"] not in MANUAL_LISTINGS_CONFIRMED]
+    pend_tag  = f" | {len(pending)} listing(s) PENDING" if pending else ""
+    stale_tag = " | STALE BUILD" if build.get("stale") else ""
+    subject   = f"Octodamus Listing Health — {'ALL OK' if all_ok else 'ISSUES'} | ${wallet['usdc']:.2f} USDC{stale_tag}{pend_tag}"
     _send(subject, report)
     print(f"Report sent: {subject}")
 

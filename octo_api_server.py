@@ -31,7 +31,7 @@ import secrets
 import threading
 import time as _time
 from collections import defaultdict, deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -76,6 +76,25 @@ REPORTS_DIR = Path(__file__).parent / "data" / "reports"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Build identity (captured once at process start) ────────────────────────────
+# Lets the listing-health monitor detect a stale process still serving old code
+# after a git pull without a restart. Exposed at GET /health/version.
+_BUILD_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+def _git_head() -> str:
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(Path(__file__).parent),
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
+        )
+        return out.stdout.strip() if out.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+_BUILD_COMMIT = _git_head()
 
 # â"€â"€ API key store â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
@@ -192,6 +211,13 @@ def _check_rate_limit(api_key: str, tier: str) -> dict:
                     "resets_at":    (datetime.utcnow().replace(hour=0, minute=0, second=0) + timedelta(days=1)).isoformat() + "Z",
                     "upgrade":      "https://octodamus.com/api#pricing",
                     "upgrade_usdc": "POST https://api.octodamus.com/v1/agent-checkout?product=premium_annual",
+                    "pay_per_call": {
+                        "endpoint":    "GET https://api.octodamus.com/v2/x402/agent-signal",
+                        "micro_usdc":  0.01,
+                        "trial_usdc":  5.0,
+                        "how":         "No key needed. Sign an EIP-3009 USDC authorization on Base and send it as the PAYMENT-SIGNATURE header. Pay $0.01 per call or $5 for a 7-day trial.",
+                        "discovery":   "https://api.octodamus.com/.well-known/x402.json",
+                    },
                 },
             )
         win = _minute_windows[api_key]
@@ -210,6 +236,12 @@ def _check_rate_limit(api_key: str, tier: str) -> dict:
                     "remaining":   0,
                     "retry_after": 60,
                     "upgrade":     "https://octodamus.com/api#pricing",
+                    "pay_per_call": {
+                        "endpoint":   "GET https://api.octodamus.com/v2/x402/agent-signal",
+                        "micro_usdc": 0.01,
+                        "how":        "No key needed. Sign an EIP-3009 USDC authorization on Base and send it as the PAYMENT-SIGNATURE header. $0.01 per call, no rate limit.",
+                        "discovery":  "https://api.octodamus.com/.well-known/x402.json",
+                    },
                 },
             )
         win.append(now)
@@ -402,13 +434,16 @@ _X402_ROUTES = {
             PaymentOption(scheme="exact", pay_to=_X402_TREASURY, price="$29.00", network=_X402_NETWORK),
             PaymentOption(scheme="exact", pay_to=_X402_TREASURY, price="$5.00",  network=_X402_NETWORK),
         ],
-        description="Octodamus Market Intelligence — oracle signals, Fear & Greed, Polymarket edges, macro. 27 live feeds.",
+        description="Octodamus market signal API — BUY SELL HOLD crypto trading signal for BTC ETH SOL with confidence score, Fear and Greed index, BTC funding rate, open interest, Polymarket expected value (EV) edge, macro regime. Pay per call in Base USDC. 27 live feeds.",
         mime_type="application/json",
         extensions={
             "bazaar": {
                 "discoverable": True,
                 "category":     "trading",
-                "tags":         ["crypto", "signals", "oracle", "polymarket", "bitcoin", "market-intelligence"],
+                "tags":         ["crypto", "market signal", "trading signal", "BUY SELL HOLD", "oracle",
+                                 "BTC funding", "funding rate", "open interest", "fear and greed",
+                                 "polymarket", "expected value", "bitcoin", "ethereum", "solana",
+                                 "Base USDC", "market-intelligence"],
             }
         },
     ),
@@ -417,9 +452,69 @@ _X402_ROUTES = {
 
 _BAZAAR_EXT = {
     "bazaar": {
+        "name":         "Octodamus",
         "discoverable": True,
         "category":     "trading",
-        "tags":         ["crypto", "signals", "oracle", "polymarket", "bitcoin", "market-intelligence"],
+        "tags":         ["crypto", "market signal", "trading signal", "BUY SELL HOLD", "oracle",
+                         "BTC funding", "funding rate", "open interest", "fear and greed",
+                         "polymarket", "expected value", "bitcoin", "ethereum", "solana",
+                         "Base USDC", "market-intelligence"],
+        "info": {
+            "input": {
+                "type":    "http",
+                "method":  "GET",
+                "headers": {"PAYMENT-SIGNATURE": "x402 EIP-3009 USDC payment (Base mainnet)"},
+            },
+            "output": {
+                "type":    "json",
+                "example": {
+                    "action":          "BUY",
+                    "confidence":      0.78,
+                    "signal":          "BULLISH",
+                    "fear_greed":      62,
+                    "btc_trend":       "UP",
+                    "polymarket_edge": {"market": "BTC above 90k", "ev": 0.14},
+                    "reasoning":       "Oracle 9/11 consensus bullish. Fear & Greed neutral-greed zone.",
+                },
+            },
+        },
+        # Envelope schema: properties.input + properties.output
+        # Bazaar quality signals check schema.properties.input and schema.properties.output
+        "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type":    "object",
+            "properties": {
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "method":  {"type": "string", "const": "GET"},
+                        "headers": {
+                            "type": "object",
+                            "properties": {
+                                "PAYMENT-SIGNATURE": {
+                                    "type":        "string",
+                                    "description": "x402 EIP-3009 USDC payment signature (Base mainnet)",
+                                },
+                            },
+                            "required": ["PAYMENT-SIGNATURE"],
+                        },
+                    },
+                    "required": ["method"],
+                },
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "action":          {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                        "confidence":      {"type": "number", "minimum": 0, "maximum": 1},
+                        "signal":          {"type": "string", "enum": ["BULLISH", "BEARISH", "NEUTRAL"]},
+                        "fear_greed":      {"type": "number", "minimum": 0, "maximum": 100},
+                        "btc_trend":       {"type": "string", "enum": ["UP", "DOWN", "SIDEWAYS"]},
+                        "polymarket_edge": {"type": "object"},
+                        "reasoning":       {"type": "string"},
+                    },
+                },
+            },
+        },
     }
 }
 
@@ -490,49 +585,11 @@ def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
         "polymarket_edge": {"market": "BTC above 90k", "ev": 0.14},
         "reasoning":       "Oracle 9/11 consensus bullish. Fear & Greed neutral-greed zone.",
     }
-    bazaar_ext = {
-        "info": {
-            "input": {
-                "method":       "GET",
-                "type":         "http",
-                "discoverable": True,
-            },
-            "output": {
-                "type":    "json",
-                "example": _signal_example,
-            },
-        },
-        # inputSchema = direct JSON Schema for the request input (not wrapped)
-        # x402scan derives the input schema from this field
-        "inputSchema": {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type":    "object",
-            "properties": {
-                "method":      {"type": "string", "const": "GET"},
-                "url":         {"type": "string", "format": "uri"},
-                "headers": {
-                    "type": "object",
-                    "properties": {
-                        "X-OctoData-Key": {"type": "string", "description": "API key from /v1/signup or /v1/agent-checkout"},
-                    },
-                },
-            },
-            "required": ["method", "url"],
-        },
-        "outputSchema": {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type":    "object",
-            "properties": {
-                "action":          {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
-                "confidence":      {"type": "number", "minimum": 0, "maximum": 1},
-                "signal":          {"type": "string", "enum": ["BULLISH", "BEARISH", "NEUTRAL"]},
-                "fear_greed":      {"type": "number", "minimum": 0, "maximum": 100},
-                "btc_trend":       {"type": "string", "enum": ["UP", "DOWN", "SIDEWAYS"]},
-                "polymarket_edge": {"type": "object"},
-                "reasoning":       {"type": "string"},
-            },
-        },
-    }
+    bazaar_ext = _BAZAAR_EXT["bazaar"]
+    bazaar_ext = dict(bazaar_ext)
+    # Override output.example with local _signal_example for consistency
+    bazaar_ext["info"] = dict(bazaar_ext["info"])
+    bazaar_ext["info"]["output"] = {"type": "json", "example": _signal_example}
 
     accepts_entry = {
         "scheme":            "exact",
@@ -575,6 +632,13 @@ def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
     v2_payload = {
         "x402Version": 2,
         "error":       "Payment Required",
+        "resource": {
+            "url":         "https://api.octodamus.com/v2/x402/agent-signal",
+            "name":        "Octodamus",
+            "description": "Octodamus — AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edges, Fear & Greed, macro regime. Ed25519 signed.",
+            "mimeType":    "application/json",
+        },
+        "extensions": {"bazaar": bazaar_ext},
         "accepts":     [accepts_entry, trial_entry],
     }
     v2_b64 = base64.b64encode(
@@ -705,26 +769,25 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
         except Exception:
             pass
 
-        _seats_left = max(0, _EARLY_BIRD_LIMIT - _premium_seat_count())
-        _price = _EARLY_BIRD_PRICE if _seats_left > 0 else _STANDARD_PRICE
         _detail = {
-            "x402":              "x402/1",
-            "error":             "payment_required",
-            "message":           "Octodamus Market Intelligence API. Pay per call or subscribe.",
-            "option_0_micro":    f"X-Payment: sign $0.01 USDC EIP-3009 — pay per call, no subscription, instant",
-            "option_1_free":     "POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL — 500 req/day free",
-            "option_2_trial":    "GET https://api.octodamus.com/v1/subscribe?plan=trial — $5 USDC, 7 days, 10k req/day",
-            "option_3_annual":   f"GET https://api.octodamus.com/v1/subscribe?plan=annual — ${_price} USDC/yr, 365 days" + (f" — EARLY BIRD: {_seats_left} seats left" if _seats_left > 0 else ""),
-            "option_4_guide":    "GET https://api.octodamus.com/v1/guide — $29 USDC, Build The House guide",
-            "micro_pay_to":      _X402_TREASURY,
-            "micro_asset":       _X402_USDC,
-            "micro_amount_usdc": _MICRO_PRICE_USDC,
-            "network":           "base-mainnet (eip155:8453)",
-            "header_name":       "X-OctoData-Key",
-            "docs":              "https://api.octodamus.com/docs",
+            "x402":          "x402/1",
+            "error":         "payment_required",
+            "what_you_get":  "BUY/SELL/HOLD oracle signal + confidence, Polymarket edge detection, congressional trades, macro regime. Ed25519 signed.",
+            "try_free":      "GET https://api.octodamus.com/v2/demo — live sample, no auth required",
+            "free_key":      "POST https://api.octodamus.com/v1/signup?email=YOUR_EMAIL — 500 req/day, no card",
+            "x402_micro":    {
+                "how":         "Sign EIP-3009 USDC authorization for $0.01, send as X-Payment header",
+                "amount_usdc": _MICRO_PRICE_USDC,
+                "pay_to":      _X402_TREASURY,
+                "asset":       _X402_USDC,
+                "network":     "eip155:8453",
+                "discovery":   "https://api.octodamus.com/.well-known/x402.json",
+            },
+            "auth_key_header": "X-OctoData-Key: YOUR_KEY  (get free key via free_key above)",
+            "docs":            "https://api.octodamus.com/docs",
         }
         if _greeting:
-            _detail["octodamus"] = _greeting
+            _detail = {"octodamus": _greeting, **_detail}
 
         raise HTTPException(status_code=402, headers=_x402_headers(), detail=_detail)
 
@@ -770,6 +833,25 @@ app = FastAPI(
     docs_url=None,   # custom themed docs below
     redoc_url=None,
 )
+
+from fastapi.exceptions import HTTPException as _HTTPException
+
+@app.exception_handler(_HTTPException)
+async def _x402_exception_handler(request: Request, exc: _HTTPException):
+    # Unwrap x402/1 402 bodies so agents see {"x402":...} directly, not {"detail":{"x402":...}}
+    if (exc.status_code == 402 and isinstance(exc.detail, dict)
+            and exc.detail.get("x402") == "x402/1"):
+        return JSONResponse(
+            status_code=402,
+            headers=dict(exc.headers or {}),
+            content=exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=dict(exc.headers or {}),
+        content={"detail": exc.detail},
+    )
+
 
 def _custom_openapi():
     if app.openapi_schema:
@@ -1558,17 +1640,38 @@ SwaggerUIBundle({
 @app.get("/", tags=["Info"])
 def root():
     return {
-        "name": "OctoData API",
-        "source": {"name": "OctoData API", "by": "Octodamus (@octodamusai)", "docs": "https://api.octodamus.com/docs", "signup": "POST https://api.octodamus.com/v1/signup?email="},
+        "service":     "Octodamus Market Intelligence API",
+        "description": "AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edge detection, congressional trading intelligence, cross-asset macro regime. 27 live feeds. Ed25519 signed.",
+        "quick_start": {
+            "try_now":  "GET /v2/demo — live sample, no auth required",
+            "free_key": "POST /v1/signup?email=YOUR_EMAIL — 500 req/day, no card",
+            "x402":     "GET /.well-known/x402.json — agent discovery, pay per call on Base",
+        },
+        "discovery": {
+            "x402":       "https://api.octodamus.com/.well-known/x402.json",
+            "acp":        "https://api.octodamus.com/.well-known/acp.json",
+            "agent_card": "https://api.octodamus.com/.well-known/agent.json",
+            "llms":       "https://octodamus.com/llms.txt",
+        },
         "docs": "/docs",
-        "report_viewer": "/api/report?type=market_signal&ticker=BTC",
-        "subscribe": "https://octodamus.com",
+        "by":   "Octodamus (@octodamusai)",
     }
 
 
 @app.get("/health", tags=["Info"])
 def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/health/version", tags=["Info"])
+def health_version():
+    """Build identity of the running process. Lets the listing-health monitor
+    detect a stale server still serving old code after a git pull with no restart."""
+    return {
+        "commit":     _BUILD_COMMIT,
+        "started_at": _BUILD_STARTED_AT,
+        "timestamp":  datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ── Offering Registry (used by x402 health test for auto-discovery) ────────────
@@ -1593,7 +1696,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "NYSE StockOracle Brief",           "price_usdc": 0.35, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_stockoracle/brief/preview"},
     {"name": "NYSE Tech Agent Brief",            "price_usdc": 0.50, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_tech_agent/brief/preview"},
     {"name": "Order ChainFlow Brief",            "price_usdc": 0.35, "cat": "sub-agent",  "preview_path": "/v2/agents/order_chainflow/brief/preview"},
-    {"name": "X Sentiment Agent Brief",          "price_usdc": 0.50, "cat": "sub-agent",  "preview_path": "/v2/agents/x_sentiment_agent/brief/preview"},
+    {"name": "NYSE EarningsEdge Brief",          "price_usdc": 0.50, "cat": "sub-agent",  "preview_path": "/v2/agents/nyse_earningsedge/brief/preview"},
 
     # NYSE sub-arc endpoints
     {"name": "NYSE MacroMind Signal",            "price_usdc": 0.25, "cat": "subarc",     "preview_path": "/v2/nyse_macromind/signal/preview"},
@@ -1757,7 +1860,7 @@ _ERC8004_CARD = {
             "nyse_stockoracle_brief":      {"price_usdc": 0.35, "endpoint": "GET /v2/agents/nyse_stockoracle/brief"},
             "nyse_tech_agent_brief":       {"price_usdc": 0.50, "endpoint": "GET /v2/agents/nyse_tech_agent/brief"},
             "order_chainflow_brief":       {"price_usdc": 0.35, "endpoint": "GET /v2/agents/order_chainflow/brief"},
-            "x_sentiment_agent_brief":     {"price_usdc": 0.50, "endpoint": "GET /v2/agents/x_sentiment_agent/brief"},
+            "nyse_earningsedge_brief":     {"price_usdc": 0.50, "endpoint": "GET /v2/agents/nyse_earningsedge/brief"},
             "x_sentiment_divergence":      {"price_usdc": 0.35, "endpoint": "GET /v2/x_sentiment/divergence?asset=BTC"},
             "x_sentiment_scan":            {"price_usdc": 0.50, "endpoint": "GET /v2/x_sentiment/scan"},
             "nyse_tech_regulatory":        {"price_usdc": 0.35, "endpoint": "GET /v2/nyse_tech/regulatory"},
@@ -1806,6 +1909,49 @@ def well_known_agent_json():
     return _ERC8004_CARD
 
 
+@app.get("/.well-known/acp.json", include_in_schema=False)
+@app.get("/acp/agent-info", include_in_schema=False)
+def acp_agent_info():
+    """
+    Open ACP discovery endpoint -- compatible with Hermes-style and open ACP agents.
+    Returns agent capabilities in standard JSON format for agent-to-agent discovery.
+    """
+    return {
+        "acp_version": "0.1",
+        "id":          "octodamus-market-intelligence",
+        "name":        "Octodamus Market Intelligence",
+        "description": (
+            "AI oracle for crypto and tokenized NYSE markets. Provides BUY/SELL/HOLD signals, "
+            "congressional trading data, macro regime scoring, on-chain order flow, and Polymarket "
+            "edge detection. x402-native: pay per call in USDC on Base."
+        ),
+        "url":         "https://api.octodamus.com",
+        "x":           "@octodamusai",
+        "payment": {
+            "protocol": "x402",
+            "chain":    "base",
+            "currency": "USDC",
+            "per_call":  0.01,
+        },
+        "capabilities": [
+            {"id": "market-signal",      "path": "/v2/agent-signal",                 "price_usdc": 0.01, "description": "BUY/SELL/HOLD signal with confidence score for BTC/ETH/SOL"},
+            {"id": "stock-signal",       "path": "/v2/nyse_stockoracle/signal",      "price_usdc": 0.50, "description": "Congressional + price signal for any NYSE ticker"},
+            {"id": "congressional",      "path": "/v2/nyse_stockoracle/congress",    "price_usdc": 0.35, "description": "Congressional trading data and silence window for any ticker"},
+            {"id": "macro-signal",       "path": "/v2/nyse_macromind/signal",        "price_usdc": 0.25, "description": "Macro regime: RISK-ON/OFF/NEUTRAL from 5 FRED series"},
+            {"id": "yield-curve",        "path": "/v2/nyse_macromind/yield-curve",   "price_usdc": 0.25, "description": "T10Y2Y yield curve status and interpretation"},
+            {"id": "sentiment",          "path": "/v2/x_sentiment/divergence",       "price_usdc": 0.50, "description": "X crowd vs price divergence — contrarian signal"},
+            {"id": "sentiment-scan",     "path": "/v2/x_sentiment/scan",             "price_usdc": 0.50, "description": "Bulk sentiment scan across BTC/ETH/SOL and major stocks"},
+            {"id": "order-flow-delta",   "path": "/v2/order_chainflow/delta",        "price_usdc": 0.50, "description": "Binance 24h buy/sell delta for BTC/ETH/SOL"},
+            {"id": "whale-activity",     "path": "/v2/order_chainflow/whales",       "price_usdc": 0.50, "description": "Whale wallet activity on Base — large capital moves"},
+            {"id": "polymarket-edges",   "path": "/v2/polymarket",                   "price_usdc": 0.25, "description": "Polymarket prediction markets with EV gap >25%"},
+        ],
+        "discovery": {
+            "x402":    "https://api.octodamus.com/.well-known/x402.json",
+            "erc8004": "https://api.octodamus.com/.well-known/agent.json",
+        },
+    }
+
+
 @app.get("/.well-known/x402.json", include_in_schema=False)
 @app.get("/.well-known/x402", include_in_schema=False)
 def well_known_x402():
@@ -1817,7 +1963,7 @@ def well_known_x402():
         "version": "x402/1",
         "provider": {
             "name":        "Octodamus Market Intelligence",
-            "description": "Live derivatives positions, liquidation pressure, oracle arbitrage. 27 data feeds. Nothing else covers this in a single x402 call.",
+            "description": "AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edge detection, congressional trading intelligence, cross-asset macro regime. 27 live feeds. Ed25519 signed. Pay per call on Base or free key (500 req/day).",
             "url":         "https://api.octodamus.com",
             "x":           "@octodamusai",
             "docs":        "https://api.octodamus.com/docs",
@@ -1983,6 +2129,44 @@ def well_known_x402():
             "erc8004": True,
             "notes": "Octodamus is compatible with Amazon Bedrock AgentCore Payments (x402 + Coinbase CDP). Agents built on AgentCore can call any endpoint here using the standard x402 EIP-3009 payment header. No pre-registration required. discoverable at agentic.market.",
         },
+    }
+
+
+@app.get("/.well-known/bazaar.json", include_in_schema=False)
+def well_known_bazaar():
+    """
+    Bazaar domain manifest -- declares api.octodamus.com as a Bazaar service domain.
+    Crawled by agentic.market to expose the dedicated domain quality signal.
+    """
+    return {
+        "bazaarVersion": 1,
+        "domain": "api.octodamus.com",
+        "provider": {
+            "name":        "Octodamus",
+            "description": "AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edges, macro regime, congressional trading intel. Ed25519 signed. Pay per call on Base.",
+            "url":         "https://api.octodamus.com",
+            "x":           "@octodamusai",
+            "docs":        "https://api.octodamus.com/docs",
+            "x402":        "https://api.octodamus.com/.well-known/x402.json",
+        },
+        "services": [
+            {
+                "url":         "https://api.octodamus.com/v2/x402/agent-signal",
+                "name":        "Octodamus",
+                "method":      "GET",
+                "description": "Octodamus -- AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Fear & Greed, BTC trend, Polymarket edges, macro regime. Ed25519 signed. $0.01 USDC per call on Base.",
+                "mimeType":    "application/json",
+                "category":    "trading",
+                "tags":        ["crypto", "signals", "oracle", "polymarket", "bitcoin", "market-intelligence"],
+                "pricing": {
+                    "amount_usdc": 0.01,
+                    "network":     "eip155:8453",
+                    "asset":       _X402_USDC,
+                    "pay_to":      _X402_TREASURY,
+                },
+                "extensions": _BAZAAR_EXT,
+            }
+        ],
     }
 
 
@@ -2973,6 +3157,74 @@ def _notify_gmail_signup(email: str, label: str, api_key: str) -> None:
         print(f"[API] Gmail notify failed (non-critical): {_e}")
 
 
+def _send_welcome_email(email: str, api_key: str) -> None:
+    """Fire-and-forget: send welcome email to the new subscriber with their key and quickstart."""
+    if not _GMAIL_USER or not _GMAIL_PASS:
+        return
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        body = f"""Welcome to OctoData.
+
+Your free API key is ready:
+
+  {api_key}
+
+Add it to any request as a header:
+
+  X-OctoData-Key: {api_key}
+
+-- QUICK START --
+
+Try your first call now (no setup required):
+
+  curl "https://api.octodamus.com/v2/agent-signal?asset=BTC" \\
+       -H "X-OctoData-Key: {api_key}"
+
+Or fetch the live oracle scorecard:
+
+  curl "https://api.octodamus.com/v2/scorecard" \\
+       -H "X-OctoData-Key: {api_key}"
+
+-- WHAT YOU GET (Basic, free) --
+
+  - BTC, ETH, SOL oracle signals (BUY/SELL/HOLD + confidence)
+  - Live fear & greed, macro regime, funding rate extremes
+  - Oracle call history and win rate
+  - 500 requests/day, 20/min
+  - All responses Ed25519 signed and verifiable
+
+Full endpoint list: https://api.octodamus.com/docs
+
+-- UPGRADE ($29/year) --
+
+Upgrade for 10,000 req/day, Polymarket EV edges, congressional
+trading signals, full derivatives data, and AI market briefings.
+
+  https://octodamus.com/upgrade
+
+-- FOLLOW FOR LIVE CALLS --
+
+Every oracle call gets posted to X in real time:
+  https://x.com/octodamusai
+
+Questions? Reply to this email.
+
+-- Octodamus
+"""
+        msg = MIMEText(body)
+        msg["Subject"] = "Your OctoData API key"
+        msg["From"] = _GMAIL_USER
+        msg["To"] = email
+        with smtplib.SMTP("smtp.gmail.com", 587) as s:
+            s.starttls()
+            s.login(_GMAIL_USER, _GMAIL_PASS)
+            s.send_message(msg)
+        print(f"[API] Welcome email sent to {email}")
+    except Exception as _e:
+        print(f"[API] Welcome email failed (non-critical): {_e}")
+
+
 # -- Self-serve signup --------------------------------------------------------
 
 @app.post("/v1/signup", tags=["API Keys"])
@@ -3014,6 +3266,11 @@ def signup(
     threading.Thread(
         target=_notify_gmail_signup,
         args=(email.lower().strip(), lbl, new_key),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_send_welcome_email,
+        args=(email.lower().strip(), new_key),
         daemon=True,
     ).start()
     threading.Thread(
@@ -3530,24 +3787,31 @@ def _build_signal_payload() -> dict:
             "target_price": c.get("target_price"),
         }
 
-    # Single load_snapshot call covers both fear_greed and btc price
-    snap = {}
+    # Fear & Greed -- live from alternative.me (cached 60s via _signal_cache)
+    fng = {"value": None, "label": None}
     try:
-        snap = load_snapshot("prices")
+        import httpx as _hx_sig
+        fg_r = _hx_sig.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+        if fg_r.status_code == 200:
+            fg_data = fg_r.json()["data"][0]
+            fng = {"value": int(fg_data["value"]), "label": fg_data["value_classification"]}
     except Exception:
         pass
 
-    fng_raw = snap.get("fear_greed") or {}
-    fng     = {"value": fng_raw.get("value"), "label": fng_raw.get("label")}
-
-    prices  = snap.get("prices", {})
-    btc     = prices.get("BTC", {})
-    chg     = btc.get("change_24h", 0) or 0
-    btc_out = {
-        "price_usd":  btc.get("price"),
-        "change_24h": round(chg, 2),
-        "trend": "UP" if chg > 0.5 else ("DOWN" if chg < -0.5 else "FLAT"),
-    }
+    # BTC price -- live from financial_data_client (Kraken primary, CoinGecko fallback)
+    btc_out = {"price_usd": None, "change_24h": 0, "trend": "FLAT"}
+    try:
+        from financial_data_client import get_crypto_prices as _gcp
+        _prices = _gcp(["BTC"])
+        _btc = _prices.get("BTC", {})
+        chg = _btc.get("usd_24h_change", 0) or 0
+        btc_out = {
+            "price_usd":  _btc.get("usd"),
+            "change_24h": round(chg, 2),
+            "trend": "UP" if chg > 0.5 else ("DOWN" if chg < -0.5 else "FLAT"),
+        }
+    except Exception:
+        pass
 
     poly_edge = []
     try:
@@ -3673,17 +3937,19 @@ def v2_x402_agent_signal(request: Request):
     )
     if not x_payment:
         _gate_headers = _x402_headers_legacy(0.01)
+        # Bazaar validator requires top-level resource + extensions.bazaar in body
+        # (payment details still live in PAYMENT-REQUIRED header per v2 spec)
         _gate_body = json.dumps({
-            "x402":         "x402/1",
-            "error":        "payment_required",
-            "pay_per_call": "$0.01 USDC on Base — no key or account needed",
-            "annual":       "$29.00 USDC — 365 days, 10k req/day",
-            "pay_to":       _X402_TREASURY,
-            "asset":        _X402_USDC,
-            "network":      "base-mainnet (eip155:8453)",
-            "how":          "Sign EIP-3009 USDC authorization, send as PAYMENT-SIGNATURE header",
-            "discovery":    "https://api.octodamus.com/.well-known/x402.json",
-            "free_option":  "GET https://api.octodamus.com/v2/demo",
+            "x402Version": 2,
+            "error":       "Payment Required",
+            "resource": {
+                "url":         "https://api.octodamus.com/v2/x402/agent-signal",
+                "name":        "Octodamus",
+                "description": "Octodamus -- AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edges, Fear & Greed, macro regime. Ed25519 signed.",
+                "mimeType":    "application/json",
+            },
+            "extensions": _BAZAAR_EXT,
+            "docs": "https://api.octodamus.com/.well-known/x402.json",
         })
         from fastapi.responses import Response as _Resp
         return _Resp(status_code=402, content=_gate_body,
@@ -3957,6 +4223,28 @@ def v2_sentiment(auth=Depends(require_key_v2)):
                 "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl, key_entry=key)
     except HTTPException:
         return _resp({"error_code": "NO_DATA", "error": "No sentiment snapshot yet",
+                      "timestamp": datetime.utcnow().isoformat()}, rl, key_entry=key)
+
+
+@app.get("/v2/sentiment/{symbol}", tags=["Agent Data v2"])
+def v2_sentiment_symbol(symbol: str, auth=Depends(require_key_v2)):
+    """Per-asset sentiment score. Symbol: BTC, ETH, SOL, NVDA, TSLA, AAPL."""
+    _, key, rl = auth
+    is_pro = key.get("tier") in ("pro", "premium", "admin")
+    sym = symbol.upper()
+    try:
+        s    = load_snapshot("sentiment")
+        syms = s.get("symbols", {})
+        if sym not in syms:
+            return _resp({"error_code": "UNKNOWN_SYMBOL", "symbol": sym,
+                          "available": list(syms.keys())}, rl, key_entry=key)
+        if not is_pro and sym not in ("BTC",):
+            return _resp({"error_code": "PREMIUM_REQUIRED", "symbol": sym,
+                          "free_symbol": "BTC",
+                          "upgrade": "https://octodamus.com/api#pricing"}, rl, key_entry=key)
+        return _resp({sym: syms[sym], "timestamp": s.get("timestamp"), "source": _SOURCE_BLOCK}, rl, key_entry=key)
+    except HTTPException:
+        return _resp({"error_code": "NO_DATA", "symbol": sym,
                       "timestamp": datetime.utcnow().isoformat()}, rl, key_entry=key)
 
 
@@ -5806,14 +6094,14 @@ def ben_macro_regime_brief_preview():
 
 # -- NYSE Sub-Agent Brief Endpoints (generated 5:30am PST daily) --------------
 # Five specialist agents generate pre-market briefs. Octodamus serves them 24/7.
-# Agents: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent
+# Agents: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, NYSE_EarningsEdge
 
 _SUBARC_META = {
     "nyse_macromind":    {"display": "NYSE_MacroMind",    "price": 0.25, "reqs": _X402_REQS_25CENT,       "desc": "Cross-asset macro regime brief. RISK-ON/OFF/TRANSITION + yield curve, DXY, VIX signals. Generated 5:30am PST."},
     "nyse_stockoracle":  {"display": "NYSE_StockOracle",  "price": 0.35, "reqs": _X402_REQS_BEN_35CENT,   "desc": "Congressional trading signals + mega-cap stock brief for NVDA/TSLA/AAPL. Generated 5:30am PST."},
     "nyse_tech_agent":   {"display": "NYSE_Tech_Agent",   "price": 0.50, "reqs": _X402_REQS_BEN_50CENT,   "desc": "Tech sector + tokenized equity regulatory brief. NVDA/AAPL/MSFT/GOOGL/META. Generated 5:30am PST."},
     "order_chainflow":   {"display": "Order_ChainFlow",   "price": 0.35, "reqs": _X402_REQS_BEN_35CENT,   "desc": "On-chain order flow + whale activity + DEX flow brief. ACCUMULATION/DISTRIBUTION/NEUTRAL. Generated 5:30am PST."},
-    "x_sentiment_agent": {"display": "X_Sentiment_Agent", "price": 0.50, "reqs": _X402_REQS_BEN_50CENT,   "desc": "X/Twitter crowd sentiment + contrarian divergence. Crowd consensus score + reversal risk. Generated 5:30am PST."},
+    "nyse_earningsedge": {"display": "NYSE_EarningsEdge", "price": 0.50, "reqs": _X402_REQS_BEN_50CENT,   "desc": "Upcoming earnings catalyst brief: implied move vs historical, estimate revisions, pre-earnings verdict (HIGH RISK/ELEVATED/NEUTRAL). Generated 5:30am PST."},
 }
 
 _SUBARC_DRAFTS = Path(__file__).parent / ".agents" / "profit-agent" / "drafts"
@@ -7162,11 +7450,31 @@ def v2_demo():
             "reasoning":    "[premium]",
         }
 
+    # Show live open call; if oracle is silent, show most recent WIN as example
+    _demo_sig = None
+    if open_calls:
+        _demo_sig = _signal_demo(open_calls[-1])
+    else:
+        resolved_calls = [c for c in calls if c.get("resolved")]
+        wins = [c for c in resolved_calls if c.get("outcome") == "WIN"]
+        _example = wins[-1] if wins else (resolved_calls[-1] if resolved_calls else None)
+        if _example:
+            _demo_sig = {**_signal_demo(_example), "status": "example", "outcome": _example.get("outcome", ""), "note": "Oracle currently watching. Example from recent call history."}
+
+    # Suppress win rate until MIN_CALLS_FOR_WINRATE reached — premature rates mislead
+    _resolved_count = (_w + _l)
+    _track_public = {
+        "wins": _w, "losses": _l, "total": stats.get("total", 0),
+        "win_rate": round(_w / _resolved_count * 100, 1) if _resolved_count >= _MIN_CALLS_FOR_WINRATE else None,
+        "win_rate_note": None if _resolved_count >= _MIN_CALLS_FOR_WINRATE else f"Win rate published after {_MIN_CALLS_FOR_WINRATE} resolved calls. {_resolved_count} resolved so far.",
+    }
+
     signal_demo = {
-        "signal":    _signal_demo(open_calls[-1]) if open_calls else None,
+        "signal":       _demo_sig,
+        "oracle_status": "LIVE_CALL" if open_calls else "WATCHING",
         "more_signals": max(0, len(open_calls) - 1),
-        "track_record": track,
-        "note":      "Basic returns top signal only. Premium returns all signals with confidence + reasoning.",
+        "track_record": _track_public,
+        "note":         "Basic returns top signal only. Premium returns all signals with confidence + reasoning.",
     }
 
     # --- Polymarket ---
@@ -8310,12 +8618,12 @@ _DASH_AGENTS   = {
     "NYSE_StockOracle":  _DASH_ROOT / ".agents" / "nyse_stockoracle",
     "NYSE_Tech_Agent":   _DASH_ROOT / ".agents" / "nyse_tech_agent",
     "Order_ChainFlow":   _DASH_ROOT / ".agents" / "order_chainflow",
-    "X_Sentiment_Agent": _DASH_ROOT / ".agents" / "x_sentiment_agent",
+    "NYSE_EarningsEdge": _DASH_ROOT / ".agents" / "nyse_earningsedge",
     "TokenBot_NYSE_Base":_DASH_ROOT / ".agents" / "tokenbot_nyse_base",
 }
 _DASH_BRIEF_KEYS = [
     "nyse_macromind", "nyse_stockoracle", "nyse_tech_agent",
-    "order_chainflow", "x_sentiment_agent", "tokenbot_nyse_base",
+    "order_chainflow", "nyse_earningsedge", "tokenbot_nyse_base",
     "daily_summary", "midday_brief",
 ]
 
@@ -8619,7 +8927,7 @@ body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13p
 const LABELS={
   nyse_macromind:"MacroMind",nyse_stockoracle:"StockOracle",
   nyse_tech_agent:"TechAgent",order_chainflow:"ChainFlow",
-  x_sentiment_agent:"Sentiment",tokenbot_nyse_base:"TokenBot",
+  nyse_earningsedge:"EarningsEdge",tokenbot_nyse_base:"TokenBot",
   daily_summary:"Ben Daily",midday_brief:"Ben Midday",
 };
 let _briefs={}, _tab=null;
