@@ -79,8 +79,8 @@ LISTINGS = [
 MANUAL_LISTINGS_CONFIRMED = set()  # e.g. {"x402scan.com", "awesome-x402"}
 
 MANUAL_LISTINGS = [
-    {"name": "x402scan.com",   "url": "https://www.x402scan.com",                          "action": "Add/refresh listing; confirm hero URL + OpenAPI + payment path"},
-    {"name": "awesome-x402",   "url": "https://github.com/coinbase/x402/blob/main/README.md", "action": "PR one line: name + agent card + Bazaar URL"},
+    {"name": "x402scan.com",   "url": "https://www.x402scan.com/resources/register",         "action": "Paste hero URL https://api.octodamus.com/v2/x402/agent-signal into the register form (auto-validates x402 schema)"},
+    {"name": "awesome-x402",   "url": "https://github.com/xpaysh/awesome-x402/pull/842",      "action": "PR #842 OPEN (xpaysh/awesome-x402) -- awaiting maintainer merge"},
     {"name": "agentic.market", "url": "https://agentic.market",                            "action": "Confirm /v2/x402/agent-signal appears in discovery JSON after a real CDP settle"},
 ]
 
