@@ -142,14 +142,27 @@ def run_session(dry_run: bool = False, session_type: str = ""):
     if session_type:
         cmd += ["--session", session_type]
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True, text=True, encoding="utf-8",
-        timeout=1800,
-        cwd=str(ROOT),
-    )
+    import time as _time
+    result = None
+    for _attempt in range(3):
+        if _attempt > 0:
+            wait = 60 * _attempt
+            print(f"[ProfitAgent] API overloaded — retrying in {wait}s (attempt {_attempt+1}/3)...")
+            _time.sleep(wait)
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=1800,
+            cwd=str(ROOT),
+        )
+        # errors="replace" prevents a UnicodeDecodeError on cp1252 bytes (e.g. em-dash 0x97)
+        # in agent output from crashing the pipe reader and leaving stdout=None.
+        _out = (result.stdout or "") + (result.stderr or "")
+        if "overloaded_error" not in _out.lower() and "error code: 529" not in _out.lower():
+            break
+        print(f"[ProfitAgent] Attempt {_attempt+1} hit 529 overloaded.")
 
-    output = result.stdout + result.stderr
+    output = (result.stdout or "") + (result.stderr or "")
     LOG_FILE.write_text(
         f"=== Session #{session_num} -- {now} ===\n{output}\n",
         encoding="utf-8"
@@ -161,14 +174,17 @@ def run_session(dry_run: bool = False, session_type: str = ""):
     state["last_balance"] = balance
     _save_state(state)
 
-    # Email the session report
-    summary = output[-3000:] if len(output) > 3000 else output
-    _send_email(
-        f"[ProfitAgent] Session #{session_num} Report",
-        f"Profit Agent completed session #{session_num}.\n\nWallet before: ${balance:.2f} USDC\nTime: {now}\n\n--- Agent Output ---\n{summary}\n\n-- Profit Agent"
-    )
+    # Agent sends its own session email via octo_notify. Suppress run.py duplicate.
+    if f"[Agent] Session #{session_num} complete. Email sent." in output:
+        print(f"[ProfitAgent] Agent already emailed session #{session_num} -- suppressing duplicate.")
+    else:
+        summary = output[-3000:] if len(output) > 3000 else output
+        _send_email(
+            f"[ProfitAgent] Session #{session_num} Report [FALLBACK]",
+            f"Profit Agent session #{session_num} -- agent did not send its own email.\n\nWallet before: ${balance:.2f} USDC\nTime: {now}\n\n--- Agent Output ---\n{summary}\n\n-- Profit Agent"
+        )
 
-    print(f"[ProfitAgent] Session #{session_num} complete. Report emailed.")
+    print(f"[ProfitAgent] Session #{session_num} complete.")
 
 
 def show_status():
@@ -187,42 +203,75 @@ Dead:          {state.get('dead', False)}
 
 def send_report(context: str = "status"):
     """Email a wallet + activity summary. No new session. Used for 6am/6pm reports."""
-    state   = _load_state()
-    balance = _get_wallet_balance()
-    now     = datetime.now().strftime("%A %B %d %Y %I:%M %p")
-    started = state.get("started_at", "?")[:10]
+    state         = _load_state()
+    live_balance  = _get_wallet_balance()
+    # Fall back to cached balance from last session when live check fails
+    balance       = live_balance if live_balance >= 0 else state.get("last_balance", -1.0)
+    balance_note  = " (cached)" if live_balance < 0 and balance >= 0 else ""
+
+    now      = datetime.now().strftime("%A %B %d %Y %I:%M %p")
+    started  = state.get("started_at", "?")[:10]
     sessions = state.get("sessions", 0)
     last_run = state.get("last_run", "never")
-    start_balance = 201.00  # funded amount
+    start_balance = 201.00
 
-    # Simple P&L calc
-    pnl = balance - start_balance if balance >= 0 else 0
-    pnl_str = f"${pnl:+.2f} USDC ({pnl/start_balance*100:+.1f}%)" if balance >= 0 else "unknown"
+    # P&L calc — USDC only; ~$24 USDC was swapped to ETH 2026-05-02 (not a loss)
+    pnl     = balance - start_balance if balance >= 0 else 0
+    pnl_str = f"${pnl:+.2f} USDC ({pnl/start_balance*100:+.1f}%) [USDC only — ETH position held separately]" if balance >= 0 else "unknown"
 
-    # Last session output snippet
-    last_output = ""
-    if LOG_FILE.exists():
-        log = LOG_FILE.read_text(encoding="utf-8")
-        last_output = log[-2000:] if len(log) > 2000 else log
+    # Read agent_session.log — show sessions from last 36h only (5 max)
+    import re as _re2
+    from datetime import timedelta
+    agent_log_file = Path(__file__).parent / "agent_session.log"
+    last_sessions_text = ""
+    if agent_log_file.exists():
+        raw = agent_log_file.read_text(encoding="utf-8", errors="replace")
+        blocks = _re2.split(r"(?=\n={20,}\nSession #)", "\n" + raw)
+        cutoff = datetime.now() - timedelta(hours=36)
+        non_empty = []
+        all_with_content = []
+        for b in blocks:
+            stripped = b.strip()
+            if not stripped:
+                continue
+            inner = _re2.sub(r"={20,}", "", _re2.sub(r"Session #\d+.*", "", stripped)).strip()
+            if not inner:
+                continue
+            all_with_content.append(stripped)
+            m = _re2.search(r"Session #\d+ -- (.+)", stripped)
+            if m:
+                try:
+                    ts = datetime.strptime(m.group(1).strip(), "%A %B %d %Y %I:%M %p")
+                    if ts >= cutoff:
+                        non_empty.append(stripped)
+                    continue
+                except ValueError:
+                    pass
+            non_empty.append(stripped)
+        # Fallback: no recent sessions — show last 3
+        if not non_empty:
+            non_empty = all_with_content[-3:]
+        last_sessions_text = "\n\n".join(non_empty[-5:]) if non_empty else raw[-2000:]
+    elif LOG_FILE.exists():
+        log = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+        last_sessions_text = (log[-2000:] if len(log) > 2000 else log).strip()
 
     dead_line = ""
     if state.get("dead"):
-        dead_line = f"\nSTATUS: DEAD — wallet depleted. Final: ${state.get('final_balance','?')}\n"
+        dead_line = f"\nSTATUS: DEAD -- wallet depleted. Final: ${state.get('final_balance','?')}\n"
 
-    subject = f"[ProfitAgent] {context.title()} Report — {now}"
-    body = f"""Franklin Profit Agent — {context.title()} Report
-{'='*52}
+    subject = f"[ProfitAgent] {context.title()} Report -- {now}"
+    body = f"""Franklin Profit Agent -- {context.title()} Report
+{'=' * 52}
 Time:          {now}
-Wallet:        ${balance:.2f} USDC
+Wallet:        ${balance:.2f} USDC{balance_note}
 P&L vs start:  {pnl_str}
 Sessions run:  {sessions}
 Last session:  {last_run}
 Started:       {started}
 {dead_line}
-Next sessions: 9am + 3pm daily
-
---- Last Session Output ---
-{last_output if last_output else 'No sessions run yet.'}
+--- Recent Sessions (last 36h) ---
+{last_sessions_text if last_sessions_text else 'No sessions run yet.'}
 
 -- Profit Agent
 """

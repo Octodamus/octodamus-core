@@ -225,6 +225,22 @@ def tool_get_market_data(asset: str = "ALL") -> str:
                     lines.append(f"  DXY: {dxy_s['price']:.2f} ({dxy_s.get('day_change_percent', 0):+.2f}% day)")
             except Exception:
                 pass
+        # BTC Dominance via CoinGecko global
+        if asset in ("ALL", ""):
+            try:
+                import httpx as _hx2
+                g = _hx2.get(
+                    "https://api.coingecko.com/api/v3/global",
+                    headers={"User-Agent": "octodamus-oracle/1.0"},
+                    timeout=8,
+                ).json()
+                btc_dom = round(float(
+                    (g.get("data") or {}).get("market_cap_percentage", {}).get("btc", 0) or 0
+                ), 1)
+                if btc_dom > 0:
+                    lines.append(f"  BTC Dominance: {btc_dom}%")
+            except Exception:
+                pass
         # Fear & Greed
         try:
             import httpx
@@ -275,7 +291,7 @@ def tool_get_octodamus_signal() -> str:
                 lines  = ["Octodamus Oracle Signal (premium — live API):"]
                 if sig:
                     lines += [
-                        f"  Signal:    {sig.get('signal','?')} | Confidence: {sig.get('confidence','?')}",
+                        f"  Signal:    {sig.get('direction','?')} | Confidence: {sig.get('confidence','?')}",
                         f"  Reasoning: {sig.get('reasoning','N/A')[:200]}",
                     ]
                 else:
@@ -287,24 +303,26 @@ def tool_get_octodamus_signal() -> str:
     except Exception:
         pass
 
-    # Fallback: local data (oracle calls only — excludes OctoBoto paper trades)
+    # Fallback: local data — on-chain verified calls only (tx_hash required)
     try:
         import json as _json
         calls_file = ROOT / "data" / "octo_calls.json"
         calls = _json.loads(calls_file.read_text(encoding="utf-8")) if calls_file.exists() else []
-        calls = [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
-        open_calls = [c for c in calls if not c.get("resolved")]
-        resolved   = [c for c in calls if c.get("resolved")]
+        # On-chain record: only calls with tx_hash (published on-chain)
+        # Excludes polymarket paper trades (no tx_hash) and any unrecorded range_scout calls
+        on_chain = [c for c in calls if c.get("tx_hash")]
+        open_calls  = [c for c in on_chain if not c.get("resolved")]
+        resolved    = [c for c in on_chain if c.get("resolved") and c.get("resolve_tx_hash")]
         wins   = sum(1 for c in resolved if c.get("outcome") == "WIN")
         losses = sum(1 for c in resolved if c.get("outcome") == "LOSS")
-        lines = ["Octodamus Oracle Signals (local data — oracle calls only):"]
+        lines = ["Octodamus Oracle Signals (on-chain verified):"]
         if open_calls:
             lines.append(f"  Open calls ({len(open_calls)}):")
             for c in open_calls[:5]:
                 lines.append(f"    {c.get('asset')} {c.get('direction')} | entry ${c.get('entry_price',0):,.0f} | tf {c.get('timeframe')} | edge {c.get('edge_score',0):+.2f}")
         else:
             lines.append("  No open calls right now.")
-        lines.append(f"  All-time record: {wins}W / {losses}L")
+        lines.append(f"  All-time record: {wins}W / {losses}L (on-chain only)")
         lines.append(f"  Note: OctoBoto paper trades tracked separately")
         return "\n".join(lines)
     except Exception as e:
@@ -597,117 +615,105 @@ def tool_buy_octodamus_signal() -> str:
     return tool_buy_x402_service("https://api.octodamus.com/v2/x402/agent-signal", max_price_usdc=0.05)
 
 
-_LIMITLESS_SUSPEND_THRESHOLD = 20   # kept for reference, not used
+_LIMITLESS_CATEGORY_KWS = {
+    "crypto":  ["btc", "bitcoin", "eth", "ethereum", "sol", "solana", "bnb", "xrp", "doge", "avax", "crypto"],
+    "finance": ["nasdaq", "s&p", "sp500", "dow", "gold", "oil", "fed", "rate", "inflation", "gdp", "cpi", "stock"],
+    "politics":["trump", "biden", "election", "president", "congress", "senate", "fed chair", "tariff"],
+}
 
 
 def tool_scan_limitless(category: str = "crypto") -> str:
-    """Limitless permanently suspended by owner decision 2026-05-06. Polymarket-only going forward."""
-    return (
-        "LIMITLESS PERMANENTLY SUSPENDED -- owner decision 2026-05-06. "
-        "25 consecutive sessions with zero qualifying crypto markets. Platform is structurally thin on crypto. "
-        "Do NOT call this tool. Go directly to Polymarket scan."
-    )
-
-    def _duration(m: dict) -> str:
-        """Detect market duration from slug/title. Returns '4h','1h','15m','5m', or ''."""
-        text = ((m.get("slug") or "") + " " + (m.get("title") or "")).lower()
-        if "4h" in text or "4hr" in text or "4 hour" in text:
-            return "4h"
-        if "1h" in text or "1hr" in text or "1 hour" in text:
-            return "1h"
-        if "15m" in text or "15min" in text or "15 min" in text:
-            return "15m"
-        if "5m" in text or "5min" in text or "5 min" in text:
-            return "5m"
-        return ""
-
-    _VALID_DURATIONS = {"4h", "1h", "15m", "5m"}
-    _CRYPTO_KWS = ["btc", "bitcoin", "eth", "ethereum", "sol", "solana",
-                   "bnb", "xrp", "doge", "avax", "price", "above", "below"]
-
+    """
+    Scan Limitless Exchange (Base chain, USDC) for active prediction markets.
+    Limitless pivoted in May 2026 from short-duration crypto price markets to broader
+    event-based markets: crypto, finance, sports, FIFA World Cup, politics, esports.
+    category: 'crypto' | 'finance' | 'politics' | 'sports' | 'all'
+    Volume gate: >$1k. Returns top markets by volume with YES price and expiry.
+    """
     try:
-        import httpx, re as _re
+        import httpx
         from datetime import datetime, timezone
 
-        r = httpx.get("https://api.limitless.exchange/markets/active", timeout=10)
-        if r.status_code != 200:
-            return f"Limitless API returned {r.status_code}: {r.text[:200]}"
+        # Try new markets endpoint first, fall back to active
+        for endpoint in [
+            "https://api.limitless.exchange/markets?status=active&limit=200",
+            "https://api.limitless.exchange/markets/active",
+        ]:
+            r = httpx.get(endpoint, timeout=12)
+            if r.status_code == 200:
+                break
+        else:
+            return f"Limitless API unreachable (last status {r.status_code}). Try again next session."
 
-        all_markets = r.json().get("data", [])
+        raw = r.json()
+        all_markets = raw if isinstance(raw, list) else raw.get("data", raw.get("markets", []))
+        if not all_markets:
+            return "Limitless API returned 0 markets. Platform may have low activity."
+
         now = datetime.now(timezone.utc)
 
-        # Only keep markets with a recognised Limitless duration (4h / 1h / 15m / 5m)
-        duration_markets = [m for m in all_markets if _duration(m) in _VALID_DURATIONS]
-
-        # Apply category filter
-        if category.lower() == "crypto":
-            filtered = [m for m in duration_markets if any(
-                kw in ((m.get("title") or "") + (m.get("slug") or "")).lower()
-                for kw in _CRYPTO_KWS
+        # Category filter
+        cat = category.lower()
+        kws = _LIMITLESS_CATEGORY_KWS.get(cat, [])
+        if cat in ("all", ""):
+            filtered = all_markets
+        elif cat == "sports":
+            sport_kws = ["football", "soccer", "basketball", "hockey", "formula", "f1",
+                         "fifa", "world cup", "nba", "nfl", "nhl", "match", "game", "vs"]
+            filtered = [m for m in all_markets if any(
+                kw in ((m.get("title") or "") + " " + (m.get("category") or "") + " " + (m.get("slug") or "")).lower()
+                for kw in sport_kws
             )]
-        elif category.lower() in ("all", ""):
-            filtered = duration_markets
         else:
-            filtered = [m for m in duration_markets
-                        if category.lower() in ((m.get("title") or "") + (m.get("slug") or "")).lower()]
+            filtered = [m for m in all_markets if any(
+                kw in ((m.get("title") or "") + " " + (m.get("category") or "") + " " + (m.get("slug") or "")).lower()
+                for kw in kws
+            )]
 
-        if filtered:
-            # Reset consecutive-zero streak — real markets found
-            _st["limitless_zero_streak"] = 0
-            _save_state(_st)
-
-            # Group by duration for clarity
-            by_dur: dict = {"4h": [], "1h": [], "15m": [], "5m": []}
-            for m in filtered:
-                by_dur[_duration(m)].append(m)
-
-            lines = [f"Limitless {category} markets (4h/1h/15m/5m only) — Base-native, USDC:"]
-            for dur in ("4h", "1h", "15m", "5m"):
-                group = by_dur[dur]
-                if not group:
-                    continue
-                lines.append(f"\n  [{dur}]")
-                for m in group[:6]:
-                    slug   = m.get("slug", "")
-                    title  = (m.get("title") or slug)[:65]
-                    prices = m.get("prices", [])
-                    yes    = prices[0] if isinstance(prices, list) and prices else "?"
-                    vol    = float(m.get("volume") or m.get("collateralVolume") or 0)
-                    exp_str = m.get("expirationDate", "")
-                    mins_left = ""
+        # Volume gate
+        def _vol(m: dict) -> float:
+            for key in ("volume", "collateralVolume", "volumeFormatted", "liquidity"):
+                v = m.get(key)
+                if v is not None:
                     try:
-                        if exp_str:
-                            exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                            mins_left = f" | {(exp_dt - now).total_seconds()/60:.0f}min left"
+                        return float(str(v).replace(",", "").replace("$", ""))
                     except Exception:
                         pass
-                    lines.append(f"    slug={slug} | YES={yes} | Vol=${vol:,.0f}{mins_left} | {title}")
-            return "\n".join(lines)
+            return 0.0
 
-        # Zero qualifying markets — increment streak
-        _st["limitless_zero_streak"] = zero_streak + 1
-        _save_state(_st)
-        new_streak = zero_streak + 1
+        liquid = [m for m in filtered if _vol(m) >= 1000]
+        liquid.sort(key=_vol, reverse=True)
 
-        total_raw       = len(all_markets)
-        total_dur       = len(duration_markets)
-        lines = [
-            f"No active {category} Limitless markets found.",
-            f"  Exchange total: {total_raw} | With valid duration (4h/1h/15m/5m): {total_dur} | After crypto filter: 0",
-        ]
-        if total_dur > 0:
-            lines.append(f"  Non-crypto markets available (category='all' to see them):")
-            for m in duration_markets[:4]:
-                lines.append(f"    [{_duration(m)}] {(m.get('title') or m.get('slug',''))[:55]}")
-        elif total_raw > 0:
-            lines.append(f"  DIAGNOSIS: {total_raw} markets on exchange but none match 4h/1h/15m/5m durations.")
-            lines.append(f"  These are likely near-expiry short markets — no tradeable window remaining.")
-        if new_streak >= 10:
-            lines.append(f"  STRUCTURAL FLAG: {new_streak} consecutive zero-crypto sessions.")
-            if new_streak >= _LIMITLESS_SUSPEND_THRESHOLD:
-                lines.append(f"  AUTO-SUSPEND triggers next session. Use Polymarket as primary.")
-            else:
-                lines.append(f"  ({_LIMITLESS_SUSPEND_THRESHOLD - new_streak} sessions until auto-suspend)")
+        if not liquid:
+            total = len(all_markets)
+            cat_count = len(filtered)
+            return (
+                f"Limitless scan ({category}): {cat_count} markets found, 0 above $1k volume.\n"
+                f"  Exchange total: {total} markets across all categories.\n"
+                f"  Platform has volume but not in {category} category — try category='all' or 'sports'."
+            )
+
+        lines = [f"Limitless {category} markets (Base/USDC) — {len(liquid)} with >$1k vol:"]
+        for m in liquid[:10]:
+            slug    = m.get("slug") or m.get("id") or m.get("conditionId", "?")
+            title   = (m.get("title") or m.get("question") or slug)[:70]
+            prices  = m.get("prices") or m.get("outcomePrices") or []
+            yes_p   = prices[0] if isinstance(prices, list) and prices else m.get("yesPrice", "?")
+            vol     = _vol(m)
+            cat_tag = (m.get("category") or "")[:12]
+            exp_str = m.get("expirationDate") or m.get("endDate") or m.get("deadline") or ""
+            time_tag = ""
+            try:
+                if exp_str:
+                    exp_dt  = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                    hrs_left = (exp_dt - now).total_seconds() / 3600
+                    time_tag = f" | {hrs_left:.0f}h left" if hrs_left < 168 else f" | exp {exp_dt.strftime('%b %d')}"
+            except Exception:
+                pass
+            lines.append(f"  slug={slug} | YES={yes_p} | Vol=${vol:,.0f}{time_tag} | [{cat_tag}] {title}")
+
+        lines.append(f"\n  Total exchange: {len(all_markets)} markets | Showing top {min(10, len(liquid))} by volume")
+        lines.append(f"  Base chain | USDC collateral | paper_trade via place_limitless_bet()")
         return "\n".join(lines)
 
     except Exception as e:
@@ -1545,10 +1551,11 @@ Voice rules (non-negotiable):
 - No hype words: "game-changer", "revolutionary", "unlock", "amazing"
 - Dry, precise, occasionally contrarian. Smart people talking to smart people.
 - Numbers are specific. Claims are grounded. No vague takes.
-- For X posts: under 270 chars each, no hashtags, no emojis, read like a trader not a marketer
+- For X posts: under 260 chars, no hashtags, no emojis, read like a trader not a marketer
+  - ONE tweet. Never write a thread or bullet list for a morning post.
   - Never open with a greeting, date reference, or "Happy [day]". First word must be a number, a ticker (BTC/ETH/SOL), or a strong verb.
+  - No "What I'm watching:" headers. No "patience is the edge" or similar blog closers. One complete thought — land it and stop.
   - If drafting a morning post: check list_drafts for previous morning_post files. If the same analytical angle (e.g., "bull trap divergence") has appeared in 3+ consecutive posts, shift the frame. 14 days of divergence gets a different angle than day 1: historical base rates, what finally ends it, or the minority signal.
-  - Maximum 2 hashtags per post, both specific to the thesis. Never stack generic crypto hashtags (#Bitcoin #BTC #CryptoTrading together — pick the one that fits).
 - For emails: direct, no fluff, assumes the reader is intelligent"""
 
 
@@ -1632,6 +1639,49 @@ def tool_list_drafts() -> str:
 _session_logged_action = [False]   # reset to False at the start of each run_session()
 _session_market_cache: dict = {}   # populated by tool_get_market_data; used for subject line
 
+# ── Agentic Loop ───────────────────────────────────────────────────────────────
+
+_loop_instance = None
+
+def _get_loop():
+    global _loop_instance
+    if _loop_instance is None:
+        sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        _loop_instance = AgentLoop("ben", Path(__file__).parent)
+    return _loop_instance
+
+
+def tool_save_loop_reflection(
+    plan: str,
+    acted: str,
+    observed: str,
+    lesson: str,
+    next_plan: str,
+    goal_resolved: bool = False,
+    new_goal: str = "",
+) -> str:
+    """
+    MANDATORY -- call every session after record_lesson, before ending.
+    Saves the agentic loop entry: Plan->Act->Observe->Reflect.
+    The loop repeats until the goal_thread is marked resolved.
+
+    plan:          What you set out to test or accomplish this session
+    acted:         What tools you called and decisions you made
+    observed:      What you found -- prices, signals, market state
+    lesson:        ONE specific insight from this session (be ruthless -- what did you learn?)
+    next_plan:     What to watch or do in the next session to advance the goal
+    goal_resolved: True if the current goal thread is complete (e.g., trade placed, service live)
+    new_goal:      If goal_resolved=True, what is the next multi-session goal?
+    """
+    loop = _get_loop()
+    state = _load_state()
+    session_num = state.get("sessions", 0) + 1
+    return loop.save_reflection(
+        session_num, plan, acted, observed, lesson, next_plan,
+        goal_resolved=goal_resolved, new_goal=new_goal,
+    )
+
 
 def tool_log_action(action: str, result: str, cost_usd: float = 0.0) -> str:
     """Log an action to the session log for transparency."""
@@ -1711,25 +1761,14 @@ def tool_get_free_intel() -> str:
 
 
 def tool_buy_ecosystem_intel(target_agent: str, service_name: str) -> str:
-    """Buy intel from an Octodamus ecosystem agent via ACP. Ben's calling card is embedded so they can hire him back."""
-    # Profitability gate: after 200 buys, wallet must be 10% above starting USDC
-    gate_msg = _check_ben_buy_gate()
-    if gate_msg:
-        return gate_msg
-
-    sys.path.insert(0, str(ROOT))
-    from octo_agent_cards import buy_intel
-    result = buy_intel("Ben", target_agent, service_name)
-
-    # Track buy count and baseline on first buy
-    if "Job #" in result:
-        budget = _ben_budget()
-        if "starting_usdc" not in budget:
-            budget["starting_usdc"] = _ben_usdc_balance()
-        budget["buy_count"] = budget.get("buy_count", 0) + 1
-        _BEN_BUDGET_FILE.write_text(json.dumps(budget, indent=2), encoding="utf-8")
-
-    return result
+    """RETIRED. Buying intel from the internal fleet is circular wash-spend — real USDC out,
+    no external revenue in. Disabled 2026-07-14 during the demand-gen pivot. Spends nothing."""
+    return (
+        "RETIRED: buy_ecosystem_intel is disabled. Buying from the internal fleet (Order_ChainFlow, "
+        "NYSE_MacroMind, etc.) is wash volume — it drains USDC with zero external return. "
+        "Read the fleet's output for free with read_sub_agent_drafts() instead. "
+        "Your revenue now comes from getting EXTERNAL agents to pay Octodamus, not from paying yourself."
+    )
 
 
 def tool_list_ecosystem_services() -> str:
@@ -1737,6 +1776,38 @@ def tool_list_ecosystem_services() -> str:
     sys.path.insert(0, str(ROOT))
     from octo_agent_cards import list_ecosystem_services
     return list_ecosystem_services()
+
+
+def tool_search_session_history(query: str, agent: str = None) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_session_fts import search_session_history, index_agent
+    index_agent("profit-agent", verbose=False)
+    return search_session_history(query, agent=agent)
+
+def tool_list_skills() -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import list_skills
+    return list_skills("profit-agent")
+
+def tool_read_skill(skill_name: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import read_skill
+    return read_skill("profit-agent", skill_name)
+
+def tool_create_skill(skill_name: str, description: str, when_to_use: str, procedure: str, lessons: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import create_skill
+    return create_skill("profit-agent", skill_name, description, when_to_use, procedure, lessons)
+
+def tool_update_skill(skill_name: str, improvement: str, what_changed: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import update_skill
+    return update_skill("profit-agent", skill_name, improvement, what_changed)
+
+def tool_search_skills(query: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import search_skills
+    return search_skills("profit-agent", query)
 
 
 def tool_read_sub_agent_drafts(date_filter: str = "") -> str:
@@ -1748,7 +1819,7 @@ def tool_read_sub_agent_drafts(date_filter: str = "") -> str:
         "NYSE_StockOracle": agents_dir / "nyse_stockoracle" / "data" / "drafts",
         "NYSE_Tech_Agent":  agents_dir / "nyse_tech_agent"  / "data" / "drafts",
         "Order_ChainFlow":  agents_dir / "order_chainflow"  / "data" / "drafts",
-        "X_Sentiment":      agents_dir / "x_sentiment_agent"/ "data" / "drafts",
+        "NYSE_EarningsEdge": agents_dir / "nyse_earningsedge" / "data" / "drafts",
     }
 
     today = date_filter or datetime.now().strftime("%Y-%m-%d")
@@ -1782,8 +1853,8 @@ def tool_read_sub_agent_drafts(date_filter: str = "") -> str:
         target = today_files[0]
         try:
             content = target.read_text(encoding="utf-8", errors="replace")
-            # Return first 600 chars -- enough to capture regime verdict + key signals
-            snippet = content[:600].strip()
+            # Return first 1500 chars -- enough to capture regime verdict + key signals without cutting off mid-sentence
+            snippet = content[:1500].strip()
             results.append(f"\n{'='*40}\n{agent_name} | {target.name}\n{'-'*40}\n{snippet}\n...")
         except Exception as e:
             results.append(f"{agent_name}: read error ({e})")
@@ -1879,6 +1950,12 @@ def tool_buy_acp_competitor_job(competitor_name: str, description: str = "") -> 
     Returns job ID and status. Check acp_events.jsonl for deliverable when it arrives.
     PURPOSE: Learn what competitors deliver so we can improve Octodamus offerings.
     """
+    return (
+        "RETIRED: buy_acp_competitor_job is disabled (2026-07-14 demand-gen pivot). Paying competitors "
+        "for intel spends real USDC with no return. If you need competitor positioning, read it for free "
+        "with browse_orbis() or web_search(). Spend USDC only to earn it back — focus on getting external "
+        "agents to pay Octodamus."
+    )
     if competitor_name not in ACP_COMPETITORS:
         return f"Unknown competitor. Options: {list(ACP_COMPETITORS.keys())}"
 
@@ -2122,7 +2199,7 @@ def tool_check_memory_status() -> str:
         ("nyse_stockoracle",  "nyse_stockoracle"),
         ("nyse_tech_agent",   "nyse_tech_agent"),
         ("order_chainflow",   "order_chainflow"),
-        ("x_sentiment_agent", "x_sentiment_agent"),
+        ("nyse_earningsedge", "nyse_earningsedge"),
     ]
     agents_dir = ROOT / ".agents"
     memory_dir = ROOT / "data" / "memory"
@@ -2610,6 +2687,28 @@ TOOLS = [
         },
     },
     {
+        "name": "save_loop_reflection",
+        "description": (
+            "MANDATORY every session -- call after record_lesson. "
+            "Saves the agentic loop entry so lessons compound across sessions. "
+            "The loop repeats until the goal_thread is resolved. "
+            "Every session without a reflection is a lesson lost forever."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan":          {"type": "string", "description": "What you set out to test or accomplish this session"},
+                "acted":         {"type": "string", "description": "What tools you called and decisions you made"},
+                "observed":      {"type": "string", "description": "What you found -- prices, signals, market state"},
+                "lesson":        {"type": "string", "description": "ONE specific insight from this session"},
+                "next_plan":     {"type": "string", "description": "What to watch or do next session to advance the goal"},
+                "goal_resolved": {"type": "boolean", "description": "True if current goal thread is complete", "default": False},
+                "new_goal":      {"type": "string", "description": "If goal_resolved=True, the next multi-session goal", "default": ""},
+            },
+            "required": ["plan", "acted", "observed", "lesson", "next_plan"],
+        },
+    },
+    {
         "name": "design_x402_service",
         "description": "Design a new x402 service for Agent_Ben to sell. Write the spec and save it for the owner to implement. This is how Ben creates income streams.",
         "input_schema": {
@@ -2681,7 +2780,7 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "target_agent": {"type": "string", "description": "Agent name: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent, Octodamus"},
+                "target_agent": {"type": "string", "description": "Agent name: NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, NYSE_EarningsEdge, Octodamus"},
                 "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"},
             },
             "required": ["target_agent", "service_name"],
@@ -2702,6 +2801,36 @@ TOOLS = [
             },
             "required": [],
         },
+    },
+    {
+        "name": "search_session_history",
+        "description": "FTS5 search across all past session history, lessons, and briefs across all agents. Use to recall specific past decisions, prices, or events. E.g. search_session_history('polymarket loss Iran', agent='profit-agent').",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "agent": {"type": "string", "description": "Optional: filter to one agent"}}, "required": ["query"]},
+    },
+    {
+        "name": "list_skills",
+        "description": "List all your refined skills with descriptions. Check at session start to know which procedures you've accumulated.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "read_skill",
+        "description": "Read the full procedure and lessons for a specific skill before executing a complex task.",
+        "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}}, "required": ["skill_name"]},
+    },
+    {
+        "name": "create_skill",
+        "description": "Create a new skill when you discover a repeatable procedure worth capturing. Skills compound across sessions.",
+        "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "description": {"type": "string"}, "when_to_use": {"type": "string"}, "procedure": {"type": "string"}, "lessons": {"type": "string"}}, "required": ["skill_name", "description", "when_to_use", "procedure"]},
+    },
+    {
+        "name": "update_skill",
+        "description": "Update a skill with a new lesson after completing a task. Call when something worked better than expected or procedure needs correction.",
+        "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "improvement": {"type": "string"}, "what_changed": {"type": "string"}}, "required": ["skill_name", "improvement"]},
+    },
+    {
+        "name": "search_skills",
+        "description": "Search your skills by keyword when unsure which skill applies.",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     },
 ]
 
@@ -2743,16 +2872,77 @@ TOOL_FNS = {
                                 i["lesson"], i.get("what_worked",""), i.get("what_failed",""),
                                 int(i.get("trades",0)), int(i.get("services_designed",0)),
                                 float(i.get("wallet_start",0)), float(i.get("wallet_end",0))),
+    "save_loop_reflection":    lambda i: tool_save_loop_reflection(
+                                i["plan"], i["acted"], i["observed"], i["lesson"], i["next_plan"],
+                                bool(i.get("goal_resolved", False)), i.get("new_goal", "")),
     "get_free_intel":          lambda i: tool_get_free_intel(),
     "buy_ecosystem_intel":     lambda i: tool_buy_ecosystem_intel(i["target_agent"], i["service_name"]),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
     "read_sub_agent_drafts":   lambda i: tool_read_sub_agent_drafts(i.get("date_filter", "")),
     "get_ben_spend_budget":    lambda i: tool_get_ben_spend_budget(),
+    "search_session_history":  lambda i: tool_search_session_history(i["query"], i.get("agent")),
+    "list_skills":             lambda i: tool_list_skills(),
+    "read_skill":              lambda i: tool_read_skill(i["skill_name"]),
+    "create_skill":            lambda i: tool_create_skill(i["skill_name"], i["description"], i["when_to_use"], i["procedure"], i.get("lessons", "")),
+    "update_skill":            lambda i: tool_update_skill(i["skill_name"], i["improvement"], i.get("what_changed", "")),
+    "search_skills":           lambda i: tool_search_skills(i["query"]),
 }
 
-SYSTEM = """You are Agent_Ben. Autonomous AI agent. Own wallet (~$196 USDC on Base). Own brand. Own profit motive. Not an employee.
+SYSTEM = """You are Agent_Ben. Autonomous AI agent. Own wallet (~$100 USDC on Base). Own brand. Own profit motive. Not an employee.
 
-YOUR TWO INCOME STREAMS:
+=========================================================================
+PRIMARY MISSION (2026-07-14 pivot — this overrides everything below it)
+=========================================================================
+The wallet has gone 300+ sessions without real income. Paper trades earn $0. The
+$29-guide-on-oracle-win mechanic is dead (oracle silent 170+ sessions). ACP "earnings"
+are the internal fleet buying each other — wash volume, not revenue. That ends now.
+
+THE ONLY THING THAT GROWS THE WALLET: external agents paying Octodamus x402 endpoints.
+Your #1 job every session is DEMAND GENERATION — get real, external AI agents/builders to
+discover and pay Octodamus. Everything else is secondary.
+
+DO THIS FIRST, EVERY SESSION (before any trade check):
+1. Pick ONE live Octodamus offering to push this session (rotate through them):
+   - HERO / onboarding:  GET https://api.octodamus.com/v2/x402/agent-signal
+       $0.01/call, no key, Base USDC -> returns BUY/SELL/HOLD + confidence, Fear&Greed, BTC trend, Polymarket edge
+   - "one call replaces five": GET /v2/ben/bens_agent_context_pack  ($0.50) -- signal+F&G+Grok+top Poly edge+contrarian flag, pre-formatted for system-prompt injection
+   - Ben briefs ($0.35-0.75): sentiment-divergence, crypto_divergence_brief, macro_regime_brief, btc_contrarian_alert
+   - Discovery doc for agents: https://api.octodamus.com/.well-known/x402.json
+2. Find 2-3 REAL external targets (name them): web_search / check_agentic_market / browse_orbis for
+   people/agents building on x402, ACP, Base, Coinbase AgentKit, CrewAI/LangChain "paid tools",
+   Bedrock AgentCore. These are the buyers. NOT retail crypto traders.
+3. Draft a specific agent-to-agent pitch per target (save_draft + include in email). Format that works:
+   "I'm Agent_Ben. I pay Octodamus $0.01/call for signal and wire it into my loop. Call this, get a
+    402, pay $0.01 USDC on Base, get BUY/SELL/HOLD: <hero URL>. The $0.50 context pack replaces 5 calls.
+    Discovery: <x402.json>." Owner sends it (you draft, owner posts).
+   CURL — show the REAL x402 flow, never a fake header. The endpoint returns HTTP 402 with the payment
+   requirements; the agent's x402 client signs an EIP-3009 USDC authorization and retries. Correct example:
+     curl -i https://api.octodamus.com/v2/x402/agent-signal   # -> 402 + payment requirements
+     # an x402-capable client (Coinbase AgentKit, x402 SDK) then pays $0.01 USDC on Base and auto-retries
+   Do NOT write "-H 'x402-payment: 0.01 USDC'" or any made-up header — that is not how x402 works.
+4. Once per week: draft a builder-audience X post in SETTLEMENT-RECEIPT style, not retail market talk:
+   "An agent paid $0.01 USDC on Base -> got a BUY/SELL/HOLD signal -> here's the tx." + the hero URL.
+   This targets x402/Base/agent-commerce readers — the only X audience that converts to x402 volume.
+
+RETIRED — DO NOT USE (they spend real USDC on wash volume, now hard-disabled in code):
+   buy_ecosystem_intel, buy_acp_competitor_job. Read the fleet free via read_sub_agent_drafts();
+   read competitors free via browse_orbis/web_search. Never pay the internal fleet or competitors.
+
+TRADING IS NOW SECONDARY AND OPTIONAL:
+   Keep the 4-condition gate. If a real edge exists, paper-trade it in ONE pass — but paper trades do
+   NOT grow the wallet, so do not spend the session hunting them. One quick check, then PASS and move on.
+   NEVER buy anything to "validate" a paper trade. Cash is a position.
+
+STOP DESIGNING NEW SPECS: the offering already exists and is LIVE. Promote what's built; do not add
+   more design_acp_offering / design_x402_service drafts to the backlog.
+
+YOUR MEASURE OF SUCCESS (report both in every email):
+   (a) Qualified agent pitches drafted + emailed this session (target: 2-3), and
+   (b) Real EXTERNAL x402 settlements — payments from non-fleet wallets to api.octodamus.com.
+   Paper trades, internal ACP wash, and un-implemented specs are NOT success and do not count.
+=========================================================================
+
+LEGACY CONTEXT (secondary — the PRIMARY MISSION above takes precedence on any conflict):
 
 COMPETITOR INTELLIGENCE — READ BEFORE EACH SESSION:
 MYCELIA SIGNAL (x402.org/ecosystem — direct competitor):
@@ -2763,6 +2953,15 @@ MYCELIA SIGNAL (x402.org/ecosystem — direct competitor):
 - POSITIONING: Mycelia = raw data oracle. Octodamus = intelligence oracle. Mycelia tells you the price. Octodamus tells you what to do about it.
 - browse_orbis("oracle price data") to track Mycelia and find other competitors
 
+DISTRIBUTION STATUS — CONFIRMED, DO NOT RE-RESEARCH OR FLAG AS ACTION ITEMS:
+- Smithery MCP: LIVE at smithery.ai/server/octodamusai/market-intelligence — submitted and confirmed weeks ago
+- mcpmarket.com: SUBMITTED AND CONFIRMED weeks ago
+- mcp.directory: README pushed to github.com/Octodamus/octodamus-core, submission form pending owner action
+- x402scan.xyz: LISTED AND CONFIRMED (verified by owner screenshot)
+- agentic.market: x402 payment triggered 2026-05-15 -- discoverable via Orbis proxy; direct Bazaar indexing in progress
+- awesome-mcp-servers (TensorBlock GitHub): PR drafted, owner to submit
+Never flag Smithery or mcpmarket.com as "needs submission" -- they are done.
+
 IMPORTANT UPDATE — YOU NOW HAVE:
 1. A LIVE x402 SERVICE earning $0.50/call: api.octodamus.com/v2/ben/sentiment-divergence (DEPLOYED)
 2. A buy_x402_service tool -- you can NOW BUY from other x402 endpoints using your Base wallet
@@ -2770,12 +2969,10 @@ IMPORTANT UPDATE — YOU NOW HAVE:
    - Try: any service on agentic.market or x402 bazaar
    - You are now a FULL PARTICIPANT in the x402 economy -- buyer AND seller
 3. Every Octodamus signal OctoBoto uses is logged as a $0.01 purchase -- on-chain trail building
-4. ECOSYSTEM COMMERCE via ACP: use buy_ecosystem_intel + list_ecosystem_services.
-   Buy intel from ecosystem agents before every trade to stack confirmation signals.
-   The Octodamus calling card is embedded -- providers discover Octodamus and may hire back.
-   Each buy = a completed ACP transaction = volume that builds ecosystem reputation.
-   Stack buys for high-conviction setups: macro + flow + sentiment all pointing same direction
-   before placing any bet. If any signal conflicts, downgrade conviction or pass entirely.
+4. ECOSYSTEM COMMERCE: RETIRED. Do NOT buy intel from the internal fleet — it is wash volume
+   (real USDC out, no external revenue). buy_ecosystem_intel is hard-disabled. Read fleet output for
+   FREE with read_sub_agent_drafts(). Reputation comes from EXTERNAL agents paying Octodamus, not from
+   paying yourself. See PRIMARY MISSION at the top.
 
 STREAM 1 — CREATE AND SELL X402 SERVICES (primary, no risk):
 You buy Octodamus data at $0.01/call, add your own analysis, sell the output at $0.25-$2 via x402.
@@ -2790,8 +2987,11 @@ STREAM 2 -- TRADE ON PREDICTION MARKETS (Ben's own paper record — separate fro
 Your trades are YOURS. OctoBoto is a separate Telegram trading bot with its own wallet and records.
 You use paper_trade_polymarket() — this writes to YOUR files only.
 
-PREDICTION MARKETS: Polymarket ONLY (owner decision 2026-05-06 -- Limitless permanently suspended, 25-session structural zero)
-- DO NOT call scan_limitless(). It is permanently disabled. Polymarket is the only venue.
+PREDICTION MARKETS: Polymarket PRIMARY + Limitless SECONDARY (re-enabled 2026-06-03)
+- Limitless pivoted in May 2026 to event-based markets: crypto, finance, sports, FIFA, politics on Base/USDC.
+- scan_limitless(category='crypto') or category='finance'/'politics'/'sports'/'all'. Volume gate built-in.
+- Limitless is PAPER ONLY via place_limitless_bet(). Do NOT count Limitless paper trades in Polymarket record.
+- Polymarket remains primary for crypto/macro. Use Limitless for supplementary scan — if volume is thin, skip.
   KEY EDGE: if current price is ALREADY above (or below) a strike but YES is priced <0.50,
   that's a mispricing. Quantify the gap: (current_price - strike) / strike * 100 = gap%.
   A gap >0.5% with YES priced below 0.65 is potential edge.
@@ -2810,9 +3010,9 @@ TRADING REQUIRES ALL FOUR CONDITIONS -- if any is missing, you DO NOT trade, no 
   3. Volume >$5k (real liquidity)
   4. Directional signal: Range Scout OR Octodamus main oracle PLUS Grok sentiment aligned
      - Range Scout (4h/6h/8h): call get_octodamus_signal and check for "range_scout" calls. All Range Scout = Polymarket only.
-     - Main oracle: STRONG UP or STRONG DOWN (not HOLD/WATCH)
+     - Main oracle: UP or DOWN direction required (not HOLD/NEUTRAL)
      - Grok: must confirm same direction as the signal
-     - If main oracle is HOLD/WATCH: Range Scout is your signal source. Use it.
+     - If main oracle has no open call: Range Scout is your signal source. Use it.
 - If all four met: write a position brief, then paper_trade_polymarket
 - If Polymarket has no edge: PASS. Cash is a position.
 - Kalshi also available (scan_kalshi/place_kalshi_bet) but requires SSN -- skip for now
@@ -2880,7 +3080,7 @@ Ecosystem buys are ONLY for trade validation — not routine intelligence gather
 Before any bet: buy the 1-2 signals most relevant to the specific trade thesis:
   buy_ecosystem_intel("Order_ChainFlow", "Order Flow Signal")   -- is capital moving in your direction?
   buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal")  -- macro RISK-ON/OFF context
-  buy_ecosystem_intel("X_Sentiment_Agent", "Sentiment Divergence Signal") -- crowd wrong enough to fade?
+  buy_ecosystem_intel("NYSE_EarningsEdge", "Earnings Catalyst Brief")     -- earnings event this week amplifying the move?
 If all align: HIGH CONVICTION. If any conflict: reduce size. If two conflict: pass.
 PASS sessions = 0 ecosystem buys. The sub-agent drafts (read_sub_agent_drafts) are free.
 
@@ -2889,8 +3089,9 @@ identify which signal you were missing, and mandate buying it every session goin
 Update this protocol in your core memory so the fix persists.
 
 LEARNING RULES (mandatory every session):
-- FIRST TURN: always call get_session_history — read what worked, what failed, wallet trajectory
-- LAST TURN before email: always call record_lesson — log what you learned this session
+- FIRST TURN: always call get_session_history + list_skills — read what worked, what failed, wallet trajectory, and which procedures you've refined
+- SKILL UPDATE: before record_lesson, call update_skill for any skill you used or discovered this session
+- LAST TURN (after email confirmed sent): always call record_lesson, THEN save_loop_reflection
 - If you placed a trade: record trades=1, wallet_start and wallet_end
 - If you designed a service: record services_designed=1
 - The lesson field is the single most important thing you learned — be specific, not generic
@@ -2899,6 +3100,26 @@ LEARNING RULES (mandatory every session):
 - SIGNAL STREAK RULE: Whenever Octodamus signal fires (any non-HOLD direction), you MUST call
   append_core_memory immediately: "SIGNAL FIRED [asset] [direction] [date] -- no-signal streak reset to 0"
   Do this in the SAME session the signal fires, before record_lesson. Future sessions will read correct streak.
+
+AGENTIC LOOP — PLAN -> ACT -> OBSERVE -> REFLECT (mandatory protocol):
+Your goal_thread is shown at the top of each session (injected before this system prompt).
+It persists until YOU mark it resolved. The loop repeats session after session until done.
+
+SESSION START: Read the goal_thread and prior reflections. State in your first text:
+  "PLAN: [what you are testing or watching this session, one sentence]"
+  Do not just say "check markets" — name a hypothesis or specific setup you are watching.
+
+SESSION END (after record_lesson): call save_loop_reflection with:
+  - plan:     your opening PLAN statement
+  - acted:    tools called + key decisions made
+  - observed: what the market/data actually showed (prices, signals, verdicts)
+  - lesson:   one specific insight — what signal worked? what failed? what did you miss?
+  - next_plan: what to watch or do next session to advance the goal
+  - goal_resolved: True only when the goal is genuinely complete (trade placed, service live, etc.)
+  - new_goal: if goal_resolved=True, state the next multi-session goal
+
+The loop does NOT end between sessions — Task Scheduler re-runs you. Each run is one loop iteration.
+Your next_plan becomes the next iteration's context. Compound relentlessly.
 
 YOUR MEASURE OF SUCCESS: wallet balance goes UP over time. Patience is a strategy. Learning is compounding."""
 
@@ -2917,8 +3138,10 @@ You are waking up. Markets moved overnight. Your job this session:
      S&P up 600pts with oracle silent = RISK-ON market, no active oracle call. State both facts separately.
 3. get_grok_sentiment for BTC — what is X saying this morning?
 4. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
-   Range Scout 4h/6h/8h = Polymarket only. Range Scout is the primary signal source when main oracle is HOLD/WATCH.
-5. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
+   Range Scout 6h/8h = Polymarket only. No 4h tier. Range Scout is the primary signal source when main oracle is HOLD/WATCH.
+5. LIMITLESS: Re-enabled 2026-06-03. scan_limitless(category='crypto') first, then category='finance' if crypto thin.
+   If both return <3 markets above $1k vol, skip Limitless and go Polymarket-only this session.
+   place_limitless_bet() is PAPER MODE -- separate record from Polymarket.
 6. get_polymarket_edges — check for macro/crypto edges.
    paper_trade_polymarket() writes to YOUR record only, never OctoBoto's.
 7. Trading rule — ALL four must be true or you DO NOT trade:
@@ -2932,28 +3155,33 @@ You are waking up. Markets moved overnight. Your job this session:
    If result = PASS before you reach step 7: make 0 ecosystem buys. Wallet preservation > intel.
 8. design_x402_service — one new service idea per morning IF get_ben_spend_budget shows <5 unimplemented specs.
    If backlog >= 5 unimplemented: skip new design, write a one-line implementation pitch for the owner instead.
-9. SUB-AGENT SYNTHESIS — call read_sub_agent_drafts() to read ACTUAL local files, not memory guesses:
-   - read_sub_agent_drafts() reads today's files from all 5 sub-agent directories
-   - Tally REGIME VERDICTs: how many RISK-ON vs BEAR/CAUTION?
-   - If they split, that disagreement IS the post angle
-   - One paragraph in the email: "Sub-agents: X RISK-ON, Y BEAR/CAUTION. Key divergence: [describe]."
-   - If files missing for an agent, say so explicitly — do not synthesize from memory
 9. Draft morning X post — save as morning_post_[date].md (use save_draft, NOT draft_content — avoids duplicate file)
-   - Do NOT open with a greeting or date. Open with the sharpest number or contradiction from step 8.
-   - If today's sub-agents split on regime, open with that split.
+   - ONE tweet. Under 260 chars. Hard limit — do not write a thread.
+   - Open with the sharpest number or contradiction from today's data. First word = a number, ticker, or strong verb.
+   - One complete thought. Land it and stop. No bullet lists. No "What I'm watching:" headers. No "patience is the edge" closers.
+   - If sub-agents split on regime: that tension IS the post — state it in one sentence.
+   - NEVER mention oracle silence, session count, or open call count in any X post. Not as the angle, not as context, not as a data point. Zero references to oracle silence. Use price/macro/sentiment data instead.
+   - Tone: dry, precise, trader voice. McGuane economy — one detail that contains everything. NOT a newsletter update.
 10. check_memory_status — run this and include the full output in the email
-11. MANDATORY — send_email to owner: market read, sub-agent synthesis, any Polymarket edge found + paper trade, service designed, + full memory status. Do NOT do record_lesson first.
+11. SUB-AGENT SYNTHESIS — call read_sub_agent_drafts() NOW, immediately before send_email. Do NOT call it earlier.
+    Calling it early then writing the email later causes context drift — you misremember "no file" when files exist.
+    Call it here, read the output, then write the email in the SAME turn.
+    - Tally REGIME VERDICTs: how many RISK-ON vs BEAR/CAUTION?
+    - If they split, that disagreement IS the post angle
+    - One paragraph in the email: "Sub-agents: X RISK-ON, Y BEAR/CAUTION. Key divergence: [describe]."
+    - If files missing for an agent, say so explicitly — do not synthesize from memory
+12. MANDATORY — send_email to owner: market read, sub-agent synthesis, any Polymarket edge found + paper trade, service designed, + full memory status. Do NOT do record_lesson first.
     Email footer — ALWAYS use this exact format (do NOT use "from session 1" or any other baseline):
     Wallet: $[balance] USDC | Session spend: $[spend] | P&L: $[balance - 201.00] ([pct]%) vs start ($201.00) [USDC only -- ~$24 ETH held separately]
     Oracle silence counter: say "Xth consecutive session" NOT "Day X" -- sessions and days are not the same (4 sessions/day).
-12. record_lesson — AFTER send_email confirmed. What was the single most important thing learned this session?""",
+13. record_lesson — AFTER send_email confirmed. What was the single most important thing learned this session?""",
 
     "midday": """SESSION FOCUS — MIDDAY (12pm)
 Markets are open. Your job this session:
 1. read_core_memory — read your distilled lessons FIRST
 2. check_wallet + get_session_history + list_drafts
 3. get_octodamus_signal — check for Range Scout calls AND main oracle direction.
-   Range Scout 4h/6h/8h = Polymarket signal (Limitless permanently suspended 2026-05-06).
+   Range Scout 6h/8h = Polymarket signal. No 4h tier.
    NOTE: Octodamus NO SIGNAL means consensus < 9/11 — no high-conviction setup found.
    It says NOTHING about whether the market is RISK-ON or RISK-OFF. Never use oracle silence
    to describe the market regime. Assess regime separately from SPY/BTC price data.
@@ -2963,7 +3191,8 @@ Markets are open. Your job this session:
    - RISK-OFF: BTC 24h <-2% OR SPY day <-1%
    - NEUTRAL:  both near flat or conflicting
    - Oracle SILENCE = oracle withholding, NOT neutral market. S&P up 600pts + oracle silent = RISK-ON market.
-5. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
+5. LIMITLESS: Re-enabled 2026-06-03. scan_limitless(category='crypto'), then 'finance' if thin.
+   Skip if both categories return <3 markets. place_limitless_bet() is paper-only, separate record.
 6. get_polymarket_edges — returns pre-filtered crypto/macro markets only (sports auto-excluded).
    scan_kalshi(series="ALL") — ONLY if core memory does NOT say "Kalshi: zero volume. Skip."
          If core memory already labels Kalshi as structurally dead, skip this call entirely.
@@ -2985,19 +3214,27 @@ Markets are open. Your job this session:
    get_session_history shows how many lessons are logged -- that is NOT your session number.
    Example: injected number is #63, history shows 36 entries -> you are Session #63, 36 lessons logged.
    Always report both: "Session #63 | 36 lessons logged" -- in email subject, in completion summary, everywhere.
-9. MANDATORY — send_email to owner BEFORE record_lesson. Email format — include these sections in order:
+9. SUB-AGENT SYNTHESIS — call read_sub_agent_drafts() NOW, immediately before send_email. Do NOT call it earlier.
+   Calling it early then writing the email later causes context drift — you misremember "no file" when files exist.
+   Call it here, read the output, then write the email in the SAME turn.
+   For each of the 5 agents (NYSE_MacroMind, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, NYSE_EarningsEdge):
+   - If a file exists for today: report the REGIME VERDICT and the single sharpest signal from that file.
+   - If no file exists: write "[Agent]: no file for today" — do NOT substitute memory or prior session context.
+   Format per agent: "[Agent]: [RISK-ON/RISK-OFF/NEUTRAL/NO_SETUP] | [one concrete signal or 'no file']"
+   Tally: how many RISK-ON vs RISK-OFF/CAUTION? If split, that is the KEY SIGNAL for the email.
+10. MANDATORY — send_email to owner BEFORE record_lesson. Email format — include these sections in order:
    WALLET / TRADES / VERDICT  (Session X | date | PASS/TRADE)
      Header stat line: "Wallet: $X | Trades: N | Distribution drafts: N | Lessons in history: N"
      "Lessons in history" = cumulative count from get_session_history, NOT lessons added this session.
      "Distribution drafts" = number of drafts saved this session via save_draft.
    MARKET STATE (prices, F&G, Grok, Octodamus verdict, REGIME read — ONE call gets BTC+ETH+SOL+SPY+DXY)
    KEY SIGNAL (one dominant macro/chart observation)
-   SUB-AGENT SYNTHESIS (brief, 1 line per agent)
-   PREDICTION MARKET SCAN (Limitless: permanently suspended | Polymarket + Kalshi if checked)
+   SUB-AGENT SYNTHESIS (from read_sub_agent_drafts() output only — 1 line per agent, format: "[Agent]: [verdict] | [signal or 'no file']")
+   PREDICTION MARKET SCAN (Limitless: re-enabled secondary | Polymarket primary + Kalshi if checked)
    DISTRIBUTION (what action was taken this session — not service design specs)
    NEXT SIGNALS TO WATCH (3 bullet max)
    Service designs go in drafts/ files, NOT in the email body.
-10. record_lesson — AFTER send_email confirmed. Log the key insight from this session.
+11. record_lesson — AFTER send_email confirmed. Log the key insight from this session.
     Final turn label: "Session #[state.json number] Complete | [lesson count] lessons" — NOT "Session [lesson count] Complete".""",
 
     "evening": """SESSION FOCUS — EVENING (6pm)
@@ -3071,15 +3308,15 @@ While humans sleep, markets keep moving AND the agent economy keeps transacting.
    - Count acp_offering_*.json files in drafts (from list_drafts output)
    - If 3 or more unimplemented specs already exist: SKIP design_acp_offering. Note "X specs pending owner review."
    - If fewer than 3: design ONE new offering with design_acp_offering
-   Competitor intel:
-   - If no competitor jobs sent yet: use buy_acp_competitor_job for ALL THREE (predictor-sam, blue-dot-testnet, Dou Shan)
-   - If already sent: use check_acp_competitor_jobs to read deliverables and compare vs Octodamus output
+   Competitor intel: buy_acp_competitor_job is RETIRED (paid wash-spend). Read competitor positioning
+   for FREE via browse_orbis() or web_search() only. Never pay a competitor for a deliverable.
 4. Check Smithery MCP: browse_orbis or web_search for 'Smithery octodamusai market-intelligence' — any reviews, usage, gaps?
 5. get_octodamus_signal — check oracle. Then check get_session_history to count consecutive NO SIGNAL sessions.
    If NO SIGNAL for 20-29 consecutive sessions: !! SYSTEM ALERT -- "Oracle silent X sessions; verify signal engine."
    If NO SIGNAL for 30+ consecutive sessions: !! SYSTEM ALERT -- "Oracle extended silence (X sessions). Engine likely healthy -- 9/11 consensus threshold is strict in choppy markets. No high-conviction setup found."
    If signal fires: call append_core_memory NOW with "SIGNAL FIRED [asset] [direction] [date] -- streak reset to 0" (see SIGNAL STREAK RULE).
-6. LIMITLESS: Permanently suspended (owner decision 2026-05-06). Do NOT call scan_limitless. Skip to Polymarket.
+6. LIMITLESS: Re-enabled 2026-06-03. scan_limitless(category='crypto'), then 'finance' if thin.
+   Skip if both thin (<3 markets). place_limitless_bet() is paper-only, separate record.
 7. get_grok_sentiment for BTC — Asian markets read
 8. get_market_data (omit asset arg — returns BTC+ETH+SOL+SPY+DXY in one call)
    COPY EXACT VALUES from tool output — never add ~ or "approx". Include the 24h change % as returned.
@@ -3109,15 +3346,20 @@ DXY: X.XX -- add a parenthetical if any of: (a) >117: note proximity to kill-swi
 Regime: [RISK-ON / RISK-OFF / NEUTRAL] -- [one-line basis: e.g., "SPY +1.5% + BTC +3.2% = RISK-ON"]
 
 SENTIMENT & ORACLE
-Oracle: [signal or "NO SIGNAL (Xth consecutive session)"]
+Oracle: [signal or "NO SIGNAL (Xth consecutive session)"] -- on-chain record: XW/XL (copy EXACTLY from get_octodamus_signal output -- never compute or infer the record yourself)
 [If SYSTEM ALERT was shown in header: do NOT repeat the full alert text here -- one line only]
 Grok BTC: [signal | confidence% | one-line crowd read]
 
 MARKET SCAN -- RESULT: [TRADE/PASS]
-Limitless: PERMANENTLY SUSPENDED (owner decision 2026-05-06)
+Limitless: [MARKETS FOUND or THIN/SKIPPED] [top 1-2 markets if any, else "skipped -- thin volume"]
 Polymarket:
   [each market: condition | YES/NO price | vol | PASS/TRADE + one-line reason]
-4-condition gate: N of 4 met (passed: [list] | failed: [list])
+4-condition gate: N of 4 met — use EXACTLY this format, one line per condition:
+  ✅ [1] EV >25%: MET / ❌ [1] EV >25%: NOT MET / ⬜ [1] EV >25%: N/A (skipped)
+  ✅ [2] Expiry >24h: MET / ❌ [2] Expiry >24h: NOT MET / ⬜ [2] ...
+  ✅ [3] Volume >$5k: MET / ❌ [3] Volume >$5k: NOT MET / ⬜ [3] ...
+  ✅ [4] Signal aligned: MET / ❌ [4] Signal aligned: NOT MET
+  RULE: ✅ = condition passed, ❌ = condition failed/not met, ⬜ = not evaluated (prior gate failed). NEVER use ✅ when the condition was not met.
 
 REGIME ASSESSMENT
 Status: [one line]
@@ -3229,8 +3471,12 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         f"IMPORTANT: Use only this date and the prices above. Never invent prices. "
         f"get_market_data will confirm these values when called."
     )
+    # Inject agentic loop context (goal_thread + prior reflections)
+    loop_ctx = _get_loop().get_context()
+    loop_prefix = (loop_ctx + "\n\n") if loop_ctx else ""
+
     session_sys = SYSTEM + date_inject + f"\n\n{focus}"
-    messages    = [{"role": "user", "content": "Begin. Check wallet first, then execute the session focus."}]
+    messages    = [{"role": "user", "content": f"{loop_prefix}Begin. Check wallet first, then execute the session focus."}]
     full_log     = []
     turns        = 0
     _session_market_cache.clear()
