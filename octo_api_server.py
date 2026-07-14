@@ -890,12 +890,30 @@ def _custom_openapi():
             return True
         return path.startswith("/v2/ben/") and not path.endswith("/preview")
 
+    # Paid endpoints need a documented 402 + an input schema so x402scan/Bazaar
+    # can register them as resources. Many Ben endpoints take no query args, so
+    # advertise an optional `asset` hint (FastAPI ignores undeclared query params,
+    # so this is spec-only and cannot change endpoint behavior).
+    _402_RESPONSE = {
+        "description": "Payment Required — x402 challenge (EIP-3009 USDC on Base). "
+                       "Sign the authorization and retry with the PAYMENT-SIGNATURE header.",
+    }
+    _ASSET_PARAM = {
+        "name": "asset", "in": "query", "required": False,
+        "schema": {"type": "string", "enum": ["BTC", "ETH", "SOL"], "default": "BTC"},
+        "description": "Optional asset focus (BTC, ETH, or SOL). Endpoints return full "
+                       "market coverage; this scopes the primary asset.",
+    }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)
         for method, op in ops.items():
             if not isinstance(op, dict) or method.lower() not in ("get", "post", "put", "delete", "patch"):
                 continue
             op["security"] = [{"x402Payment": []}] if paid else []
+            if paid:
+                op.setdefault("responses", {}).setdefault("402", dict(_402_RESPONSE))
+                if not op.get("parameters") and not op.get("requestBody"):
+                    op["parameters"] = [dict(_ASSET_PARAM)]
 
     schema["security"] = []  # default: free / no auth required
     app.openapi_schema = schema
