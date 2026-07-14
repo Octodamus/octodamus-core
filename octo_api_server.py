@@ -8385,15 +8385,17 @@ async def _proxy_to_mcp(path: str, request: Request):
             return JSONResponse({"error": str(e)}, status_code=502)
 
 
-@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], include_in_schema=False)
 async def mcp_proxy_root(request: Request):
-    """Proxy bare /mcp → MCP server root. Prevents FastAPI 307 redirect that breaks Smithery scanner."""
+    """Proxy bare /mcp → MCP server root. Prevents FastAPI 307 redirect that breaks Smithery scanner.
+    Hidden from openapi.json — it's an MCP transport, not a REST resource, and x402scan/Bazaar
+    crawlers otherwise probe it as an x402 endpoint and error on the 405."""
     return await _proxy_to_mcp("", request)
 
 
-@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], include_in_schema=False)
 async def mcp_proxy(path: str, request: Request):
-    """Proxy /mcp/* → local MCP server on port 8743."""
+    """Proxy /mcp/* → local MCP server on port 8743. Hidden from openapi.json (see mcp_proxy_root)."""
     return await _proxy_to_mcp(path, request)
 
 
