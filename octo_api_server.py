@@ -862,6 +862,7 @@ def _custom_openapi():
         version=app.version,
         description=app.description,
         routes=app.routes,
+        contact={"name": "Octodamus", "email": "octodamusai@gmail.com", "url": "https://octodamus.com"},
     )
     # Replace auto-generated APIKeyHeader scheme with x402 PAYMENT-SIGNATURE
     # so Orbis and other API marketplaces generate the correct quickstart example.
@@ -879,7 +880,24 @@ def _custom_openapi():
             "description": "Annual API key from api.octodamus.com/v1/signup (free Basic tier available).",
         },
     }
-    schema["security"] = [{"x402Payment": []}, {"ApiKeyAuth": []}]
+
+    # Per-operation security. Only genuinely x402-paid routes carry the payment
+    # scheme; everything else is marked free (security: []). This stops crawlers
+    # (x402scan / CDP Bazaar) from probing free endpoints as if paid and erroring
+    # with "did not return a 402 payment challenge".
+    def _is_paid(path: str) -> bool:
+        if path in ("/v2/x402/agent-signal", "/v2/guide/derivatives"):
+            return True
+        return path.startswith("/v2/ben/") and not path.endswith("/preview")
+
+    for path, ops in schema.get("paths", {}).items():
+        paid = _is_paid(path)
+        for method, op in ops.items():
+            if not isinstance(op, dict) or method.lower() not in ("get", "post", "put", "delete", "patch"):
+                continue
+            op["security"] = [{"x402Payment": []}] if paid else []
+
+    schema["security"] = []  # default: free / no auth required
     app.openapi_schema = schema
     return schema
 
@@ -3923,11 +3941,24 @@ def v2_agent_signal(auth=Depends(require_key_v2)):
     return resp
 
 
-@app.get("/v2/x402/agent-signal", tags=["Agent Data v2"], include_in_schema=False)
-def v2_x402_agent_signal(request: Request):
+@app.get(
+    "/v2/x402/agent-signal",
+    tags=["Agent Data v2"],
+    summary="x402 agent signal — pay $0.01 USDC on Base",
+    responses={
+        402: {"description": "Payment Required — x402 challenge (EIP-3009 USDC on Base). "
+                             "Sign the authorization and retry with the PAYMENT-SIGNATURE header."},
+        200: {"description": "Signed BUY/SELL/HOLD signal pack (Ed25519)."},
+    },
+)
+def v2_x402_agent_signal(
+    request: Request,
+    asset: str = Query("BTC", description="Asset to scope the signal to: BTC, ETH, or SOL."),
+):
     """
     x402-native agent signal endpoint. Requires PAYMENT-SIGNATURE header (EIP-3009 USDC on Base).
     $0.01/call micro or $29/year annual. Bazaar-discoverable via 402 + extension headers.
+    Optional `asset` query param (BTC|ETH|SOL) scopes the primary signal.
     """
     x_payment = (
         request.headers.get("PAYMENT-SIGNATURE")
@@ -3956,6 +3987,7 @@ def v2_x402_agent_signal(request: Request):
                      media_type="application/json", headers=_gate_headers)
     _x402_verify_settle(request, _X402_REQS)
     payload = _get_cached_signal()
+    payload["requested_asset"] = (asset or "BTC").upper()
     payload["payment"] = "x402 — USDC on Base | api.octodamus.com"
     payload = _sign_payload(payload)
     return JSONResponse(content=payload, headers={"Cache-Control": "public, s-maxage=60"})
