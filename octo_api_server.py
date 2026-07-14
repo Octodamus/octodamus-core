@@ -904,6 +904,20 @@ def _custom_openapi():
         "description": "Optional asset focus (BTC, ETH, or SOL). Endpoints return full "
                        "market coverage; this scopes the primary asset.",
     }
+    # Price per paid route (USD). x402scan OpenAPI-first discovery requires each paid
+    # operation to declare x-payment-info with protocols + price, or it finds "no
+    # discovery document" and skips the origin. See Merit-Systems/x402scan DISCOVERY.md.
+    _PAID_PRICES = {
+        "/v2/x402/agent-signal":                        "0.01",
+        "/v2/ben/sentiment-divergence":                 "0.50",
+        "/v2/ben/bens_fear_greed_divergence_signal":    "0.35",
+        "/v2/ben/bens_crypto_divergence_brief":         "0.75",
+        "/v2/ben/bens_btc_contrarian_alert":            "0.35",
+        "/v2/ben/bens_agent_context_pack":              "0.50",
+        "/v2/ben/bens_bull_trap_monitor":               "0.35",
+        "/v2/ben/bens_macro_regime_brief":              "0.50",
+        "/v2/guide/derivatives":                        "3.00",
+    }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)
         for method, op in ops.items():
@@ -914,8 +928,17 @@ def _custom_openapi():
                 op.setdefault("responses", {}).setdefault("402", dict(_402_RESPONSE))
                 if not op.get("parameters") and not op.get("requestBody"):
                     op["parameters"] = [dict(_ASSET_PARAM)]
+                op["x-payment-info"] = {
+                    "protocols": ["x402"],
+                    "price": {"mode": "fixed", "currency": "USD", "amount": _PAID_PRICES.get(path, "0.01")},
+                    "network": "base",
+                    "asset":   "USDC",
+                    "payTo":   _X402_TREASURY,
+                }
 
     schema["security"] = []  # default: free / no auth required
+    # Top-level discovery hint for x402scan (OpenAPI-first).
+    schema["x-discovery"] = {"protocols": ["x402"], "network": "base"}
     app.openapi_schema = schema
     return schema
 
