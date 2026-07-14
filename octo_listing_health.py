@@ -76,7 +76,7 @@ LISTINGS = [
 # External discovery directories — one-time manual submissions, not HTTP-verifiable.
 # These stay flagged as PENDING in every report until MANUAL_LISTINGS_CONFIRMED lists them.
 # Set a name here once you've verified Octodamus actually appears in the directory.
-MANUAL_LISTINGS_CONFIRMED = set()  # e.g. {"x402scan.com", "awesome-x402"}
+MANUAL_LISTINGS_CONFIRMED = {"x402scan.com"}  # x402scan: 123/123 resources registered 2026-07-14
 
 MANUAL_LISTINGS = [
     {"name": "x402scan.com",   "url": "https://www.x402scan.com/resources/register",         "action": "Paste hero URL https://api.octodamus.com/v2/x402/agent-signal into the register form (auto-validates x402 schema)"},
