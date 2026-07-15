@@ -113,9 +113,9 @@ Required before flipping any live mode:
   at line 1963, swallowing oracle-call recording (calls silently missing from scorecard) AND the
   "'Oracle call:' but unparseable -> block post" brand guard. Changed to import only record_call.
 - FIX 3 (tasks): enabled "Run task as soon as possible after a scheduled start is missed"
-  (StartWhenAvailable) on DailyRead-330am, Moonshot, GovContracts (were False). Music could NOT
-  be updated automatically — it runs LogonType=Password (needs walli account pw). MANUAL TODO:
-  flip its missed-start checkbox in Task Scheduler GUI (lowest-stakes weekly post).
+  (StartWhenAvailable) on DailyRead-330am, Moonshot, GovContracts, Music (all were False).
+  Music also switched LogonType Password -> Interactive (it needed the walli account pw to edit;
+  Interactive matches all its sibling content tasks and the auto-logon session, no pw needed).
 - NOTE: StartWhenAvailable is now belt-and-suspenders; octo_startup_catchup.py is the real fix.
 
 ## Session Fixes (2026-06-08)
@@ -458,8 +458,7 @@ Core memory files: data/memory/[agent_name]_core.md
 
 ## Pending / Active Work
 ### Immediate
-- [ ] Octodamus-Music: flip "Run task ASAP after a missed start" checkbox in Task Scheduler GUI
-      (couldn't script it — task runs LogonType=Password, needs walli account pw). Low stakes.
+- [x] Octodamus-Music: missed-start enabled + LogonType Password->Interactive (2026-07-15)
 - [ ] Add X_Sentiment_Agent + NYSE_Tech_Agent x402 endpoints to octo_api_server.py
 - [x] All 5 sub-agent + OctoBoto wallet private keys saved to Bitwarden (2026-04-28)
 - [ ] Fund sub-agent wallets: ~5 USDC each on Base (~$25 total) for x402 buying capability
