@@ -389,9 +389,22 @@ Core memory files: data/memory/[agent_name]_core.md
   is 403 on current Coinglass tier, excluded). Data builder verified live. _X402_REQ_2CENT added.
   Registered in OFFERING_REGISTRY + payment-info discovery. Free preview at .../facts/preview.
   GO-LIVE: needs Octodamus-API-Server restart (runs `python octo_api_server.py`, no hot-reload).
-- NEXT data candidates (own the pipes already): normalized Polymarket odds/edge feed, structured
-  congress/SEC filing events, tokenized-equity stock-perp reference data, raw macro numbers.
-  Build-new high-demand gaps: pre-trade rug/safety check, OFAC/sanctions wallet screening.
+- SECOND DATA ENDPOINT BUILT: GET /v2/polymarket/odds?asset=BTC ($0.02). Live crypto
+  prediction-market facts from Gamma + CLOB: normalized YES/NO odds (implied prob), liquidity,
+  24h volume, CLOB order-book spread, resolution status. Optional asset filter. Facts, not the
+  "edge/take". Uses GammaClient.get_crypto_markets (returns pre-summarized dicts) + get_clob_depth.
+  NOTE: Polymarket crypto markets are sparse (~2-4 live), so content is thin but real.
+- DISCOVERY FIX (x402scan/Bazaar OpenAPI-first): paid endpoints must be in _is_paid() +
+  _PAID_PRICES in octo_api_server._custom_openapi() to get x-payment-info + documented 402 in
+  /openapi.json (what x402scan crawls). The subarc endpoints (delta/dex/whales/etc.) were NEVER
+  advertised -- only agent-signal, guide/derivatives, ben/*. Added both new data endpoints; public
+  OpenAPI now advertises 11 paid ops (was 9). x402scan indexes on its next crawl. TODO opportunity:
+  add the factual subarc endpoints (delta/dex/whales) to _is_paid too -- more products discoverable.
+- Both endpoints verified live through the public tunnel (preview 200 / paid 402). API server
+  restarted to load (Octodamus-API-Server, no hot-reload; restart = brief api.octodamus.com blip).
+- NEXT data candidates (own the pipes already): structured congress/SEC filing events,
+  tokenized-equity stock-perp reference data, raw macro numbers. Build-new high-demand gaps:
+  pre-trade rug/safety check, OFAC/sanctions wallet screening.
 
 ## x402 Services Live (api.octodamus.com)
 - GET /v2/signal ($1.00)                   oracle signal composite

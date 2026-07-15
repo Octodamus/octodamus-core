@@ -892,7 +892,8 @@ def _custom_openapi():
     # (x402scan / CDP Bazaar) from probing free endpoints as if paid and erroring
     # with "did not return a 402 payment challenge".
     def _is_paid(path: str) -> bool:
-        if path in ("/v2/x402/agent-signal", "/v2/guide/derivatives"):
+        if path in ("/v2/x402/agent-signal", "/v2/guide/derivatives",
+                    "/v2/derivatives/facts", "/v2/polymarket/odds"):
             return True
         return path.startswith("/v2/ben/") and not path.endswith("/preview")
 
@@ -923,6 +924,8 @@ def _custom_openapi():
         "/v2/ben/bens_bull_trap_monitor":               "0.35",
         "/v2/ben/bens_macro_regime_brief":              "0.50",
         "/v2/guide/derivatives":                        "3.00",
+        "/v2/derivatives/facts":                        "0.02",
+        "/v2/polymarket/odds":                          "0.02",
     }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)
@@ -1782,6 +1785,7 @@ OFFERING_REGISTRY: list[dict] = [
 
     # Deterministic data facts (factual, not predictive)
     {"name": "Derivatives Facts",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/derivatives/facts/preview"},
+    {"name": "Polymarket Odds",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/polymarket/odds/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2013,6 +2017,7 @@ def acp_agent_info():
             {"id": "whale-activity",     "path": "/v2/order_chainflow/whales",       "price_usdc": 0.50, "description": "Whale wallet activity on Base — large capital moves"},
             {"id": "polymarket-edges",   "path": "/v2/polymarket",                   "price_usdc": 0.25, "description": "Polymarket prediction markets with EV gap >25%"},
             {"id": "derivatives-facts",  "path": "/v2/derivatives/facts",            "price_usdc": 0.02, "description": "Deterministic cross-venue funding rate, open interest, and long/short facts (not a prediction)"},
+            {"id": "polymarket-odds",    "path": "/v2/polymarket/odds",              "price_usdc": 0.02, "description": "Live crypto prediction-market facts: normalized odds, liquidity, CLOB spread, resolution status"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -6656,6 +6661,101 @@ def derivatives_facts_preview():
             "regime": "string", "by_exchange": "array"}, "open_interest": {"total_usd": "float",
             "total_coin": "float", "by_exchange": "array"}, "long_short": {"global_long_pct": "float",
             "global_short_pct": "float", "skew": "string"}, "timestamp": "iso8601"},
+    }
+
+
+# -- Polymarket Odds — deterministic prediction-market facts -----------------
+# Sells raw normalized odds + liquidity + spread + resolution status, NOT the
+# "edge/take". Factual, hard to self-source across markets. $0.02/call.
+
+_ASSET_ALIASES = {"BTC": ("BTC", "BITCOIN"), "ETH": ("ETH", "ETHEREUM"), "SOL": ("SOL", "SOLANA")}
+
+
+def _polymarket_odds_facts(asset: str = "") -> dict:
+    """Live crypto prediction-market facts: normalized odds, liquidity, spread, resolution."""
+    out = {"agent": "Octodamus", "product": "polymarket_odds", "markets": []}
+    try:
+        from octo_boto_polymarket import GammaClient
+        from octo_polymarket_clob import get_clob_depth
+        markets = GammaClient().get_crypto_markets(min_liquidity=2000) or []
+        markets.sort(key=lambda m: float(m.get("liquidity", 0) or 0), reverse=True)
+
+        af = (asset or "").strip().upper()
+        aliases = _ASSET_ALIASES.get(af, (af,)) if af else ()
+        rows = []
+        for i, m in enumerate(markets):
+            q = str(m.get("question", ""))
+            if aliases and not any(a in q.upper() for a in aliases):
+                continue
+            yes = m.get("yes_price")
+            yes = float(yes) if yes is not None else None
+            rec = {
+                "question":         q,
+                "yes_price":        round(yes, 4) if yes is not None else None,
+                "no_price":         round(1 - yes, 4) if yes is not None else None,
+                "implied_prob_pct": round(yes * 100, 1) if yes is not None else None,
+                "liquidity_usd":    m.get("liquidity"),
+                "volume_24h_usd":   m.get("volume24h"),
+                "resolution":       "resolved" if m.get("resolved") else "open",
+                "end_date":         m.get("end_date"),
+                "url":              m.get("url"),
+            }
+            # Enrich the deepest markets with live CLOB order-book spread.
+            if len(rows) < 6 and m.get("yes_token_id"):
+                try:
+                    d = get_clob_depth(m["yes_token_id"])
+                    if d:
+                        rec["spread"]     = d.get("spread")
+                        rec["spread_pct"] = d.get("spread_pct")
+                        rec["mid_price"]  = d.get("mid_price")
+                except Exception:
+                    pass
+            rows.append(rec)
+            if len(rows) >= 15:
+                break
+        out["markets"] = rows
+        out["count"]   = len(rows)
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "Polymarket Gamma API + CLOB order book"
+    out["disclaimer"] = "Factual prediction-market data. Not financial advice."
+    return out
+
+
+@app.get("/v2/polymarket/odds", tags=["Derivatives"])
+def polymarket_odds(request: Request, asset: str = ""):
+    """Deterministic Polymarket crypto odds facts (normalized odds, liquidity, spread, resolution). $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "polymarket_odds",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/polymarket/odds/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    key = f"pm_odds_{(asset or 'ALL').upper()}"
+    return _sign_payload(_tcache(key, 120, lambda: _polymarket_odds_facts(asset)))
+
+
+@app.get("/v2/polymarket/odds/preview", tags=["Derivatives"])
+def polymarket_odds_preview():
+    return {
+        "agent": "Octodamus", "product": "polymarket_odds", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/polymarket/odds?asset=BTC (x402 $0.02)",
+        "what_it_does": ("Live crypto prediction-market facts from Polymarket: normalized YES/NO odds "
+                         "(implied probability), 24h volume, liquidity, CLOB order-book spread, and "
+                         "resolution status per market. Optional ?asset=BTC|ETH|SOL filter. Factual, "
+                         "not a prediction. 2-min cache. Ed25519 signed."),
+        "output_schema": {"count": "int", "markets": [{"question": "string", "yes_price": "float",
+            "no_price": "float", "implied_prob_pct": "float", "liquidity_usd": "float",
+            "volume_24h_usd": "float", "spread": "float", "resolution": "open|resolved",
+            "end_date": "iso8601", "url": "string"}], "timestamp": "iso8601"},
     }
 
 
