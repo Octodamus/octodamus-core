@@ -28,6 +28,40 @@ NOTIFY_EMAIL   = "octodamusai@gmail.com"
 FRANKLIN_BIN   = r"C:\Users\walli\AppData\Roaming\npm\franklin.cmd"
 START_BALANCE  = 201.00   # initial fund amount for P&L tracking
 
+# Octodamus fleet agents. A buyer in this set is INTERNAL circulation (the fleet
+# paying itself), not real revenue. Anything else is an EXTERNAL paying customer.
+_FLEET_AGENTS = {
+    "Order_ChainFlow", "X_Sentiment_Agent", "NYSE_MacroMind", "NYSE_Tech_Agent",
+    "NYSE_StockOracle", "Ben", "TokenBot_NYSE_Base", "NYSE_EarningsEdge",
+}
+
+
+def _ben_x402_revenue() -> dict:
+    """Ben's x402 sales from the shared ledger, split external vs internal.
+
+    External = a named buyer outside the fleet (a real customer). Internal =
+    another fleet agent buying Ben's signal. Null-buyer records count as neither.
+    """
+    out = {"total": 0.0, "external": 0.0, "internal": 0.0, "n_external": 0, "n_total": 0}
+    try:
+        ledger = json.loads((ROOT / "data" / "x402_agent_revenue.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    for rec in ledger.get("Ben", []):
+        try:
+            amt = float(rec.get("amount_usdc", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        buyer = rec.get("buyer")
+        out["total"] += amt
+        out["n_total"] += 1
+        if buyer and buyer not in _FLEET_AGENTS:
+            out["external"] += amt
+            out["n_external"] += 1
+        elif buyer in _FLEET_AGENTS:
+            out["internal"] += amt
+    return out
+
 
 def _secrets() -> dict:
     try:
@@ -3605,12 +3639,21 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         + "\n"
     ) if pnl_val is not None else ""
 
+    # x402 revenue: external (real customers) is the number that matters; total
+    # includes internal fleet cross-buys, which are circulation, not profit.
+    _rev = _ben_x402_revenue()
+    x402_line = (
+        f"x402:    ${_rev['external']:.2f} external / ${_rev['total']:.2f} total"
+        f" ({_rev['n_external']}/{_rev['n_total']} sales external)\n"
+    ) if _rev["n_total"] else "x402:    $0.00 revenue (0 sales recorded)\n"
+
     header = (
         f"Session #{session_num} | {slot_label} | {verdict}\n"
         f"Time:    {now}\n"
         f"Turns:   {turns}/{MAX_TURNS}\n"
         f"Wallet:  {wallet_str} USDC\n"
         f"{pnl_line}"
+        f"{x402_line}"
     )
 
     # Email body: clean turn summaries — strip emoji/markdown, trim at word boundary

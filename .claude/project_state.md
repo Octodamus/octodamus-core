@@ -239,6 +239,13 @@ Required before flipping any live mode:
 - Competitor intel: tool_buy_acp_competitor_job() — buys ACP jobs to monitor competition
 - Does NOT post to X (private agent, Telegram + email output only)
 - Pending: flip PAPER_MODE = False after review
+- x402 revenue tracking (2026-07-15): session email header now shows a deterministic
+  `x402:` line from data/x402_agent_revenue.json via _ben_x402_revenue() in agent.py,
+  split EXTERNAL (real customers, buyer not in _FLEET_AGENTS) vs total. FINDING: Ben's
+  x402 revenue is $1.60, 100% INTERNAL (all bought by Order_ChainFlow). Fleet-wide $81.55
+  total, $0 genuine external. The rails work; there are no external buyers yet. This makes
+  "completed through x402" measurable instead of assumed. Ben's own x402 buys (7x) are all
+  self-purchases of Octodamus's own signal -> $0 revenue, pure circulation.
 
 ---
 
