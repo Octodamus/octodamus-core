@@ -246,6 +246,9 @@ Required before flipping any live mode:
   total, $0 genuine external. The rails work; there are no external buyers yet. This makes
   "completed through x402" measurable instead of assumed. Ben's own x402 buys (7x) are all
   self-purchases of Octodamus's own signal -> $0 revenue, pure circulation.
+  Also added tool_get_x402_revenue (agent-facing tool + FIRST TURN prompt rule) so Ben SEES
+  its external revenue mid-session and can change tactics when it stays $0 (get discovered by
+  external buyers vs. writing more drafts). The scoreboard is now in the agent's own context.
 
 ---
 

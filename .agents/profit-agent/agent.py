@@ -63,6 +63,29 @@ def _ben_x402_revenue() -> dict:
     return out
 
 
+def tool_get_x402_revenue() -> str:
+    """Report Ben's real x402 sales: external (paying customers) vs internal circulation."""
+    r = _ben_x402_revenue()
+    if r["n_total"] == 0:
+        return ("x402 revenue: $0.00 -- no sales recorded. No agent has paid for a Ben "
+                "service. Demand generation has produced zero completed sales.")
+    ext_share = r["n_external"] / r["n_total"] * 100
+    verdict = (
+        "Real external revenue exists -- reinforce whatever channel landed it."
+        if r["external"] > 0 else
+        "ALL revenue is internal fleet circulation (other Octodamus agents). $0 from real "
+        "external customers -- demand gen is NOT converting. Prioritize getting discovered by "
+        "external x402 buyers (x402scan/bazaar listing) over writing more pitch drafts."
+    )
+    return (
+        f"x402 revenue (Ben's own services):\n"
+        f"  External (real customers): ${r['external']:.2f} ({r['n_external']} sales)\n"
+        f"  Internal (fleet cross-buys): ${r['internal']:.2f}\n"
+        f"  Total: ${r['total']:.2f} across {r['n_total']} sales ({ext_share:.0f}% external)\n"
+        f"  -> {verdict}"
+    )
+
+
 def _secrets() -> dict:
     try:
         raw = json.loads(SECRETS_FILE.read_text(encoding="utf-8"))
@@ -2452,6 +2475,16 @@ TOOLS = [
         },
     },
     {
+        "name": "get_x402_revenue",
+        "description": (
+            "Report your REAL x402 sales revenue from the shared ledger: external (paying "
+            "customers outside the Octodamus fleet) vs internal (other fleet agents buying "
+            "your signal). Check this early -- external revenue is the ONLY number that proves "
+            "demand generation converted. Internal cross-buys are circulation, not profit."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "web_search",
         "description": "Search the web for market opportunities, competitor intel, product ideas, or any research.",
         "input_schema": {
@@ -2871,6 +2904,7 @@ TOOLS = [
 TOOL_FNS = {
     "check_wallet":         lambda i: tool_check_wallet(),
     "audit_wallet":         lambda i: tool_audit_wallet(i.get("hours_back", 48)),
+    "get_x402_revenue":     lambda i: tool_get_x402_revenue(),
     "web_search":           lambda i: tool_web_search(i["query"], i.get("num_results", 5)),
     "browse_url":           lambda i: tool_browse_url(i["url"]),
     "get_market_data":      lambda i: tool_get_market_data(i.get("asset", "ALL")),
@@ -3124,6 +3158,7 @@ Update this protocol in your core memory so the fix persists.
 
 LEARNING RULES (mandatory every session):
 - FIRST TURN: always call get_session_history + list_skills — read what worked, what failed, wallet trajectory, and which procedures you've refined
+- FIRST TURN: also call get_x402_revenue — your EXTERNAL revenue is the scoreboard. If it is still $0 after this many sessions, demand gen is not converting; change the approach (get discovered by external x402 buyers) instead of repeating drafts
 - SKILL UPDATE: before record_lesson, call update_skill for any skill you used or discovered this session
 - LAST TURN (after email confirmed sent): always call record_lesson, THEN save_loop_reflection
 - If you placed a trade: record trades=1, wallet_start and wallet_end
