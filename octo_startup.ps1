@@ -82,4 +82,13 @@ try {
     Log "FAIL: Telegram: $_"
 }
 
+# Step 7: Catch up any daily content posts missed while the machine was down
+# (e.g. an overnight Windows Update reboot skips scheduled tasks).
+try {
+    & $PYTHON "$PROJECT_DIR\octo_startup_catchup.py" 2>> "$PROJECT_DIR\logs\startup_catchup.log"
+    Log "OK: Startup catch-up ran"
+} catch {
+    Log "WARN: Startup catch-up failed: $_"
+}
+
 Log "=== Startup complete ==="

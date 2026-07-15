@@ -2009,7 +2009,7 @@ def mode_daily() -> None:
 
             # Log to oracle call tracker
             try:
-                from octo_calls import record_call, parse_call_from_post
+                from octo_calls import record_call
                 _parsed = parse_call_from_post(post)
                 if _parsed:
                     record_call(

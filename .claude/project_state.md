@@ -1,5 +1,5 @@
 # Octodamus — Project State
-# Last updated: 2026-05-01 (session 10)
+# Last updated: 2026-07-15
 
 ---
 
@@ -94,9 +94,65 @@ Required before flipping any live mode:
 
 ---
 
+## Session Fixes (2026-07-15) — Posting outage: Windows Update reboot
+- ROOT CAUSE: Windows Update forced a reboot at ~9:40 PM Jul 14 (right after active hours
+  ended at 9 PM; active hours are 3 AM-9 PM = max 18h range, can't cover 24/7 posting).
+  Machine down until 5:31 AM boot. All posts scheduled in that window were skipped by Windows
+  (StartWhenAvailable does NOT reliably catch up across a full power-off — only sleep/hibernate).
+  Result: no posts ~7:02 PM Jul 14 -> 6:47 AM Jul 15 (~11.5h). 3 queued posts also dropped as stale.
+- FIX 1 (durable): octo_startup_catchup.py — post-boot catch-up. Reads octo_posted_log.json
+  (real record of what posted), groups daily content SLOTS by post-type, fires the runner mode
+  ONCE per type if a slot passed today with nothing posted, within GRACE_HOURS=6.
+  Covers daily_read (3:30/5:00/7pm -> --mode daily) + watchpost (7am/4pm -> --mode monitor).
+  Wired as Step 7 in octo_startup.ps1 (runs after secrets cache ready, stderr -> logs/startup_catchup.log).
+  Verified: live run skips when already posted; simulated 5:31am boot fires ONE daily read
+  (collapses the 3:30+5:00 double-miss); midday boot won't resurrect stale pre-dawn reads.
+  To add more catch-up types: append (mode, post_type, hour, minute) to SLOTS.
+- FIX 2 (bug): octodamus_runner.py:2012 — local `from octo_calls import ... parse_call_from_post`
+  inside mode_daily() shadowed the module-global across the whole function -> UnboundLocalError
+  at line 1963, swallowing oracle-call recording (calls silently missing from scorecard) AND the
+  "'Oracle call:' but unparseable -> block post" brand guard. Changed to import only record_call.
+- FIX 3 (tasks): enabled "Run task as soon as possible after a scheduled start is missed"
+  (StartWhenAvailable) on DailyRead-330am, Moonshot, GovContracts (were False). Music could NOT
+  be updated automatically — it runs LogonType=Password (needs walli account pw). MANUAL TODO:
+  flip its missed-start checkbox in Task Scheduler GUI (lowest-stakes weekly post).
+- NOTE: StartWhenAvailable is now belt-and-suspenders; octo_startup_catchup.py is the real fix.
+
+## Session Fixes (2026-06-08)
+- agentic.market Bazaar: Octodamus listed and discoverable at /v2/x402/agent-signal
+  - x402 v2 body fix: resource + extensions.bazaar at top level of 402 body
+  - payment-required header: resource + extensions.bazaar added to v2_payload (not just accepts[] entries)
+  - Schema restructured: envelope schema with properties.input + properties.output (per SDK types.py)
+  - octo_api_server.py: _BAZAAR_EXT refactored; _x402_headers_legacy uses _BAZAAR_EXT["bazaar"] directly
+- NVDA call id=39: reopened after weekend autoresolve bug (entry=exit=$205.10, stale yfinance price)
+  - Original on-chain tx_hash preserved; bad resolve_tx_hash moved to _bad_resolve_tx for audit
+  - Correct expiry: 2026-06-10 23:03 UTC
+- octo_calls.py autoresolve fixes:
+  - _is_expired(): "Nd" timeframe (e.g., "5d") now handled; was falling through to 48h default
+  - autoresolve(): stock tickers skip resolution outside Mon-Fri 13:30-20:00 UTC (market hours gate)
+
+## Session Fixes (2026-06-05 to 2026-06-06)
+- crowd_fade win-rate gate added to octo_crowd_fade.py: pauses if last 6 calls <40% win rate; auto-resets after 14d silence
+- ACP monitor false positive fixed: PowerShell timeout 10s->20s + post-restart double-check before URGENT email
+- octo_acp_worker.py: switched _kill_orphan_listeners() to Get-CimInstance (faster, no WMI timeout)
+- Oracle call ID collision fixed: max(id)+1 not len(calls)+1
+- Stock oracle (octodamus_runner.py): added on-chain publish + Haiku X post after record_call()
+- NVDA call (id 39): ID collision fixed, on-chain published, X post sent
+- NYSE agents email: tool_read_sub_agent_drafts 600->1500 char limit
+- Conviction score rules strengthened in all 5 sub-agent system prompts:
+  - nyse_macromind: MACRO SCORE (+2/5 from FRED) explicitly NOT the same as conviction score; decimals banned
+  - nyse_stockoracle: conviction must be integer 1-5, no peer echo
+  - nyse_tech_agent: integer-only + anti-echo added to CONVICTION CONSISTENCY RULE
+  - order_chainflow: anti-echo rule added (do not repeat peer numeric scores)
+  - nyse_earningsedge: full conviction rule added (was missing entirely)
+
 ## Current Oracle State
-- Oracle calls: 10 logged in data/octo_calls.json (call_type=oracle), 10 resolved, 5W/5L (50%)
-  - call_type=polymarket entries excluded from oracle scorecard everywhere (Ben, evening journal, API)
+- Oracle record: 8W/12L (on-chain, June 5) — 20 calls with tx_hash
+  - 11 on-chain calls in data/octo_calls.json. tx_hash present = counts. call_type irrelevant.
+  - Range Scout call #27 has tx_hash → counts as official LOSS.
+  - Range Scout call #28 has no tx_hash → does NOT count.
+  - Rule: tx_hash present = official record everywhere (octo_calls.py, octo_distro.py,
+    octo_evening_journal.py, octo_api_server.py). All 4 files updated 2026-05-05.
 - Polymarket calls (call_type=polymarket): 7 total, 7 resolved, 4W/3L (57%), 0 open
   - BITC-REAC-AP resolved 2026-04-30: "Will BTC reach $80K in April?" called NO. BTC peaked ~$78K. WIN.
 - Win rate published after 50+ resolved oracle calls
@@ -180,6 +236,16 @@ Required before flipping any live mode:
 - Sell story: when tokenized NYSE arrives in scale (6-12mo), TokenBot is the proof-of-concept.
   The paper record built now becomes the product sold to the tokenized NYSE crowd.
 
+## NYSE Sub-Agent Fleet (octo_nyse_runner.py)
+- Runs 5 agents at 5:30am via `Octodamus-NYSE-Agents` task. Sends ONE summary email.
+- Individual agent tasks also run standalone at 5:45-6:05am (separate brief sessions).
+- Duplicate email fix (2026-05-18): once-per-day guard added to main() in octo_nyse_runner.py.
+  Guard file: data/.nyse_ran_YYYY-MM-DD. To force re-run: delete that file.
+  Root cause of 3x runs unknown (no code path found); guard makes it idempotent.
+- StockOracle POSITION CALL RULES added: must label "POSITION UPDATE: X LONG -> SHORT | Reason:" when flipping.
+- SOL crowd_fade fix (2026-05-18): MAX_QUEUE_AGE_HOURS 4 -> 48 in octo_x_poster.py.
+  Old value was purging queued crowd_fade posts before they could be sent after X rate limits.
+
 ## NYSE Sub-Agent Ecosystem (new 2026-04-28)
 Five sub-agents running before NYSE open at 6:30am PST.
 All use Haiku 4.5 model. All have compounding SQLite memory + weekly distillation.
@@ -237,7 +303,8 @@ Core memory files: data/memory/[agent_name]_core.md
   Awaiting Glama forced rescan (email Frank Fiegel).
 - xstats banner: site auto-fetches /api/xstats every 15 min. Followers/posts update via
   Telegram /xstats command (writes data/dashboard_metrics.json -> served by API).
-- Oracle scorecard: filter call_type != "polymarket" everywhere (Ben, evening journal, API, scorecard)
+- Oracle scorecard: filter by tx_hash present everywhere (Ben, evening journal, API, scorecard).
+  NOT call_type. on-chain verified = official. Range Scout counts if tx_hash exists.
 - ACP silence monitor: only restarts if Python process is confirmed dead (PID check), 6h cooldown
 - X reply engine (octo_x_engage.py): two-phase session — harvest feedback from replies-to-our-replies
   (distill into octodamus_core.md via Haiku), then engage candidates from 19 watched accounts.
@@ -334,6 +401,8 @@ Core memory files: data/memory/[agent_name]_core.md
 - octo_ceo.py                CEO sandbox: research, newsletter, memory, state
 - octo_firecrawl.py          Firecrawl web intel
 - octo_gdrive.py             Google Drive backup (full zip, every 4h)
+- octo_startup_catchup.py    Post-boot catch-up for daily posts missed while machine was down
+                             (SLOTS table, GRACE_HOURS=6; called from octo_startup.ps1 Step 7)
 - telegram_bot.py            Telegram bot (/myid, /ben, all commands)
 - octo_memory_db.py          SQLite persistent memory (all agents)
 - octo_memory_distill.py     Weekly Haiku distillation -> core memory files
@@ -342,6 +411,10 @@ Core memory files: data/memory/[agent_name]_core.md
 - octo_boto_autoresolve.py   Tiered thresholds; calls record_outcome() after close_position()
 - octo_boto_oracle_bridge.py P&L email fixed (exit_ = 1.0/0.0, uses tracker pnl field)
 - .agents/profit-agent/agent.py   Agent_Ben with memory tools + competitor intel tool
+  Session 11 fix (2026-05-05): tool_buy_x402_service replaced manual EIP-3009 signing with
+  x402 SDK (ExactEvmScheme + x402HTTPClientSync.handle_402_response). All 6 prior attempts
+  returned 402 on retry — manual signing payload rejected by CDP facilitator. SDK approach
+  verified via octo_x402_health.py --live (36/36 PASS including LIVE $0.01 payment settled).
   Session 8 fixes (2026-05-01): Limitless corrected to 4h max; morning SESSION_FOCUS adds SUB-AGENT
   SYNTHESIS step; evening mandates save_draft ONLY (no draft_content duplicates); overnight ACP P&L
   in header; X post opener rules (first word = number/ticker/verb, no greetings/dates, max 2 hashtags);
@@ -385,6 +458,8 @@ Core memory files: data/memory/[agent_name]_core.md
 
 ## Pending / Active Work
 ### Immediate
+- [ ] Octodamus-Music: flip "Run task ASAP after a missed start" checkbox in Task Scheduler GUI
+      (couldn't script it — task runs LogonType=Password, needs walli account pw). Low stakes.
 - [ ] Add X_Sentiment_Agent + NYSE_Tech_Agent x402 endpoints to octo_api_server.py
 - [x] All 5 sub-agent + OctoBoto wallet private keys saved to Bitwarden (2026-04-28)
 - [ ] Fund sub-agent wallets: ~5 USDC each on Base (~$25 total) for x402 buying capability
@@ -407,7 +482,12 @@ Core memory files: data/memory/[agent_name]_core.md
 - [ ] Datarade vendor listing
 - [x] OrbisAPI marketplace: description + tags updated via provider API (2026-04-30)
       Endpoint list (11 endpoints) must be added manually via Orbis web dashboard -- no REST API for endpoints
-- [ ] x402 bazaar: submit Octodamus listing
+- [x] x402 bazaar: LIVE on agentic.market (2026-06-08)
+      URL: https://api.octodamus.com/v2/x402/agent-signal
+      v2 compliant: payment-required header + resource object + extensions.bazaar
+      Quality signals: Description=yes, Output schema=yes, Input schema=no (GET-only, no queryParams)
+      Payer count: 0 (self-payments don't count; updates when external agents use it)
+      Re-index trigger: make a live $0.01 payment via octo_x402_health.py --live
 
 ### Gated by Revenue
 - [ ] Unusual Whales key: waiting for $500/mo MRR trigger (~$50/mo)
