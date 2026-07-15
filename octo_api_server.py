@@ -926,6 +926,7 @@ def _custom_openapi():
         "/v2/guide/derivatives":                        "3.00",
         "/v2/derivatives/facts":                        "0.02",
         "/v2/polymarket/odds":                          "0.02",
+        "/v2/stocks/perp-facts":                        "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1802,6 +1803,7 @@ OFFERING_REGISTRY: list[dict] = [
     # Deterministic data facts (factual, not predictive)
     {"name": "Derivatives Facts",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/derivatives/facts/preview"},
     {"name": "Polymarket Odds",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/polymarket/odds/preview"},
+    {"name": "Stock-Perp Facts",                 "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/stocks/perp-facts/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2034,6 +2036,7 @@ def acp_agent_info():
             {"id": "polymarket-edges",   "path": "/v2/polymarket",                   "price_usdc": 0.25, "description": "Polymarket prediction markets with EV gap >25%"},
             {"id": "derivatives-facts",  "path": "/v2/derivatives/facts",            "price_usdc": 0.02, "description": "Deterministic cross-venue funding rate, open interest, and long/short facts (not a prediction)"},
             {"id": "polymarket-odds",    "path": "/v2/polymarket/odds",              "price_usdc": 0.02, "description": "Live crypto prediction-market facts: normalized odds, liquidity, CLOB spread, resolution status"},
+            {"id": "stock-perp-facts",   "path": "/v2/stocks/perp-facts",            "price_usdc": 0.02, "description": "Tokenized-equity / stock-perp reference: funding, open interest, positioning for NVDA/TSLA/SPY/etc"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -6677,6 +6680,86 @@ def derivatives_facts_preview():
             "regime": "string", "by_exchange": "array"}, "open_interest": {"total_usd": "float",
             "total_coin": "float", "by_exchange": "array"}, "long_short": {"global_long_pct": "float",
             "global_short_pct": "float", "skew": "string"}, "timestamp": "iso8601"},
+    }
+
+
+# -- Stock-Perp Facts — tokenized-equity reference data ----------------------
+# Factual funding / open interest / positioning for equity perpetual futures
+# (NVDA, TSLA, AAPL, SPY, ...). First-mover reference feed for agents trading
+# tokenized equities on Base. Facts, not a call. $0.02/call.
+
+_STOCK_PERP_TICKERS = ["NVDA", "TSLA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "SPY", "COIN", "MSTR"]
+
+
+def _stock_perp_facts(ticker: str) -> dict:
+    """Deterministic stock-perp snapshot: funding, open interest, positioning."""
+    tk = (ticker or "NVDA").strip().upper()
+    out = {"agent": "Octodamus", "product": "stock_perp_facts", "ticker": tk}
+    try:
+        import octo_coinglass as _cg
+        d = _cg.get_stock_perp_signal(tk)
+        if not d or len(d) <= 1:
+            out["error"] = f"No stock-perp data for {tk}. Supported: {', '.join(_STOCK_PERP_TICKERS)}."
+        else:
+            lp = d.get("long_pct")
+            sp = d.get("short_pct")
+            skew = None
+            if lp is not None and sp is not None:
+                skew = "LONG_HEAVY" if lp >= 60 else ("SHORT_HEAVY" if sp >= 60 else "BALANCED")
+            out["funding"] = {
+                "by_venue_pct":  d.get("funding_tier1_pct"),
+                "avg_tier1_pct": d.get("funding_tier1_avg_pct"),
+            }
+            out["open_interest"] = {
+                "total_usd":      d.get("oi_usd"),
+                "top_venue":      d.get("oi_top_venue"),
+                "top_venue_pct":  d.get("oi_top_venue_pct"),
+                "change_24h_pct": d.get("oi_chg_24h_pct"),
+            }
+            out["positioning"] = {"long_pct": lp, "short_pct": sp, "skew": skew}
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "Coinglass stock perpetual futures (aggregated)"
+    out["disclaimer"] = "Factual tokenized-equity / stock-perp reference data. Not financial advice."
+    return out
+
+
+@app.get("/v2/stocks/perp-facts", tags=["Derivatives"])
+def stock_perp_facts(request: Request, ticker: str = "NVDA"):
+    """Deterministic tokenized-equity / stock-perp facts (funding, OI, positioning). $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "stock_perp_facts",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/stocks/perp-facts/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    tk = (ticker or "NVDA").upper()
+    return _sign_payload(_tcache(f"stock_perp_{tk}", 120, lambda: _stock_perp_facts(tk)))
+
+
+@app.get("/v2/stocks/perp-facts/preview", tags=["Derivatives"])
+def stock_perp_facts_preview():
+    return {
+        "agent": "Octodamus", "product": "stock_perp_facts", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/stocks/perp-facts?ticker=NVDA (x402 $0.02)",
+        "what_it_does": ("Deterministic equity perpetual-futures reference data for tokenized-equity "
+                         "agents: funding rate per venue + tier-1 average, aggregated open interest "
+                         "(USD, top venue, 24h change), and long/short positioning with skew. Factual, "
+                         "not a prediction. First-mover feed for AAPL/NVDA/SPY-on-Base agents. 2-min "
+                         "cache. Ed25519 signed."),
+        "tickers": _STOCK_PERP_TICKERS,
+        "output_schema": {"ticker": "string", "funding": {"by_venue_pct": "object", "avg_tier1_pct": "float"},
+            "open_interest": {"total_usd": "float", "top_venue": "string", "top_venue_pct": "float",
+            "change_24h_pct": "float"}, "positioning": {"long_pct": "float", "short_pct": "float",
+            "skew": "LONG_HEAVY|SHORT_HEAVY|BALANCED"}, "timestamp": "iso8601"},
     }
 
 

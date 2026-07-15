@@ -412,9 +412,17 @@ Core memory files: data/memory/[agent_name]_core.md
   is correct from _PAID_PRICES. Registry cleanup is a separate optional pass.
 - Both endpoints verified live through the public tunnel (preview 200 / paid 402). API server
   restarted to load (Octodamus-API-Server, no hot-reload; restart = brief api.octodamus.com blip).
-- NEXT data candidates (own the pipes already): structured congress/SEC filing events,
-  tokenized-equity stock-perp reference data, raw macro numbers. Build-new high-demand gaps:
-  pre-trade rug/safety check, OFAC/sanctions wallet screening.
+- THIRD DATA ENDPOINT BUILT: GET /v2/stocks/perp-facts?ticker=NVDA ($0.02). Tokenized-equity /
+  stock-perp reference: funding per venue + tier-1 avg, aggregated open interest (USD/top venue/
+  24h change), long/short positioning + skew. Source: octo_coinglass.get_stock_perp_signal
+  (verified NVDA/TSLA/AAPL/MSFT/GOOGL/AMZN/META/SPY/COIN/MSTR). First-mover feed on the tokenized-
+  NYSE thesis. Verified live (NVDA LONG_HEAVY, SPY BALANCED, AAPL SHORT_HEAVY). In _PAID_PRICES +
+  registry + discovery. 27 paid ops now advertised in public OpenAPI.
+- THREE data-first endpoints now live at $0.02: /v2/derivatives/facts, /v2/polymarket/odds,
+  /v2/stocks/perp-facts -- all factual, deterministic, at-market, discoverable.
+- NEXT data candidates (own the pipes already): structured congress/SEC filing events (octo_congress),
+  raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
+  check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
 
 ## x402 Services Live (api.octodamus.com)
 - GET /v2/signal ($1.00)                   oracle signal composite
