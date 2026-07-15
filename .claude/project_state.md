@@ -118,6 +118,34 @@ Required before flipping any live mode:
   Interactive matches all its sibling content tasks and the auto-logon session, no pw needed).
 - NOTE: StartWhenAvailable is now belt-and-suspenders; octo_startup_catchup.py is the real fix.
 
+## Session Fixes (2026-07-15b) — Compounding memory audit + engagement loop restore
+- AUDIT: Octodamus's self-improvement memory is multi-layer. Read-back loop is wired
+  (octodamus_core.md -> daily read prompt runner:1505/1783 + evening journal:208). The
+  call-lesson layer (Nunchi brain post-mortems + oracle record -> distill) is HEALTHY and
+  produces specific, durable rules. But two feedback pipelines were dead:
+- ISSUE 1: octodamus_core.md + octoboto_core.md stale (last distilled 7/12). The
+  Octodamus-MemoryDistill task (runs octo_memory_distill.py "all" at 04:30 Wed/Sat/Sun,
+  DaysOfWeek=73) had its Wed 7/15 run eaten by the SAME Windows Update reboot (machine down
+  at 04:30). StartWhenAvailable was False -> skipped to Sat 7/18.
+  FIX: enabled StartWhenAvailable on MemoryDistill + added catch_up_memory_distill() to
+  octo_startup_catchup.py (parses "Last distilled:" from octodamus_core.md; if today is a
+  distill weekday, past 04:30, and not yet distilled, runs octo_memory_distill.py on boot).
+  Ran the missed distill manually to refresh both core memories.
+- ISSUE 2: engagement-feedback loop DEAD since 2026-06-10 (0/211 recent posts had an
+  engagement_score). Root cause: fetch_engagement_for_pending() (pulls X public_metrics,
+  computes score, auto-rates) ONLY ran inside mode_scorecard, and NO task ran scorecard mode.
+  Manual ratings also dead since 2026-04-16. So the distill's "best voice mode / top posts by
+  engagement" inputs were blind -- Octodamus wasn't learning from post performance for 5 weeks.
+  VERIFIED both APIs work: X get_tweet(public_metrics) returns real metrics; Grok grok-3 live.
+  (First test 401'd only because a bare `python -c` didn't load secrets; runner loads bearer
+  into os.environ at import via load_all_secrets. Bearer lives in Bitwarden Twitter item notes,
+  NOT in .octo_secrets cache.)
+  FIX: added isolated `--mode engagement` to octodamus_runner.py (fetch_engagement_for_pending,
+  max_fetch=25, no autoresolve/WIN posts) + new daily task Octodamus-Engagement @ 22:15
+  (Interactive, StartWhenAvailable). Backfills oldest-unfetched first (~200 backlog, ~25/day).
+  Ran once manually: 25 posts updated. NOTE: reality check -- impressions ~40-80, ~0 likes
+  (early account); the data now flows into the weekly distill again.
+
 ## Session Fixes (2026-06-08)
 - agentic.market Bazaar: Octodamus listed and discoverable at /v2/x402/agent-signal
   - x402 v2 body fix: resource + extensions.bazaar at top level of 402 body

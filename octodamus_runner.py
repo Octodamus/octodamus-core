@@ -3283,6 +3283,7 @@ if __name__ == "__main__":
             "strategy_monitor", "strategy_sunday", "thread", "ceo_research",
             "liquidation_radar", "range_scout", "xengage", "sentiment", "spacex",
             "funding_extreme", "crowd_fade", "signal_polymarket", "defi_signal", "avantis",
+            "engagement",
         ],
         default="monitor",
     )
@@ -3336,6 +3337,12 @@ if __name__ == "__main__":
     elif args.mode == "mentions":
         from octo_x_mentions import poll_and_reply
         poll_and_reply(claude_client=claude)
+    elif args.mode == "engagement":
+        # Fetch X public_metrics for posts >24h old and auto-rate them. Feeds the
+        # weekly memory distillation (best voice mode / top posts by engagement).
+        from octo_skill_log import fetch_engagement_for_pending
+        n = fetch_engagement_for_pending(max_fetch=25)
+        print(f"[Runner] Engagement metrics updated for {n} post(s).")
     elif args.mode == "youtube":
         mode_youtube()
     elif args.mode == "format":

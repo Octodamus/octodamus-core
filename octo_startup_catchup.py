@@ -11,6 +11,7 @@ by type, then fires the runner mode to fill the gap -- at most once per post-typ
 per day, and only for slots whose scheduled time passed within GRACE_HOURS.
 """
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -38,6 +39,13 @@ SLOTS = [
     ("monitor", "watchpost",  7, 0),
     ("monitor", "watchpost",  16, 0),
 ]
+
+# Memory distillation (Octodamus-MemoryDistill task): runs octo_memory_distill.py
+# ("all" agents) at 04:30 on Wed/Sat/Sun. If a reboot ate that run, the core memory
+# stops compounding. Catch it up on boot the same way as the posts.
+MEMORY_DISTILL_WEEKDAYS = {2, 5, 6}   # Mon=0..Sun=6 -> Wed, Sat, Sun (task DaysOfWeek=73)
+MEMORY_DISTILL_HOUR, MEMORY_DISTILL_MIN = 4, 30
+OCTODAMUS_CORE = PROJECT_DIR / "data" / "memory" / "octodamus_core.md"
 
 
 def log(msg):
@@ -73,6 +81,46 @@ def _posted_types_today():
         if dt.date() == today and e.get("type"):
             types.add(e["type"])
     return types
+
+
+def _last_distilled_date():
+    """Parse 'Last distilled: YYYY-MM-DD' from octodamus_core.md (None if unreadable)."""
+    try:
+        txt = OCTODAMUS_CORE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"[Ll]ast distilled:\**\s*(\d{4}-\d{2}-\d{2})", txt)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def catch_up_memory_distill(now):
+    """Run the weekly-ish memory distill if today's scheduled 04:30 run was missed."""
+    if now.weekday() not in MEMORY_DISTILL_WEEKDAYS:
+        return
+    if (now.hour, now.minute) < (MEMORY_DISTILL_HOUR, MEMORY_DISTILL_MIN):
+        return  # scheduled run not due yet today; let the task fire normally
+    last = _last_distilled_date()
+    if last is not None and last >= now.date():
+        log(f"SKIP memory-distill: already distilled today ({last})")
+        return
+    log(f"CATCH-UP memory-distill: last distilled {last} -> running octo_memory_distill.py")
+    try:
+        r = subprocess.run(
+            [PYTHON, str(PROJECT_DIR / "octo_memory_distill.py")],
+            cwd=str(PROJECT_DIR), capture_output=True, text=True,
+            encoding="utf-8", timeout=900,
+        )
+        if r.returncode == 0:
+            log("OK memory-distill: completed")
+        else:
+            log(f"FAIL memory-distill: rc={r.returncode}: {(r.stderr or '')[-300:]}")
+    except subprocess.TimeoutExpired:
+        log("FAIL memory-distill: timed out")
 
 
 def main():
@@ -112,6 +160,8 @@ def main():
                 log(f"FAIL {ptype}: --mode {mode} rc={r.returncode}: {(r.stderr or '')[-300:]}")
         except subprocess.TimeoutExpired:
             log(f"FAIL {ptype}: --mode {mode} timed out")
+
+    catch_up_memory_distill(now)
 
     log(f"=== Catch-up done ({fired} post(s) fired) ===")
 
