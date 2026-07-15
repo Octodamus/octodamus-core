@@ -892,10 +892,10 @@ def _custom_openapi():
     # (x402scan / CDP Bazaar) from probing free endpoints as if paid and erroring
     # with "did not return a 402 payment challenge".
     def _is_paid(path: str) -> bool:
-        if path in ("/v2/x402/agent-signal", "/v2/guide/derivatives",
-                    "/v2/derivatives/facts", "/v2/polymarket/odds"):
-            return True
-        return path.startswith("/v2/ben/") and not path.endswith("/preview")
+        # Paid iff it has an explicit, verified price in _PAID_PRICES (defined below;
+        # resolved at call time) or is a non-preview Agent_Ben endpoint. Explicit
+        # membership means we never advertise a free or non-existent route to crawlers.
+        return path in _PAID_PRICES or (path.startswith("/v2/ben/") and not path.endswith("/preview"))
 
     # Paid endpoints need a documented 402 + an input schema so x402scan/Bazaar
     # can register them as resources. Many Ben endpoints take no query args, so
@@ -926,6 +926,22 @@ def _custom_openapi():
         "/v2/guide/derivatives":                        "3.00",
         "/v2/derivatives/facts":                        "0.02",
         "/v2/polymarket/odds":                          "0.02",
+        # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
+        "/v2/nyse_macromind/signal":                    "0.25",
+        "/v2/nyse_macromind/yield-curve":               "0.25",
+        "/v2/nyse_stockoracle/congress":                "0.35",
+        "/v2/nyse_stockoracle/signal":                  "0.50",
+        "/v2/order_chainflow/delta":                    "0.25",
+        "/v2/order_chainflow/dex":                      "0.25",
+        "/v2/order_chainflow/whales":                   "0.35",
+        "/v2/x_sentiment/divergence":                   "0.35",
+        "/v2/x_sentiment/scan":                         "0.50",
+        "/v2/nyse_tech/regulatory":                     "0.35",
+        "/v2/nyse_tech/tokenization":                   "0.50",
+        "/v2/nyse_tech/dtc_monitor":                    "0.25",
+        "/v2/nyse_tech/dtc_pipeline/subscribe":         "2.00",
+        "/v2/nyse_tech/chainlink_lead_signals":         "0.50",
+        "/v2/nyse_tech/gas_settlement_optimizer":       "0.50",
     }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)

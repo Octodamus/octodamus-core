@@ -398,8 +398,18 @@ Core memory files: data/memory/[agent_name]_core.md
   _PAID_PRICES in octo_api_server._custom_openapi() to get x-payment-info + documented 402 in
   /openapi.json (what x402scan crawls). The subarc endpoints (delta/dex/whales/etc.) were NEVER
   advertised -- only agent-signal, guide/derivatives, ben/*. Added both new data endpoints; public
-  OpenAPI now advertises 11 paid ops (was 9). x402scan indexes on its next crawl. TODO opportunity:
-  add the factual subarc endpoints (delta/dex/whales) to _is_paid too -- more products discoverable.
+  OpenAPI now advertises paid ops with x-payment-info. x402scan indexes on its next crawl.
+- ALL ENDPOINTS ADDED TO DISCOVERY (2026-07-15): _is_paid() now keys off _PAID_PRICES membership
+  (single source of truth) + ben/ prefix. Added all 15 subarc endpoints with their ACTUAL 402-gate
+  prices (probed each live, NOT the sometimes-stale OFFERING_REGISTRY prices -- e.g. delta gate is
+  $0.25, registry said $0.35). Public OpenAPI now advertises 26 paid ops (was 9). Endpoints covered:
+  nyse_macromind signal/yield-curve, nyse_stockoracle congress/signal, order_chainflow delta/dex/
+  whales, x_sentiment divergence/scan, nyse_tech regulatory/tokenization/dtc_monitor/dtc_pipeline/
+  chainlink_lead_signals/gas_optimizer. NOTE: x_sentiment/* + nyse_tech/* are LIVE (return 402) --
+  the old "PENDING: not yet added to API server" note in the x402 Services section is stale.
+  MINOR: OFFERING_REGISTRY display prices for some subarc endpoints differ from real 402 gate
+  (delta 0.35 vs 0.25) -- pre-existing display inconsistency; x-payment-info (what x402scan reads)
+  is correct from _PAID_PRICES. Registry cleanup is a separate optional pass.
 - Both endpoints verified live through the public tunnel (preview 200 / paid 402). API server
   restarted to load (Octodamus-API-Server, no hot-reload; restart = brief api.octodamus.com blip).
 - NEXT data candidates (own the pipes already): structured congress/SEC filing events,
