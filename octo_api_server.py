@@ -421,6 +421,12 @@ _X402_REQ_200CENT = PaymentRequirements(
     extra=_USDC_EXTRA,
 )
 _X402_REQS_200CENT = [_X402_REQ_200CENT]
+_X402_REQ_2CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="20000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
+_X402_REQS_2CENT = [_X402_REQ_2CENT]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 
@@ -1774,6 +1780,9 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "NYSE Tech Chainlink Lead Signals", "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/nyse_tech/chainlink_lead_signals/preview"},
     {"name": "NYSE Tech Gas Optimizer",          "price_usdc": 0.50, "cat": "subarc",     "preview_path": "/v2/nyse_tech/gas_settlement_optimizer/preview"},
 
+    # Deterministic data facts (factual, not predictive)
+    {"name": "Derivatives Facts",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/derivatives/facts/preview"},
+
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
 
@@ -2003,6 +2012,7 @@ def acp_agent_info():
             {"id": "order-flow-delta",   "path": "/v2/order_chainflow/delta",        "price_usdc": 0.50, "description": "Binance 24h buy/sell delta for BTC/ETH/SOL"},
             {"id": "whale-activity",     "path": "/v2/order_chainflow/whales",       "price_usdc": 0.50, "description": "Whale wallet activity on Base — large capital moves"},
             {"id": "polymarket-edges",   "path": "/v2/polymarket",                   "price_usdc": 0.25, "description": "Polymarket prediction markets with EV gap >25%"},
+            {"id": "derivatives-facts",  "path": "/v2/derivatives/facts",            "price_usdc": 0.02, "description": "Deterministic cross-venue funding rate, open interest, and long/short facts (not a prediction)"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -6519,6 +6529,134 @@ def nyse_stockoracle_signal_preview():
             "buy": "GET https://api.octodamus.com/v2/nyse_stockoracle/signal?ticker=NVDA (x402 $0.50)",
             "what_it_does": "Full equity signal: congressional trading + Finnhub price + FRED macro overlay. Composite BULLISH/BEARISH/NEUTRAL.",
             "disclaimer": "Not financial advice. Informational signal only."}
+
+
+# -- Derivatives Facts — deterministic cross-venue market data ---------------
+# Sells FACTS (funding, OI, long/short across exchanges), not predictions.
+# Factual, verifiable, hard-to-self-source. Priced at market ($0.02/call).
+
+def _derivatives_facts(asset: str) -> dict:
+    """Deterministic derivatives snapshot: funding, open interest, long/short.
+
+    Every field is a measured or threshold-classified fact -- no forecast. Each
+    source is wrapped independently so a partial outage still returns real data.
+    """
+    sym = asset.upper()
+    out = {"agent": "Octodamus", "product": "derivatives_facts", "asset": sym}
+
+    # Funding rate (Binance -> OKX), unit-correct, deterministic regime label.
+    try:
+        from octo_funding_rates import get_funding_rate_signal
+        f = get_funding_rate_signal(sym)
+        if f.get("rate_8h_pct") is not None:
+            out["funding"] = {
+                "rate_8h_pct":         f["rate_8h_pct"],
+                "rate_annualized_pct": f.get("rate_annual"),
+                "regime":              f.get("regime"),   # threshold classification, not a call
+                "source":              f.get("source"),
+            }
+        else:
+            out["funding"] = {"error": "unavailable"}
+    except Exception as e:
+        out["funding"] = {"error": str(e)}
+
+    # Per-exchange funding dispersion (Coinglass).
+    try:
+        import octo_coinglass as _cg
+        fr  = _cg.funding_rate_exchange(sym)
+        rec = fr[0] if isinstance(fr, list) and fr else (fr if isinstance(fr, dict) else {})
+        rows = rec.get("stablecoin_margin_list", []) if isinstance(rec, dict) else []
+        by_ex = [
+            {"exchange": r.get("exchange"),
+             "rate_pct": round(float(r["funding_rate"]), 6),
+             "interval_h": r.get("funding_rate_interval")}
+            for r in rows if r.get("funding_rate") is not None
+        ][:8]
+        if by_ex and isinstance(out.get("funding"), dict):
+            out["funding"]["by_exchange"] = by_ex
+    except Exception:
+        pass
+
+    # Open interest: aggregate + top exchanges (Coinglass).
+    try:
+        import octo_coinglass as _cg
+        oi   = _cg.open_interest_exchange(sym)
+        rows = oi if isinstance(oi, list) else []
+        total = next((r for r in rows if str(r.get("exchange", "")).lower() == "all"), None)
+        by_ex = [
+            {"exchange": r.get("exchange"), "oi_usd": round(float(r.get("open_interest_usd", 0)), 2)}
+            for r in rows if str(r.get("exchange", "")).lower() != "all"
+        ][:8]
+        if total:
+            out["open_interest"] = {
+                "total_usd":  round(float(total.get("open_interest_usd", 0)), 2),
+                "total_coin": round(float(total.get("open_interest_quantity", 0)), 2),
+                "by_exchange": by_ex,
+            }
+        else:
+            out["open_interest"] = {"error": "unavailable"}
+    except Exception as e:
+        out["open_interest"] = {"error": str(e)}
+
+    # Global long/short account ratio + deterministic skew label (Coinglass).
+    try:
+        import octo_coinglass as _cg
+        ls  = _cg.long_short_ratio(sym)
+        row = ls[-1] if isinstance(ls, list) and ls else (ls if isinstance(ls, dict) else {})
+        lp  = row.get("global_account_long_percent")
+        sp  = row.get("global_account_short_percent")
+        if lp is not None and sp is not None:
+            lp, sp = float(lp), float(sp)
+            skew = "LONG_HEAVY" if lp >= 60 else ("SHORT_HEAVY" if sp >= 60 else "BALANCED")
+            out["long_short"] = {"global_long_pct": round(lp, 2),
+                                 "global_short_pct": round(sp, 2), "skew": skew}
+        else:
+            out["long_short"] = {"error": "unavailable"}
+    except Exception as e:
+        out["long_short"] = {"error": str(e)}
+
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "Coinglass aggregated + Binance/OKX"
+    out["disclaimer"] = "Factual derivatives market data. Not financial advice."
+    return out
+
+
+@app.get("/v2/derivatives/facts", tags=["Derivatives"])
+def derivatives_facts(request: Request, asset: str = "BTC"):
+    """Deterministic cross-venue derivatives facts (funding, OI, long/short). $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "derivatives_facts",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/derivatives/facts/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    sym = asset.upper()
+    return _sign_payload(_tcache(f"deriv_facts_{sym}", 120, lambda: _derivatives_facts(sym)))
+
+
+@app.get("/v2/derivatives/facts/preview", tags=["Derivatives"])
+def derivatives_facts_preview():
+    return {
+        "agent": "Octodamus", "product": "derivatives_facts", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/derivatives/facts?asset=BTC (x402 $0.02)",
+        "what_it_does": ("Deterministic cross-venue derivatives snapshot: funding rate (8h + "
+                         "annualized + per-exchange dispersion + regime), aggregated open interest "
+                         "(USD + coin + top exchanges), and global long/short account ratio with skew. "
+                         "Factual data, not a prediction. 2-min cache. Ed25519 signed."),
+        "assets": ["BTC", "ETH", "SOL", "and other major perp symbols"],
+        "output_schema": {
+            "asset": "string", "funding": {"rate_8h_pct": "float", "rate_annualized_pct": "float",
+            "regime": "string", "by_exchange": "array"}, "open_interest": {"total_usd": "float",
+            "total_coin": "float", "by_exchange": "array"}, "long_short": {"global_long_pct": "float",
+            "global_short_pct": "float", "skew": "string"}, "timestamp": "iso8601"},
+    }
 
 
 # -- Order_ChainFlow — On-Chain Order Flow Agent endpoints -------------------

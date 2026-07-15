@@ -376,6 +376,23 @@ Core memory files: data/memory/[agent_name]_core.md
 
 ---
 
+## Data-first x402 pivot (2026-07-15) — sell facts, not predictions
+- Research (x402 marketplace): "data" is the biggest category (~30.9%), ~4,400 buyers vs ~477
+  sellers (9:1 demand). Winners sell DETERMINISTIC, verifiable FACTS (CoinGecko $0.01, rug
+  checks, sanctions screens) at $0.005-0.05/call. Predictive "signals/oracle" get listed, not
+  bought -- an agent can't verify a forecast before paying, and Octodamus's 36% win record makes
+  the opinion a liability. Octodamus's old prices ($1-3) were 20-600x above the per-call norm.
+- FIRST DATA ENDPOINT BUILT: GET /v2/derivatives/facts?asset=BTC ($0.02). Deterministic
+  cross-venue snapshot: funding (8h + annualized + per-exchange dispersion + regime), aggregated
+  open interest (USD/coin/top exchanges), global long/short + skew. All facts, no forecast.
+  Sources: octo_funding_rates (Binance->OKX) + octo_coinglass (funding/OI/L-S; liquidation map
+  is 403 on current Coinglass tier, excluded). Data builder verified live. _X402_REQ_2CENT added.
+  Registered in OFFERING_REGISTRY + payment-info discovery. Free preview at .../facts/preview.
+  GO-LIVE: needs Octodamus-API-Server restart (runs `python octo_api_server.py`, no hot-reload).
+- NEXT data candidates (own the pipes already): normalized Polymarket odds/edge feed, structured
+  congress/SEC filing events, tokenized-equity stock-perp reference data, raw macro numbers.
+  Build-new high-demand gaps: pre-trade rug/safety check, OFAC/sanctions wallet screening.
+
 ## x402 Services Live (api.octodamus.com)
 - GET /v2/signal ($1.00)                   oracle signal composite
 - GET /v2/ben/sentiment-divergence ($0.50) Fear/Greed vs crowd divergence
