@@ -199,13 +199,16 @@ def fetch_engagement_for_pending(max_fetch: int = 20) -> int:
       - are older than _FETCH_DELAY_HOURS
       - haven't had metrics fetched yet
     Fetch their public_metrics, compute engagement score, auto-rate.
+    Newest-first: recent (aged >24h) posts get scored before the older backlog,
+    so the weekly distill learns from current voice/format. Spare capacity
+    (max_fetch > posts/day) still fills older un-fetched entries over time.
     Returns number of entries updated.
     """
     entries  = _load_log()
     cutoff   = datetime.now(timezone.utc) - timedelta(hours=_FETCH_DELAY_HOURS)
     updated  = 0
 
-    for entry in entries:
+    for entry in reversed(entries):
         if updated >= max_fetch:
             break
 
