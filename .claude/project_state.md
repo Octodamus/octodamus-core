@@ -447,6 +447,26 @@ Core memory files: data/memory/[agent_name]_core.md
   at-market, discoverable. 29 paid ops advertised in public OpenAPI.
 - Deploy validated: this one shipped with a single `Restart-Service OctoDataAPI` (1 process,
   1 listener, clean) -- the dual-management + workers=1 fixes hold.
+
+## x402scan / CDP Bazaar discovery — how it ACTUALLY works (learned 2026-07-16)
+- x402scan indexes the **CDP Bazaar**. A resource is cataloged in the Bazaar ONLY after a
+  payment SETTLES through the CDP facilitator carrying `paymentPayload.resource` for THAT
+  endpoint + its own bazaar discovery metadata. OpenAPI x-payment-info alone does NOT get you in.
+- Query what's indexed: `GET https://api.cdp.coinbase.com/platform/v2/x402/discovery/merchant?payTo=<treasury>`
+  (treasury = 0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db). Also /discovery/resources and /discovery/search.
+  Cache latency up to 10 min; quality metrics refresh 6h; resources idle 30+ days drop off.
+- ROOT CAUSE found: all paid endpoints shared `_x402_headers_legacy` which hardcodes agent-signal's
+  resource -> only 1 Octodamus resource (agent-signal) was ever in the Bazaar despite 29 paid ops.
+- FIX: added `_x402_headers_data()` + `_DATA_DISCOVERY` (per-endpoint name/desc/tags/example) and
+  pointed the 5 data products at it -> each 402 advertises its OWN resource + bazaar extension.
+- ACCELERATED: made a settled $0.02 self-payment (Franklin wallet -> treasury, EIP-3009 gasless for
+  payer) to each of the 5 data endpoints via the x402 SDK. Result: CDP Bazaar merchant catalog went
+  1 -> 6 resources (5 new data products + agent-signal), all correct URLs + $0.02. x402scan indexes
+  the Bazaar on its own schedule. TO RE-INDEX / add coverage: one settled payment per new endpoint.
+- STILL NOT CATALOGED: the other subarc endpoints (order_chainflow delta/dex/whales, nyse_macromind,
+  nyse_stockoracle, x_sentiment, nyse_tech) -- they still use _x402_headers_legacy (agent-signal
+  resource). To surface them: give each a _DATA_DISCOVERY entry + own-resource 402, then one settled
+  payment each. (Note WARNING: never print unicode ✓ etc. to Windows stdout -- cp1252 crash.)
 - NEXT data candidates (own the pipes already): structured congress/SEC filing events (octo_congress),
   raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
   check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
