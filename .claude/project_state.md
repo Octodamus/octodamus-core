@@ -463,10 +463,19 @@ Core memory files: data/memory/[agent_name]_core.md
   payer) to each of the 5 data endpoints via the x402 SDK. Result: CDP Bazaar merchant catalog went
   1 -> 6 resources (5 new data products + agent-signal), all correct URLs + $0.02. x402scan indexes
   the Bazaar on its own schedule. TO RE-INDEX / add coverage: one settled payment per new endpoint.
-- STILL NOT CATALOGED: the other subarc endpoints (order_chainflow delta/dex/whales, nyse_macromind,
-  nyse_stockoracle, x_sentiment, nyse_tech) -- they still use _x402_headers_legacy (agent-signal
-  resource). To surface them: give each a _DATA_DISCOVERY entry + own-resource 402, then one settled
-  payment each. (Note WARNING: never print unicode ✓ etc. to Windows stdout -- cp1252 crash.)
+- FULL CATALOG DONE (2026-07-16): generalized to `_x402_headers_disc(path)` (path-keyed _DISCOVERY_META
+  + OFFERING_REGISTRY fallback) so EVERY paid endpoint advertises its own resource. Repointed all 19
+  paid call sites (5 data, 5 gates, 7 ben, guide, brief). Made settled payments to the 23 remaining
+  (~$13.45 self-pay Franklin->treasury). CDP Bazaar merchant catalog: 6 -> 28 resources. 27 of 28
+  paid endpoints now discoverable (agent-signal + 5 data + all subarc + 6/7 ben + guide).
+- 2 ENDPOINTS BUG (500 on PAID call -- fix these): /v2/nyse_tech/chainlink_lead_signals and
+  /v2/ben/bens_bull_trap_monitor return 500 Internal Server Error after payment. A paying agent gets
+  an error. chainlink still cataloged (settle ran before handler crashed); bull_trap did NOT catalog
+  (its settle didn't complete -> likely not charged). Fix the handler bug, then re-pay bull_trap once.
+- To add discovery for any NEW endpoint henceforth: it inherits _x402_headers_disc automatically via
+  its gate; just make ONE settled payment (e.g. octo_x402_health-style) to catalog it.
+  (WARNING: never print unicode checkmarks etc. to Windows stdout -- cp1252 crash. Script files that
+  import project modules need sys.path.insert(0, project_dir) since script-dir goes on path, not CWD.)
 - NEXT data candidates (own the pipes already): structured congress/SEC filing events (octo_congress),
   raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
   check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
