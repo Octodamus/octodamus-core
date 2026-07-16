@@ -9595,4 +9595,6 @@ def get_dashboard():
 # -- Entry point --------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False, workers=2)
+    # workers=1 (single process, no master/worker split) so restarts never orphan a
+    # worker that keeps holding port 8742. NSSM OctoDataAPI is the sole manager.
+    uvicorn.run("octo_api_server:app", host="0.0.0.0", port=PORT, reload=False, workers=1)
