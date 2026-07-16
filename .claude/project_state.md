@@ -468,10 +468,16 @@ Core memory files: data/memory/[agent_name]_core.md
   paid call sites (5 data, 5 gates, 7 ben, guide, brief). Made settled payments to the 23 remaining
   (~$13.45 self-pay Franklin->treasury). CDP Bazaar merchant catalog: 6 -> 28 resources. 27 of 28
   paid endpoints now discoverable (agent-signal + 5 data + all subarc + 6/7 ben + guide).
-- 2 ENDPOINTS BUG (500 on PAID call -- fix these): /v2/nyse_tech/chainlink_lead_signals and
-  /v2/ben/bens_bull_trap_monitor return 500 Internal Server Error after payment. A paying agent gets
-  an error. chainlink still cataloged (settle ran before handler crashed); bull_trap did NOT catalog
-  (its settle didn't complete -> likely not charged). Fix the handler bug, then re-pay bull_trap once.
+- 2 ENDPOINT BUGS FIXED (2026-07-16) -> catalog now 29/29:
+  1. bens_bull_trap_monitor had TWO bugs: (a) verified against `_X402_REQS_35CENT_BEN`, a malformed
+     list-of-dict (not a PaymentRequirements) -> verify failed then _x402_headers_for crashed on
+     pydantic -> 500; fixed to `_X402_REQS_BEN_35CENT`. (b) `import alternative` (no such module) for
+     Fear & Greed -> fixed to httpx GET api.alternative.me/fng like the other Ben endpoints. Now settles
+     + returns 200; cataloged.
+  2. chainlink_lead_signals used undefined `ROOT` (only octo_api_server line with `ROOT`) -> NameError
+     -> 500 after settle; fixed to Path(__file__).parent. NOTE: its Chainlink reference-data feed URLs
+     (reference-data-directory.vercel.app/feeds-*.json) now 404 -> endpoint returns 200 but with empty
+     feeds (handled gracefully). Data-source is stale; find current Chainlink feed registry URL later.
 - To add discovery for any NEW endpoint henceforth: it inherits _x402_headers_disc automatically via
   its gate; just make ONE settled payment (e.g. octo_x402_health-style) to catalog it.
   (WARNING: never print unicode checkmarks etc. to Windows stdout -- cp1252 crash. Script files that

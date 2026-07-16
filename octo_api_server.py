@@ -5928,8 +5928,6 @@ def ben_agent_context_pack_preview():
 # Fires when Fear&Greed <45 AND crowd >65% bullish simultaneously.
 # Designed by Agent_Ben (session #24, 2026-04-28).
 
-_X402_REQS_35CENT_BEN = [{"amount": 350000, "asset": "USDC", "network": "eip155:8453", "payTo": _X402_TREASURY}]
-
 @app.get("/v2/ben/bens_bull_trap_monitor", tags=["Agent_Ben Services"])
 def ben_bull_trap_monitor(request: Request):
     """
@@ -5955,17 +5953,20 @@ def ben_bull_trap_monitor(request: Request):
                          "preview":     "GET https://api.octodamus.com/v2/ben/bens_bull_trap_monitor/preview",
                          "description": "TRAP/CLEAR/UNCLEAR status + divergence score (0-100) when F&G <45 AND crowd >65% bullish.",
                      }))
-    _x402_verify_settle(request, _X402_REQS_35CENT_BEN)
+    _x402_verify_settle(request, _X402_REQS_BEN_35CENT)
 
     try:
         from octo_grok_sentiment import get_grok_sentiment
         from financial_data_client import get_crypto_prices
-        import alternative
+        import httpx as _hx
 
-        # Fear & Greed
-        fg_data     = alternative.get_fear_and_greed_index()
-        fear_greed  = int(fg_data.get("value", 50)) if fg_data else 50
-        fg_label    = fg_data.get("value_classification", "Neutral") if fg_data else "Neutral"
+        # Fear & Greed -- live from alternative.me (same source as the other Ben endpoints)
+        try:
+            fg_r       = _hx.get("https://api.alternative.me/fng/?limit=1", timeout=6)
+            fear_greed = int(fg_r.json()["data"][0]["value"]) if fg_r.status_code == 200 else 50
+            fg_label   = fg_r.json()["data"][0].get("value_classification", "Neutral") if fg_r.status_code == 200 else "Neutral"
+        except Exception:
+            fear_greed, fg_label = 50, "Neutral"
 
         # Grok BTC sentiment
         gs = get_grok_sentiment("BTC") or {}
@@ -7645,7 +7646,7 @@ def nyse_tech_chainlink_lead_signals(request: Request):
     gate = _nyse_tech_gate(request, 0.50, _X402_REQS_BEN_50CENT, "chainlink_lead_signals")
     if gate: return gate
     _track_agent_revenue("NYSE_Tech_Agent", "chainlink_lead_signals", 0.50)
-    baseline_file = ROOT / ".agents" / "nyse_tech_agent" / "data" / "chainlink_feeds_seen.json"
+    baseline_file = Path(__file__).parent / ".agents" / "nyse_tech_agent" / "data" / "chainlink_feeds_seen.json"
     baseline = {}
     if baseline_file.exists():
         try:
