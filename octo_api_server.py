@@ -927,6 +927,7 @@ def _custom_openapi():
         "/v2/derivatives/facts":                        "0.02",
         "/v2/polymarket/odds":                          "0.02",
         "/v2/stocks/perp-facts":                        "0.02",
+        "/v2/congress/trades":                          "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1804,6 +1805,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "Derivatives Facts",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/derivatives/facts/preview"},
     {"name": "Polymarket Odds",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/polymarket/odds/preview"},
     {"name": "Stock-Perp Facts",                 "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/stocks/perp-facts/preview"},
+    {"name": "Congress Trades",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/congress/trades/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2037,6 +2039,7 @@ def acp_agent_info():
             {"id": "derivatives-facts",  "path": "/v2/derivatives/facts",            "price_usdc": 0.02, "description": "Deterministic cross-venue funding rate, open interest, and long/short facts (not a prediction)"},
             {"id": "polymarket-odds",    "path": "/v2/polymarket/odds",              "price_usdc": 0.02, "description": "Live crypto prediction-market facts: normalized odds, liquidity, CLOB spread, resolution status"},
             {"id": "stock-perp-facts",   "path": "/v2/stocks/perp-facts",            "price_usdc": 0.02, "description": "Tokenized-equity / stock-perp reference: funding, open interest, positioning for NVDA/TSLA/SPY/etc"},
+            {"id": "congress-trades",    "path": "/v2/congress/trades",              "price_usdc": 0.02, "description": "Structured congressional stock-trade disclosures: politician, ticker, BUY/SELL, amount, date"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -6855,6 +6858,86 @@ def polymarket_odds_preview():
             "no_price": "float", "implied_prob_pct": "float", "liquidity_usd": "float",
             "volume_24h_usd": "float", "spread": "float", "resolution": "open|resolved",
             "end_date": "iso8601", "url": "string"}], "timestamp": "iso8601"},
+    }
+
+
+# -- Congressional Trades — structured smart-money event feed ----------------
+# Timestamped, parsed congressional stock disclosures (who / ticker / direction /
+# amount / date). Factual event data agents can't cheaply self-source. $0.02/call.
+
+def _congress_trades_facts(days: int, ticker: str = "") -> dict:
+    """Structured congressional trade disclosures over a window, optional ticker filter."""
+    out = {"agent": "Octodamus", "product": "congress_trades", "window_days": days}
+    try:
+        import octo_congress as _oc
+        scan   = _oc.run_congress_scan(days_back=days)
+        trades = scan.get("trades") or []
+        tk = (ticker or "").strip().upper()
+        if tk:
+            trades = [t for t in trades if str(t.get("ticker", "")).upper() == tk]
+        rows = [{
+            "ticker":         t.get("ticker"),
+            "politician":     t.get("politician"),
+            "party":          t.get("party"),
+            "chamber":        t.get("chamber"),
+            "direction":      t.get("direction"),
+            "amount_range":   t.get("amount_str"),
+            "amount_low_usd": t.get("amount_low"),
+            "date":           t.get("date"),
+            "excess_return":  t.get("excess_return"),
+        } for t in trades]
+        out["trades"] = rows
+        out["total"]  = len(rows)
+        out["buys"]   = sum(1 for t in rows if str(t.get("direction", "")).upper() == "BUY")
+        out["sells"]  = sum(1 for t in rows if str(t.get("direction", "")).upper() == "SELL")
+        out["top_bought"] = scan.get("top_bought") or []
+        out["universe"] = "major-cap tickers (NVDA/TSLA/AAPL/MSFT/AMZN/META/GOOGL/QCOM/COIN/AMD)"
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "QuiverQuant congressional trading disclosures"
+    out["disclaimer"] = "Factual public disclosure data. Not financial advice."
+    return out
+
+
+@app.get("/v2/congress/trades", tags=["Derivatives"])
+def congress_trades(request: Request, days: int = 45, ticker: str = ""):
+    """Structured congressional trade disclosures (who/ticker/direction/amount/date). $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "congress_trades",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/congress/trades/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    try:
+        d = max(7, min(int(days), 90))
+    except (TypeError, ValueError):
+        d = 45
+    tk = (ticker or "").upper()
+    return _sign_payload(_tcache(f"congress_{d}_{tk or 'ALL'}", 1800, lambda: _congress_trades_facts(d, tk)))
+
+
+@app.get("/v2/congress/trades/preview", tags=["Derivatives"])
+def congress_trades_preview():
+    return {
+        "agent": "Octodamus", "product": "congress_trades", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/congress/trades?days=45&ticker=NVDA (x402 $0.02)",
+        "what_it_does": ("Structured congressional stock-trade disclosures: politician, party, chamber, "
+                         "ticker, BUY/SELL, dollar-amount range, filing date, and excess return per trade. "
+                         "Params: days (7-90, default 45), optional ticker filter. Factual event feed, "
+                         "not a prediction. Disclosures are sparse and lagged, so a quiet window can be "
+                         "empty. 30-min cache. Ed25519 signed."),
+        "output_schema": {"window_days": "int", "total": "int", "buys": "int", "sells": "int",
+            "trades": [{"ticker": "string", "politician": "string", "party": "string", "chamber": "string",
+            "direction": "BUY|SELL", "amount_range": "string", "amount_low_usd": "int", "date": "date",
+            "excess_return": "float"}], "top_bought": "array", "timestamp": "iso8601"},
     }
 
 

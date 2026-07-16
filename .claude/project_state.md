@@ -19,9 +19,31 @@
 ---
 
 ## Always-On Services (3 tasks, must always be running)
-- Octodamus-API-Server   port 8000, FastAPI, Cloudflare tunnel
+- Octodamus-API-Server   port 8742, FastAPI, Cloudflare tunnel
 - Octodamus-ACP-Worker   Virtuals ACP stock reports, payment-gated
 - Octodamus-Cloudflared  tunnel daemon
+
+## API SERVER RESTART — READ BEFORE TOUCHING (learned 2026-07-15, the hard way)
+- The API server is managed by an **NSSM Windows service: `OctoDataAPI`** (runs
+  `C:\Python314\python.exe C:\Users\walli\octodamus\octo_api_server.py`). NSSM auto-restarts it on
+  death. There is ALSO an `Octodamus-API-Server` scheduled task pointing at the same file -- running
+  BOTH creates duplicate instances that fight over port 8742. Treat NSSM as the single manager.
+- octo_api_server runs `uvicorn.run(..., workers=2)` -> a master + 2 worker processes. On restart the
+  OLD workers can ORPHAN and keep holding port 8742, so the fresh instance can't bind and the STALE
+  code keeps serving (offerings count won't change). Killing the master via Stop-Process/Stop-Service
+  does NOT kill orphaned workers.
+- CORRECT RESTART (to load code changes):
+    1. Disable-ScheduledTask OctodamusWatchdog   (it respawns octo_api_server and races you)
+    2. Stop-Service OctoDataAPI -Force  +  Stop-ScheduledTask Octodamus-API-Server
+    3. Kill EVERY octo_api_server python (masters by cmdline + their worker children) until port 8742
+       has zero live listeners. Note: a dead socket can show as a zombie PID / System PID 4 -- that's
+       fine, a fresh bind reuses it.
+    4. Start-Service OctoDataAPI  (single instance)
+    5. Verify NEW code by polling a NEW route (e.g. curl /v2/<new>/preview == 200) or offerings count,
+       NOT just "server up" -- a stale instance answers too.
+    6. Enable-ScheduledTask OctodamusWatchdog
+- `OctoAutoDeploy` (NSSM service, octo_autodeploy.py) also exists -- git-pull auto-deploy watcher.
+- TODO: reconcile dual management -- pick NSSM OR the scheduled task, not both (prevents future dup mess).
 
 ## Task Scheduler (32 total tasks — 24 core + 5 sub-agents + 1 ACP funder + 2 TokenBot)
 Daily:
@@ -418,8 +440,13 @@ Core memory files: data/memory/[agent_name]_core.md
   (verified NVDA/TSLA/AAPL/MSFT/GOOGL/AMZN/META/SPY/COIN/MSTR). First-mover feed on the tokenized-
   NYSE thesis. Verified live (NVDA LONG_HEAVY, SPY BALANCED, AAPL SHORT_HEAVY). In _PAID_PRICES +
   registry + discovery. 27 paid ops now advertised in public OpenAPI.
-- THREE data-first endpoints now live at $0.02: /v2/derivatives/facts, /v2/polymarket/odds,
-  /v2/stocks/perp-facts -- all factual, deterministic, at-market, discoverable.
+- FOURTH DATA ENDPOINT BUILT: GET /v2/congress/trades?days=45&ticker=NVDA ($0.02). Structured
+  congressional trade disclosures (politician/party/chamber/ticker/BUY-SELL/amount/date/excess_return)
+  from octo_congress.run_congress_scan. Params days (7-90, default 45) + optional ticker. Disclosures
+  are sparse/lagged so a quiet window can be empty (honest). 30-min cache (scan hits Quiver 10x).
+- FOUR data-first endpoints now live at $0.02: /v2/derivatives/facts, /v2/polymarket/odds,
+  /v2/stocks/perp-facts, /v2/congress/trades -- all factual, deterministic, at-market, discoverable.
+  28 paid ops advertised in public OpenAPI.
 - NEXT data candidates (own the pipes already): structured congress/SEC filing events (octo_congress),
   raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
   check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
