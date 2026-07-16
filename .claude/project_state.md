@@ -18,32 +18,35 @@
 
 ---
 
-## Always-On Services (3 tasks, must always be running)
-- Octodamus-API-Server   port 8742, FastAPI, Cloudflare tunnel
+## Always-On Services
+- API server: NSSM service **OctoDataAPI** (port 8742, FastAPI, Cloudflare tunnel). SOLE manager.
+  The `Octodamus-API-Server` scheduled task is DISABLED (was a duplicate boot-trigger); the watchdog
+  no longer watches it (see below). Do NOT re-enable the task or re-add it to the watchdog.
 - Octodamus-ACP-Worker   Virtuals ACP stock reports, payment-gated
 - Octodamus-Cloudflared  tunnel daemon
 
-## API SERVER RESTART — READ BEFORE TOUCHING (learned 2026-07-15, the hard way)
-- The API server is managed by an **NSSM Windows service: `OctoDataAPI`** (runs
-  `C:\Python314\python.exe C:\Users\walli\octodamus\octo_api_server.py`). NSSM auto-restarts it on
-  death. There is ALSO an `Octodamus-API-Server` scheduled task pointing at the same file -- running
-  BOTH creates duplicate instances that fight over port 8742. Treat NSSM as the single manager.
-- octo_api_server runs `uvicorn.run(..., workers=2)` -> a master + 2 worker processes. On restart the
-  OLD workers can ORPHAN and keep holding port 8742, so the fresh instance can't bind and the STALE
-  code keeps serving (offerings count won't change). Killing the master via Stop-Process/Stop-Service
-  does NOT kill orphaned workers.
-- CORRECT RESTART (to load code changes):
-    1. Disable-ScheduledTask OctodamusWatchdog   (it respawns octo_api_server and races you)
-    2. Stop-Service OctoDataAPI -Force  +  Stop-ScheduledTask Octodamus-API-Server
-    3. Kill EVERY octo_api_server python (masters by cmdline + their worker children) until port 8742
-       has zero live listeners. Note: a dead socket can show as a zombie PID / System PID 4 -- that's
-       fine, a fresh bind reuses it.
-    4. Start-Service OctoDataAPI  (single instance)
-    5. Verify NEW code by polling a NEW route (e.g. curl /v2/<new>/preview == 200) or offerings count,
+## API SERVER RESTART — READ BEFORE TOUCHING (dual-management fixed 2026-07-15)
+- SOLE manager: NSSM service **OctoDataAPI** (Auto start at boot, auto-restart on death, runs
+  `C:\Python314\python.exe C:\Users\walli\octodamus\octo_api_server.py`). Normal restart to load
+  code changes: `Restart-Service OctoDataAPI`.
+- CAVEAT -- uvicorn `workers=2`: on restart the OLD workers can ORPHAN and keep holding port 8742,
+  so the fresh instance can't bind and STALE code keeps serving (offerings count won't change). If a
+  plain Restart-Service doesn't pick up your change:
+    1. Stop-Service OctoDataAPI -Force
+    2. Kill EVERY octo_api_server python (master by cmdline + worker children) until port 8742 has
+       zero live listeners (a dead socket can show as a zombie PID / System PID 4 -- fine, fresh bind
+       reuses it). Get masters: Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+       ? { $_.CommandLine -like '*octo_api_server*' }
+    3. Start-Service OctoDataAPI
+    4. Verify NEW code by polling a NEW route (curl /v2/<new>/preview == 200) or offerings count,
        NOT just "server up" -- a stale instance answers too.
-    6. Enable-ScheduledTask OctodamusWatchdog
+- Prior chaos root cause (fixed): THREE managers all launched python octo_api_server.py -- NSSM +
+  the boot-trigger scheduled task + the watchdog's direct subprocess.Popen. Now NSSM only. The
+  watchdog's APIServer entry was removed (octo_watchdog.py) with a note; if NSSM ever needs a nudge
+  from code, call `Start-Service OctoDataAPI`, never raw python.
 - `OctoAutoDeploy` (NSSM service, octo_autodeploy.py) also exists -- git-pull auto-deploy watcher.
-- TODO: reconcile dual management -- pick NSSM OR the scheduled task, not both (prevents future dup mess).
+- FUTURE OPTION: set uvicorn workers=1 to eliminate the orphan-worker class of restart problems
+  (small concurrency tradeoff). Not done -- current load is light; documented procedure suffices.
 
 ## Task Scheduler (32 total tasks — 24 core + 5 sub-agents + 1 ACP funder + 2 TokenBot)
 Daily:

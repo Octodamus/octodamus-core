@@ -62,13 +62,11 @@ PROCESSES = [
         "critical": True,
         "cooldown": 30,
     },
-    {
-        "name":    "APIServer",
-        "script":  "octo_api_server.py",
-        "args":    [],
-        "critical": False,
-        "cooldown": 60,
-    },
+    # NOTE: APIServer (octo_api_server.py) is deliberately NOT watched here. It is
+    # managed solely by the NSSM service `OctoDataAPI` (Auto start, auto-restart on
+    # death). Watching it here caused the watchdog to launch a competing direct-python
+    # instance during restart windows -> duplicate instances fighting over port 8742.
+    # If NSSM ever needs a nudge, use: Start-Service OctoDataAPI (never raw python).
 ]
 
 # ── Logging ───────────────────────────────────────────────────────────────────
