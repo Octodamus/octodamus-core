@@ -928,6 +928,7 @@ def _custom_openapi():
         "/v2/polymarket/odds":                          "0.02",
         "/v2/stocks/perp-facts":                        "0.02",
         "/v2/congress/trades":                          "0.02",
+        "/v2/macro/facts":                              "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1806,6 +1807,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "Polymarket Odds",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/polymarket/odds/preview"},
     {"name": "Stock-Perp Facts",                 "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/stocks/perp-facts/preview"},
     {"name": "Congress Trades",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/congress/trades/preview"},
+    {"name": "Macro Facts",                      "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/macro/facts/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2040,6 +2042,7 @@ def acp_agent_info():
             {"id": "polymarket-odds",    "path": "/v2/polymarket/odds",              "price_usdc": 0.02, "description": "Live crypto prediction-market facts: normalized odds, liquidity, CLOB spread, resolution status"},
             {"id": "stock-perp-facts",   "path": "/v2/stocks/perp-facts",            "price_usdc": 0.02, "description": "Tokenized-equity / stock-perp reference: funding, open interest, positioning for NVDA/TSLA/SPY/etc"},
             {"id": "congress-trades",    "path": "/v2/congress/trades",              "price_usdc": 0.02, "description": "Structured congressional stock-trade disclosures: politician, ticker, BUY/SELL, amount, date"},
+            {"id": "macro-facts",        "path": "/v2/macro/facts",                  "price_usdc": 0.02, "description": "Raw cross-asset macro numbers from FRED: yield curve, USD index, SPX, VIX, M2 + composite score"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -6858,6 +6861,76 @@ def polymarket_odds_preview():
             "no_price": "float", "implied_prob_pct": "float", "liquidity_usd": "float",
             "volume_24h_usd": "float", "spread": "float", "resolution": "open|resolved",
             "end_date": "iso8601", "url": "string"}], "timestamp": "iso8601"},
+    }
+
+
+# -- Macro Facts — raw cross-asset reference numbers -------------------------
+# Sells the NUMBERS (yield curve, USD, SPX, VIX, M2 from FRED) + deterministic
+# per-series notes, not a regime opinion. Factual, low-competition. $0.02/call.
+
+def _macro_facts() -> dict:
+    """Raw FRED cross-asset macro numbers + deterministic per-series notes."""
+    out = {"agent": "Octodamus", "product": "macro_facts"}
+    try:
+        from octo_macro import get_macro_signal
+        mm  = get_macro_signal()
+        raw = mm.get("raw", {}) or {}
+        ind = mm.get("indicators", {}) or {}
+        def _note(k):
+            return (ind.get(k) or {}).get("note")
+        out["indicators"] = {
+            "yield_curve_10y2y_pct": {"value": raw.get("yield_curve"), "note": _note("yield_curve")},
+            "usd_index_broad":       {"value": raw.get("dollar_now"), "value_5d_ago": raw.get("dollar_prev"), "note": _note("dollar")},
+            "sp500":                 {"value": raw.get("spx_now"),    "value_5d_ago": raw.get("spx_prev"),    "note": _note("spx")},
+            "vix":                   {"value": raw.get("vix"),        "note": _note("vix")},
+            "m2_money_supply_bil":   {"value": raw.get("m2_now"),     "value_prior_month": raw.get("m2_prev"), "note": _note("m2")},
+        }
+        out["composite"] = {
+            "signal": mm.get("signal"),
+            "score":  mm.get("score"),
+            "scale":  "sum of 5 series, range -5..+5; >=+2 RISK-ON, <=-2 RISK-OFF",
+        }
+        out["as_of"] = mm.get("fetched_at")
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "FRED (Federal Reserve): T10Y2Y, DTWEXBGS, SP500, VIXCLS, M2SL"
+    out["disclaimer"] = "Factual macro reference data. Not financial advice."
+    return out
+
+
+@app.get("/v2/macro/facts", tags=["Derivatives"])
+def macro_facts(request: Request):
+    """Raw cross-asset macro reference numbers (yield curve, USD, SPX, VIX, M2). $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "macro_facts",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/macro/facts/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    return _sign_payload(_tcache("macro_facts", 1800, _macro_facts))
+
+
+@app.get("/v2/macro/facts/preview", tags=["Derivatives"])
+def macro_facts_preview():
+    return {
+        "agent": "Octodamus", "product": "macro_facts", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/macro/facts (x402 $0.02)",
+        "what_it_does": ("Raw cross-asset macro reference numbers from FRED: 10y-2y yield curve, "
+                         "broad USD index, S&P 500, VIX, and M2 money supply -- each with current "
+                         "value, prior reading, and a deterministic note, plus a composite RISK-ON/OFF "
+                         "score. Sell the number, not a forecast. 30-min cache. Ed25519 signed."),
+        "output_schema": {"indicators": {"yield_curve_10y2y_pct": {"value": "float", "note": "string"},
+            "usd_index_broad": {"value": "float", "value_5d_ago": "float"}, "sp500": {"value": "float"},
+            "vix": {"value": "float"}, "m2_money_supply_bil": {"value": "float"}},
+            "composite": {"signal": "RISK-ON|RISK-OFF|NEUTRAL", "score": "int"}, "timestamp": "iso8601"},
     }
 
 

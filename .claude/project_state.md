@@ -438,9 +438,15 @@ Core memory files: data/memory/[agent_name]_core.md
   congressional trade disclosures (politician/party/chamber/ticker/BUY-SELL/amount/date/excess_return)
   from octo_congress.run_congress_scan. Params days (7-90, default 45) + optional ticker. Disclosures
   are sparse/lagged so a quiet window can be empty (honest). 30-min cache (scan hits Quiver 10x).
-- FOUR data-first endpoints now live at $0.02: /v2/derivatives/facts, /v2/polymarket/odds,
-  /v2/stocks/perp-facts, /v2/congress/trades -- all factual, deterministic, at-market, discoverable.
-  28 paid ops advertised in public OpenAPI.
+- FIFTH DATA ENDPOINT BUILT: GET /v2/macro/facts ($0.02). Raw cross-asset macro reference numbers
+  from FRED (10y-2y yield curve, broad USD index, S&P 500, VIX, M2) -- each with current value,
+  prior reading, and a deterministic note, plus composite RISK-ON/OFF score. Source:
+  octo_macro.get_macro_signal. Sell the number, not the read. 30-min cache.
+- FIVE data-first endpoints now live at $0.02: /v2/derivatives/facts, /v2/polymarket/odds,
+  /v2/stocks/perp-facts, /v2/congress/trades, /v2/macro/facts -- all factual, deterministic,
+  at-market, discoverable. 29 paid ops advertised in public OpenAPI.
+- Deploy validated: this one shipped with a single `Restart-Service OctoDataAPI` (1 process,
+  1 listener, clean) -- the dual-management + workers=1 fixes hold.
 - NEXT data candidates (own the pipes already): structured congress/SEC filing events (octo_congress),
   raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
   check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
