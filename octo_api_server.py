@@ -656,6 +656,80 @@ def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
     }
 
 
+# Per-endpoint discovery metadata for the $0.02 data products. Each 402 must advertise
+# its OWN resource + bazaar metadata so the CDP facilitator catalogs THAT endpoint (not
+# agent-signal) after a settled payment -> it then appears in the Bazaar and on x402scan.
+_DATA_DISCOVERY = {
+    "derivatives_facts": {
+        "name": "Octodamus Derivatives Facts",
+        "desc": "Deterministic cross-venue crypto derivatives facts: funding rate (8h + annualized + per-exchange), aggregated open interest, and global long/short with skew. BTC/ETH/SOL. Not a prediction.",
+        "tags": ["derivatives", "funding rate", "open interest", "long short", "liquidations", "perps", "BTC", "ETH", "SOL", "market data", "Base USDC"],
+        "example": {"asset": "BTC", "funding": {"rate_8h_pct": 0.004, "rate_annualized_pct": 4.4, "regime": "NEUTRAL"}, "open_interest": {"total_usd": 49016546195.8}, "long_short": {"global_long_pct": 74.3, "skew": "LONG_HEAVY"}},
+    },
+    "polymarket_odds": {
+        "name": "Octodamus Polymarket Odds",
+        "desc": "Live crypto prediction-market facts from Polymarket: normalized YES/NO odds (implied probability), 24h volume, liquidity, CLOB order-book spread, and resolution status per market. Not a prediction.",
+        "tags": ["polymarket", "prediction market", "odds", "implied probability", "order book", "liquidity", "crypto", "BTC", "market data", "Base USDC"],
+        "example": {"count": 2, "markets": [{"question": "Will Bitcoin reach $67,500 in July?", "yes_price": 0.545, "implied_prob_pct": 54.5, "liquidity_usd": 23315.17, "spread": 0.01, "resolution": "open"}]},
+    },
+    "stock_perp_facts": {
+        "name": "Octodamus Stock-Perp Facts",
+        "desc": "Tokenized-equity / stock perpetual-futures reference data: funding per venue + tier-1 average, aggregated open interest, and long/short positioning with skew. NVDA/TSLA/AAPL/SPY/etc. Not a prediction.",
+        "tags": ["stock perps", "tokenized equity", "funding rate", "open interest", "positioning", "NVDA", "TSLA", "SPY", "AAPL", "market data", "Base USDC"],
+        "example": {"ticker": "NVDA", "funding": {"avg_tier1_pct": 0.0}, "open_interest": {"total_usd": 277052042.9, "top_venue_pct": 76.7}, "positioning": {"long_pct": 69.6, "skew": "LONG_HEAVY"}},
+    },
+    "congress_trades": {
+        "name": "Octodamus Congress Trades",
+        "desc": "Structured congressional stock-trade disclosures: politician, party, chamber, ticker, BUY/SELL, dollar-amount range, filing date, excess return. Optional days + ticker filter. Factual event feed.",
+        "tags": ["congress", "congressional trading", "insider", "smart money", "disclosures", "stocks", "SEC", "event feed", "market data", "Base USDC"],
+        "example": {"window_days": 45, "total": 4, "buys": 1, "sells": 3, "trades": [{"ticker": "MSFT", "politician": "Ro Khanna", "party": "Democratic", "direction": "BUY", "amount_range": "$250,001 - $500,000", "date": "2026-06-16"}]},
+    },
+    "macro_facts": {
+        "name": "Octodamus Macro Facts",
+        "desc": "Raw cross-asset macro reference numbers from FRED: 10y-2y yield curve, broad USD index, S&P 500, VIX, M2 money supply -- each with current value, prior reading, and a deterministic note, plus composite RISK-ON/OFF score.",
+        "tags": ["macro", "yield curve", "DXY", "USD index", "VIX", "M2", "S&P 500", "FRED", "risk on risk off", "market data", "Base USDC"],
+        "example": {"indicators": {"yield_curve_10y2y_pct": {"value": 0.42}, "vix": {"value": 16.5}, "sp500": {"value": 7572.4}}, "composite": {"signal": "RISK-ON", "score": 3}},
+    },
+}
+
+
+def _x402_headers_data(key: str, path: str, amount_usdc: float = 0.02) -> dict:
+    """Discoverable 402 headers for a $0.02 data endpoint, carrying its own resource +
+    bazaar metadata so a settled payment catalogs THIS resource in the CDP Bazaar."""
+    import base64
+    meta  = _DATA_DISCOVERY[key]
+    micro = str(int(amount_usdc * 1_000_000))
+    url   = f"https://api.octodamus.com{path}"
+    bazaar_ext = {
+        "name":         meta["name"],
+        "discoverable": True,
+        "category":     "trading",
+        "tags":         meta["tags"],
+        "info": {
+            "input":  {"type": "http", "method": "GET",
+                       "headers": {"PAYMENT-SIGNATURE": "x402 EIP-3009 USDC payment (Base mainnet)"}},
+            "output": {"type": "json", "example": meta["example"]},
+        },
+        "schema": _BAZAAR_EXT["bazaar"]["schema"],
+    }
+    accepts_entry = {
+        "scheme": "exact", "network": "eip155:8453",
+        "maxAmountRequired": micro, "amount": micro,
+        "resource": url, "description": meta["desc"], "mimeType": "application/json",
+        "payTo": _X402_TREASURY, "maxTimeoutSeconds": 300, "asset": _X402_USDC,
+        "extra": {"name": "USD Coin", "version": "2", "chainId": 8453},
+        "extensions": {"bazaar": bazaar_ext},
+    }
+    v2_payload = {
+        "x402Version": 2, "error": "Payment Required",
+        "resource": {"url": url, "name": meta["name"], "description": meta["desc"], "mimeType": "application/json"},
+        "extensions": {"bazaar": bazaar_ext},
+        "accepts": [accepts_entry],
+    }
+    v2_b64 = base64.b64encode(json.dumps(v2_payload, separators=(",", ":")).encode()).decode()
+    return {"X-Payment-Required": json.dumps(_x402_header(amount_usdc)), "payment-required": v2_b64}
+
+
 async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADER)):
     """
     Require valid key + enforce tier rate limits.
@@ -6658,7 +6732,7 @@ def derivatives_facts(request: Request, asset: str = "BTC"):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+        return _Resp(status_code=402, headers=_x402_headers_data("derivatives_facts", "/v2/derivatives/facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "derivatives_facts",
@@ -6738,7 +6812,7 @@ def stock_perp_facts(request: Request, ticker: str = "NVDA"):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+        return _Resp(status_code=402, headers=_x402_headers_data("stock_perp_facts", "/v2/stocks/perp-facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "stock_perp_facts",
@@ -6835,7 +6909,7 @@ def polymarket_odds(request: Request, asset: str = ""):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+        return _Resp(status_code=402, headers=_x402_headers_data("polymarket_odds", "/v2/polymarket/odds"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "polymarket_odds",
@@ -6906,7 +6980,7 @@ def macro_facts(request: Request):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+        return _Resp(status_code=402, headers=_x402_headers_data("macro_facts", "/v2/macro/facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "macro_facts",
@@ -6980,7 +7054,7 @@ def congress_trades(request: Request, days: int = 45, ticker: str = ""):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.02),
+        return _Resp(status_code=402, headers=_x402_headers_data("congress_trades", "/v2/congress/trades"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "congress_trades",
