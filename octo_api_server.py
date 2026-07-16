@@ -659,32 +659,32 @@ def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
 # Per-endpoint discovery metadata for the $0.02 data products. Each 402 must advertise
 # its OWN resource + bazaar metadata so the CDP facilitator catalogs THAT endpoint (not
 # agent-signal) after a settled payment -> it then appears in the Bazaar and on x402scan.
-_DATA_DISCOVERY = {
-    "derivatives_facts": {
+_DISCOVERY_META = {
+    "/v2/derivatives/facts": {
         "name": "Octodamus Derivatives Facts",
         "desc": "Deterministic cross-venue crypto derivatives facts: funding rate (8h + annualized + per-exchange), aggregated open interest, and global long/short with skew. BTC/ETH/SOL. Not a prediction.",
         "tags": ["derivatives", "funding rate", "open interest", "long short", "liquidations", "perps", "BTC", "ETH", "SOL", "market data", "Base USDC"],
         "example": {"asset": "BTC", "funding": {"rate_8h_pct": 0.004, "rate_annualized_pct": 4.4, "regime": "NEUTRAL"}, "open_interest": {"total_usd": 49016546195.8}, "long_short": {"global_long_pct": 74.3, "skew": "LONG_HEAVY"}},
     },
-    "polymarket_odds": {
+    "/v2/polymarket/odds": {
         "name": "Octodamus Polymarket Odds",
         "desc": "Live crypto prediction-market facts from Polymarket: normalized YES/NO odds (implied probability), 24h volume, liquidity, CLOB order-book spread, and resolution status per market. Not a prediction.",
         "tags": ["polymarket", "prediction market", "odds", "implied probability", "order book", "liquidity", "crypto", "BTC", "market data", "Base USDC"],
         "example": {"count": 2, "markets": [{"question": "Will Bitcoin reach $67,500 in July?", "yes_price": 0.545, "implied_prob_pct": 54.5, "liquidity_usd": 23315.17, "spread": 0.01, "resolution": "open"}]},
     },
-    "stock_perp_facts": {
+    "/v2/stocks/perp-facts": {
         "name": "Octodamus Stock-Perp Facts",
         "desc": "Tokenized-equity / stock perpetual-futures reference data: funding per venue + tier-1 average, aggregated open interest, and long/short positioning with skew. NVDA/TSLA/AAPL/SPY/etc. Not a prediction.",
         "tags": ["stock perps", "tokenized equity", "funding rate", "open interest", "positioning", "NVDA", "TSLA", "SPY", "AAPL", "market data", "Base USDC"],
         "example": {"ticker": "NVDA", "funding": {"avg_tier1_pct": 0.0}, "open_interest": {"total_usd": 277052042.9, "top_venue_pct": 76.7}, "positioning": {"long_pct": 69.6, "skew": "LONG_HEAVY"}},
     },
-    "congress_trades": {
+    "/v2/congress/trades": {
         "name": "Octodamus Congress Trades",
         "desc": "Structured congressional stock-trade disclosures: politician, party, chamber, ticker, BUY/SELL, dollar-amount range, filing date, excess return. Optional days + ticker filter. Factual event feed.",
         "tags": ["congress", "congressional trading", "insider", "smart money", "disclosures", "stocks", "SEC", "event feed", "market data", "Base USDC"],
         "example": {"window_days": 45, "total": 4, "buys": 1, "sells": 3, "trades": [{"ticker": "MSFT", "politician": "Ro Khanna", "party": "Democratic", "direction": "BUY", "amount_range": "$250,001 - $500,000", "date": "2026-06-16"}]},
     },
-    "macro_facts": {
+    "/v2/macro/facts": {
         "name": "Octodamus Macro Facts",
         "desc": "Raw cross-asset macro reference numbers from FRED: 10y-2y yield curve, broad USD index, S&P 500, VIX, M2 money supply -- each with current value, prior reading, and a deterministic note, plus composite RISK-ON/OFF score.",
         "tags": ["macro", "yield curve", "DXY", "USD index", "VIX", "M2", "S&P 500", "FRED", "risk on risk off", "market data", "Base USDC"],
@@ -693,11 +693,22 @@ _DATA_DISCOVERY = {
 }
 
 
-def _x402_headers_data(key: str, path: str, amount_usdc: float = 0.02) -> dict:
-    """Discoverable 402 headers for a $0.02 data endpoint, carrying its own resource +
-    bazaar metadata so a settled payment catalogs THIS resource in the CDP Bazaar."""
+def _x402_headers_disc(path: str, amount_usdc: float = 0.02) -> dict:
+    """Discoverable 402 headers carrying the endpoint's OWN resource + bazaar metadata so
+    a settled payment catalogs THIS resource in the CDP Bazaar. Bespoke metadata comes
+    from _DISCOVERY_META[path]; any other paid path falls back to its OFFERING_REGISTRY name."""
     import base64
-    meta  = _DATA_DISCOVERY[key]
+    meta = _DISCOVERY_META.get(path)
+    if meta is None:
+        _name, _desc = "Octodamus", f"Octodamus x402 pay-per-call endpoint {path} on Base USDC."
+        for _o in OFFERING_REGISTRY:
+            if _o.get("preview_path") == path + "/preview":
+                _name = f"Octodamus {_o['name']}"
+                _desc = (f"Octodamus {_o['name']} -- pay-per-call x402 endpoint on Base. "
+                         f"Preview: https://api.octodamus.com{path}/preview")
+                break
+        meta = {"name": _name, "desc": _desc, "example": {},
+                "tags": ["octodamus", "market intelligence", "market data", "crypto", "signal", "Base USDC"]}
     micro = str(int(amount_usdc * 1_000_000))
     url   = f"https://api.octodamus.com{path}"
     bazaar_ext = {
@@ -5044,7 +5055,7 @@ def buy_derivatives_guide(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(3.0),
+            headers=_x402_headers_disc(request.url.path, 3.0),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5125,7 +5136,7 @@ def ben_sentiment_divergence(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.50),
+            headers=_x402_headers_disc(request.url.path, 0.50),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5246,7 +5257,7 @@ def ben_fear_greed_divergence_signal(request: Request, asset: str = "BTC"):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.35),
+            headers=_x402_headers_disc(request.url.path, 0.35),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5376,7 +5387,7 @@ def ben_crypto_divergence_brief(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.75),
+            headers=_x402_headers_disc(request.url.path, 0.75),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5578,7 +5589,7 @@ def ben_btc_contrarian_alert(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.35),
+            headers=_x402_headers_disc(request.url.path, 0.35),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5766,7 +5777,7 @@ def ben_agent_context_pack(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.50),
+            headers=_x402_headers_disc(request.url.path, 0.50),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -5932,7 +5943,7 @@ def ben_bull_trap_monitor(request: Request):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(0.35),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, 0.35),
                      media_type="application/json", content=json.dumps({
                          "x402":        "x402/1",
                          "error":       "payment_required",
@@ -6095,7 +6106,7 @@ def ben_macro_regime_brief(request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(0.50),
+            headers=_x402_headers_disc(request.url.path, 0.50),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -6306,7 +6317,7 @@ def _serve_subarc_brief(agent_key: str, request: Request):
         from fastapi.responses import Response as _Resp
         return _Resp(
             status_code=402,
-            headers=_x402_headers_legacy(meta["price"]),
+            headers=_x402_headers_disc(request.url.path, meta["price"]),
             media_type="application/json",
             content=json.dumps({
                 "x402":        "x402/1",
@@ -6409,7 +6420,7 @@ def _nyse_macromind_gate(request: Request, price_usdc: float, reqs: list, produc
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "MacroMind", "product": product,
@@ -6502,7 +6513,7 @@ def _nyse_stockoracle_gate(request: Request, price_usdc: float, reqs: list, prod
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "StockOracle", "product": product,
@@ -6732,7 +6743,7 @@ def derivatives_facts(request: Request, asset: str = "BTC"):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_data("derivatives_facts", "/v2/derivatives/facts"),
+        return _Resp(status_code=402, headers=_x402_headers_disc("/v2/derivatives/facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "derivatives_facts",
@@ -6812,7 +6823,7 @@ def stock_perp_facts(request: Request, ticker: str = "NVDA"):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_data("stock_perp_facts", "/v2/stocks/perp-facts"),
+        return _Resp(status_code=402, headers=_x402_headers_disc("/v2/stocks/perp-facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "stock_perp_facts",
@@ -6909,7 +6920,7 @@ def polymarket_odds(request: Request, asset: str = ""):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_data("polymarket_odds", "/v2/polymarket/odds"),
+        return _Resp(status_code=402, headers=_x402_headers_disc("/v2/polymarket/odds"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "polymarket_odds",
@@ -6980,7 +6991,7 @@ def macro_facts(request: Request):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_data("macro_facts", "/v2/macro/facts"),
+        return _Resp(status_code=402, headers=_x402_headers_disc("/v2/macro/facts"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "macro_facts",
@@ -7054,7 +7065,7 @@ def congress_trades(request: Request, days: int = 45, ticker: str = ""):
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_data("congress_trades", "/v2/congress/trades"),
+        return _Resp(status_code=402, headers=_x402_headers_disc("/v2/congress/trades"),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Octodamus", "product": "congress_trades",
@@ -7096,7 +7107,7 @@ def _chainflow_gate(request: Request, price_usdc: float, reqs: list, product: st
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "Order_ChainFlow", "product": product,
@@ -7241,7 +7252,7 @@ def _x_sentiment_gate(request: Request, price_usdc: float, reqs: list, product: 
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "X_Sentiment_Agent", "product": product,
@@ -7393,7 +7404,7 @@ def _nyse_tech_gate(request: Request, price_usdc: float, reqs: list, product: st
                  request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
     if not x_payment:
         from fastapi.responses import Response as _Resp
-        return _Resp(status_code=402, headers=_x402_headers_legacy(price_usdc),
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
                      media_type="application/json", content=json.dumps({
                          "x402": "x402/1", "error": "payment_required",
                          "agent": "NYSE_Tech_Agent", "product": product,
