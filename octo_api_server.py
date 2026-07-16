@@ -7473,7 +7473,7 @@ def nyse_tech_tokenization(request: Request):
         chainlink_base = []
         _EQUITY_KEYWORDS = ["AAPL","TSLA","NVDA","AMZN","MSFT","COIN","GOOG","SPY","QQQ","MSTR"]
         try:
-            r = _hx.get("https://reference-data-directory.vercel.app/feeds-base-mainnet.json", timeout=8)
+            r = _hx.get("https://reference-data-directory.vercel.app/feeds-ethereum-mainnet-base-1.json", timeout=8)
             if r.status_code == 200:
                 feeds = r.json() if isinstance(r.json(), list) else []
                 equity = [f for f in feeds if any(k in f.get("name","").upper() for k in _EQUITY_KEYWORDS)]
@@ -7660,7 +7660,7 @@ def nyse_tech_chainlink_lead_signals(request: Request):
         import httpx as _hx
         for chain_label, feed_url in [
             ("ethereum_mainnet", "https://reference-data-directory.vercel.app/feeds-mainnet.json"),
-            ("base",             "https://reference-data-directory.vercel.app/feeds-base-mainnet.json"),
+            ("base",             "https://reference-data-directory.vercel.app/feeds-ethereum-mainnet-base-1.json"),
         ]:
             r = _hx.get(feed_url, timeout=8)
             if r.status_code != 200:

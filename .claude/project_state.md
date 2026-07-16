@@ -475,9 +475,13 @@ Core memory files: data/memory/[agent_name]_core.md
      Fear & Greed -> fixed to httpx GET api.alternative.me/fng like the other Ben endpoints. Now settles
      + returns 200; cataloged.
   2. chainlink_lead_signals used undefined `ROOT` (only octo_api_server line with `ROOT`) -> NameError
-     -> 500 after settle; fixed to Path(__file__).parent. NOTE: its Chainlink reference-data feed URLs
-     (reference-data-directory.vercel.app/feeds-*.json) now 404 -> endpoint returns 200 but with empty
-     feeds (handled gracefully). Data-source is stale; find current Chainlink feed registry URL later.
+     -> 500 after settle; fixed to Path(__file__).parent.
+- chainlink feed URL FIXED (2026-07-16): the ethereum feed (reference-data-directory.vercel.app/
+  feeds-mainnet.json) was always 200 w/ equity feeds; only the BASE url feeds-base-mainnet.json 404'd
+  (a harmless `continue`, NOT "empty" as earlier misnoted). Chainlink renamed Base to
+  feeds-ethereum-mainnet-base-1.json (verified = Base via its ETH/USD proxy 0x71041d...). Replaced in
+  BOTH spots (lines ~7476, ~7663). Endpoint now returns 12 tokenized-equity feeds (SPY/TSLA/NVDA/
+  GOOGL/QQQ 24-5 + Ondo). Minor pre-existing noise: loose keyword match flags "Coinshift USPC" on COIN.
 - To add discovery for any NEW endpoint henceforth: it inherits _x402_headers_disc automatically via
   its gate; just make ONE settled payment (e.g. octo_x402_health-style) to catalog it.
   (WARNING: never print unicode checkmarks etc. to Windows stdout -- cp1252 crash. Script files that
