@@ -131,8 +131,15 @@ def _get_service():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                # Dead refresh token (invalid_grant) -- don't crash the 4h backup silently.
+                # Fall through to interactive re-auth (needs a browser, run manually once).
+                print(f"[GDrive] Token refresh failed: {e}. Re-authorization required -- "
+                      f"run `python octo_gdrive.py` interactively (opens a browser) to sign in again.")
+                creds = None
+        if not (creds and creds.valid):
             if not CREDS_FILE.exists():
                 print(f"[GDrive] credentials.json not found at {CREDS_FILE}")
                 sys.exit(1)
