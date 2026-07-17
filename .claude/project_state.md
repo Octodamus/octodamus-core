@@ -490,6 +490,20 @@ Core memory files: data/memory/[agent_name]_core.md
   raw macro reference numbers (octo_macro FRED). Build-new high-demand gaps: pre-trade rug/safety
   check, OFAC/sanctions wallet screening (no pipe yet -- would need a new data source).
 
+## Robinhood Chain data play (2026-07-16)
+- Robinhood Chain (Arbitrum L2, launched Jul 1 2026) is a top-5 DEX chain (~$3.1B/wk). Trades 24/7
+  tokenized stocks (NVDA/GOOG/AAPL) on Uniswap/Arcus(dYdX-team perps)/Lighter; memecoins dominate
+  volume, tokenized stocks ~$13M but the strategic play. 65k users, ~$300M stablecoins.
+- FLAGSHIP DATA ENDPOINT BUILT: GET /v2/equity/fair-value?ticker=NVDA ($0.02). 24/7 index-implied
+  fair value for tokenized equities when the NYSE is closed -- the reference a Robinhood Chain / Arcus
+  / Uniswap tokenized-stock trader needs at night/weekends. regular_close x (1 + assumed_beta x index
+  futures ES/NQ session move); exposes ALL inputs + last-vs-fair premium so traders recompute with own
+  beta. Source: yfinance (stock close + ES=F/NQ=F futures). _EQ_BETA table = documented assumptions,
+  not measured. COIN/MSTR flagged crypto-correlated (lower confidence). Live, cataloged, 30 paid ops.
+- NEXT Robinhood Chain candidates: /v2/equity/basis (on-chain tokenized price vs fair value = arb),
+  extend /v2/stocks/perp-facts to Arcus funding/OI, Robinhood Chain DEX-flow facts (Arbitrum eth_getLogs),
+  pre-trade rug check for the memecoin volume.
+
 ## x402 Services Live (api.octodamus.com)
 - GET /v2/signal ($1.00)                   oracle signal composite
 - GET /v2/ben/sentiment-divergence ($0.50) Fear/Greed vs crowd divergence

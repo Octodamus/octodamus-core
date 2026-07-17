@@ -684,6 +684,12 @@ _DISCOVERY_META = {
         "tags": ["congress", "congressional trading", "insider", "smart money", "disclosures", "stocks", "SEC", "event feed", "market data", "Base USDC"],
         "example": {"window_days": 45, "total": 4, "buys": 1, "sells": 3, "trades": [{"ticker": "MSFT", "politician": "Ro Khanna", "party": "Democratic", "direction": "BUY", "amount_range": "$250,001 - $500,000", "date": "2026-06-16"}]},
     },
+    "/v2/equity/fair-value": {
+        "name": "Octodamus Equity Fair Value (24/7)",
+        "desc": "24/7 index-implied fair value for tokenized equities (NVDA/TSLA/AAPL/SPY/etc) while the NYSE is closed -- the reference a Robinhood Chain / Arcus / Uniswap tokenized-stock trader needs at night and on weekends. Returns regular close, reference index future (ES/NQ) + session move, assumed beta, fair-value estimate, and last-vs-fair premium. Every input exposed.",
+        "tags": ["tokenized equity", "fair value", "robinhood chain", "arcus", "24/7 stocks", "index futures", "NVDA", "TSLA", "SPY", "AAPL", "Base USDC"],
+        "example": {"ticker": "NVDA", "market_status": "closed", "regular_close": 211.25, "index": {"symbol": "NQ=F", "session_move_pct": -2.17}, "assumed_beta": 1.5, "fair_value_estimate": 204.38, "last_vs_fair_pct": 1.48},
+    },
     "/v2/macro/facts": {
         "name": "Octodamus Macro Facts",
         "desc": "Raw cross-asset macro reference numbers from FRED: 10y-2y yield curve, broad USD index, S&P 500, VIX, M2 money supply -- each with current value, prior reading, and a deterministic note, plus composite RISK-ON/OFF score.",
@@ -1014,6 +1020,7 @@ def _custom_openapi():
         "/v2/stocks/perp-facts":                        "0.02",
         "/v2/congress/trades":                          "0.02",
         "/v2/macro/facts":                              "0.02",
+        "/v2/equity/fair-value":                        "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1893,6 +1900,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "Stock-Perp Facts",                 "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/stocks/perp-facts/preview"},
     {"name": "Congress Trades",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/congress/trades/preview"},
     {"name": "Macro Facts",                      "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/macro/facts/preview"},
+    {"name": "Equity Fair Value",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/equity/fair-value/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2128,6 +2136,7 @@ def acp_agent_info():
             {"id": "stock-perp-facts",   "path": "/v2/stocks/perp-facts",            "price_usdc": 0.02, "description": "Tokenized-equity / stock-perp reference: funding, open interest, positioning for NVDA/TSLA/SPY/etc"},
             {"id": "congress-trades",    "path": "/v2/congress/trades",              "price_usdc": 0.02, "description": "Structured congressional stock-trade disclosures: politician, ticker, BUY/SELL, amount, date"},
             {"id": "macro-facts",        "path": "/v2/macro/facts",                  "price_usdc": 0.02, "description": "Raw cross-asset macro numbers from FRED: yield curve, USD index, SPX, VIX, M2 + composite score"},
+            {"id": "equity-fair-value",  "path": "/v2/equity/fair-value",            "price_usdc": 0.02, "description": "24/7 index-implied fair value for tokenized equities (NVDA/AAPL/SPY) when the NYSE is closed -- for Robinhood Chain / Arcus traders"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -7097,6 +7106,123 @@ def congress_trades_preview():
             "trades": [{"ticker": "string", "politician": "string", "party": "string", "chamber": "string",
             "direction": "BUY|SELL", "amount_range": "string", "amount_low_usd": "int", "date": "date",
             "excess_return": "float"}], "top_bought": "array", "timestamp": "iso8601"},
+    }
+
+
+# -- Equity Fair Value — 24/7 reference for tokenized stocks -----------------
+# When the NYSE is closed (nights/weekends), a tokenized stock trading 24/7 on
+# Robinhood Chain / Arcus / a Uniswap pool has no live underlying. This derives an
+# index-implied fair value from index futures, exposing every input so the trader
+# can verify and recompute with their own beta. Facts + a transparent estimate. $0.02.
+
+_EQ_BETA = {  # assumed sensitivity to the reference index future (documented estimate, not measured)
+    "SPY": 1.0, "QQQ": 1.0, "NVDA": 1.5, "TSLA": 1.8, "AAPL": 1.1, "MSFT": 1.0,
+    "GOOGL": 1.05, "GOOG": 1.05, "AMZN": 1.2, "META": 1.2, "COIN": 2.5, "MSTR": 3.0,
+}
+_EQ_CRYPTO_CORRELATED = {"COIN", "MSTR"}
+
+
+def _nyse_open_now():
+    """True/False if NYSE regular session is open now; None if timezone unavailable."""
+    try:
+        from zoneinfo import ZoneInfo
+        et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return None
+    if et.weekday() >= 5:
+        return False
+    mins = et.hour * 60 + et.minute
+    return 570 <= mins < 960  # 09:30 .. 16:00 ET
+
+
+def _equity_fair_value(ticker: str) -> dict:
+    """Index-implied fair value for a tokenized equity when the underlying market is closed."""
+    tk  = (ticker or "NVDA").strip().upper()
+    out = {"agent": "Octodamus", "product": "equity_fair_value", "ticker": tk}
+    try:
+        import yfinance as yf
+        idx_sym, idx_name = ("ES=F", "S&P 500 futures") if tk in ("SPY",) else ("NQ=F", "Nasdaq-100 futures")
+        st  = yf.Ticker(tk).fast_info
+        idx = yf.Ticker(idx_sym).fast_info
+        reg_close = float(getattr(st, "previous_close", None) or 0) or None
+        last      = float(getattr(st, "last_price", None) or 0) or None
+        idx_last  = float(getattr(idx, "last_price", None) or 0) or None
+        idx_prev  = float(getattr(idx, "previous_close", None) or 0) or None
+        idx_move  = (idx_last / idx_prev - 1) if (idx_last and idx_prev) else 0.0
+        beta      = _EQ_BETA.get(tk, 1.0)
+        is_open   = _nyse_open_now()
+
+        if is_open and last:
+            fair_value, method = last, "NYSE open: fair value = live regular-session price"
+        elif reg_close:
+            fair_value = reg_close * (1 + beta * idx_move)
+            method = f"NYSE closed: regular_close x (1 + assumed_beta x {idx_name} session move)"
+        else:
+            fair_value, method = None, "insufficient data (no regular close available)"
+
+        # Premium/discount of the last observed (extended-hours / on-chain proxy) vs fair value.
+        prem_pct = round((last / fair_value - 1) * 100, 3) if (last and fair_value) else None
+
+        out.update({
+            "market_status":       "open" if is_open else ("closed" if is_open is False else "unknown"),
+            "regular_close":       round(reg_close, 2) if reg_close else None,
+            "last_observed":       round(last, 2) if last else None,
+            "index":               {"symbol": idx_sym, "name": idx_name,
+                                    "session_move_pct": round(idx_move * 100, 3),
+                                    "last": round(idx_last, 2) if idx_last else None,
+                                    "prev_close": round(idx_prev, 2) if idx_prev else None},
+            "assumed_beta":        beta,
+            "fair_value_estimate": round(fair_value, 2) if fair_value is not None else None,
+            "last_vs_fair_pct":    prem_pct,
+            "method":              method,
+        })
+        if tk in _EQ_CRYPTO_CORRELATED:
+            out["note"] = ("Crypto-correlated name (tracks BTC more than the Nasdaq); the index-implied "
+                           "estimate is lower-confidence -- see /v2/derivatives/facts for BTC context.")
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "yfinance (regular-session close + index futures ES=F/NQ=F)"
+    out["disclaimer"] = ("Index-implied fair-value ESTIMATE for tokenized equities while the underlying "
+                         "market is closed. All inputs (regular_close, index move, assumed_beta) are exposed "
+                         "so you can recompute with your own beta. Not financial advice.")
+    return out
+
+
+@app.get("/v2/equity/fair-value", tags=["Derivatives"])
+def equity_fair_value(request: Request, ticker: str = "NVDA"):
+    """24/7 index-implied fair value for a tokenized equity when the NYSE is closed. $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, 0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "equity_fair_value",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/equity/fair-value/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    tk = (ticker or "NVDA").upper()
+    return _sign_payload(_tcache(f"eq_fv_{tk}", 60, lambda: _equity_fair_value(tk)))
+
+
+@app.get("/v2/equity/fair-value/preview", tags=["Derivatives"])
+def equity_fair_value_preview():
+    return {
+        "agent": "Octodamus", "product": "equity_fair_value", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/equity/fair-value?ticker=NVDA (x402 $0.02)",
+        "what_it_does": ("24/7 index-implied fair value for a tokenized equity when the NYSE is closed -- "
+                         "the reference a Robinhood Chain / Arcus / Uniswap tokenized-stock trader needs at "
+                         "night and on weekends. Returns market_status, last regular close, the reference "
+                         "index future (ES/NQ) and its session move, an assumed beta, the fair-value estimate, "
+                         "and the last-observed vs fair premium/discount. Every input is exposed. 60s cache."),
+        "tickers": list(_EQ_BETA.keys()),
+        "output_schema": {"ticker": "string", "market_status": "open|closed", "regular_close": "float",
+            "index": {"symbol": "string", "session_move_pct": "float"}, "assumed_beta": "float",
+            "fair_value_estimate": "float", "last_vs_fair_pct": "float", "timestamp": "iso8601"},
     }
 
 
