@@ -505,8 +505,15 @@ Core memory files: data/memory/[agent_name]_core.md
   On-chain price via DexScreener (chainId 'robinhood'); robust filter = price within 25% of the
   regular close (rejects scam/leveraged dNVDA5L) + highest 24h volume. Reuses _equity_fair_value.
   Verified live: AAPL +4.4% PREMIUM, TSLA +2.1%, NVDA +0.66%, SPY ~fair. Live, cataloged, 31 paid ops.
-- NEXT Robinhood Chain candidates: extend /v2/stocks/perp-facts to Arcus funding/OI, Robinhood Chain
-  DEX-flow facts (Arbitrum Orbit chainID 4663, eth_getLogs), pre-trade rug check for memecoin volume.
+- ARCUS PERP ENDPOINT BUILT: GET /v2/arcus/perp?ticker=NVDA ($0.02). Live perp facts from Arcus
+  (dYdX Labs DEX on Robinhood Chain): hourly funding (+annualized), OI (base+USD), mark vs oracle,
+  24h volume, margin fractions incl. offHoursInitialMarginFraction (Arcus raises margin when NYSE
+  closed). Source: api.arcus.xyz/v1/markets (43 markets: 27 EQUITIES + 9 crypto + commodities +
+  indices; funding hourly). Verified live: NVDA-USD mark 205.78/oracle 205.68, funding 4.2%/yr,
+  OI $53.7k, 20x reg / ~13x off-hours lev. Live, cataloged, 32 paid ops.
+- TOKENIZED-EQUITY SUITE now 3 endpoints: /v2/equity/fair-value, /v2/equity/basis, /v2/arcus/perp
+  -- the Robinhood Chain data play. NEXT: Robinhood Chain DEX-flow facts (Arbitrum Orbit chainID 4663,
+  eth_getLogs; DEXes: uniswap/robinswap/sheriff), pre-trade rug check for memecoin volume.
   Robinhood Chain stock-token contracts: docs.robinhood.com/chain/contracts (ERC-20, 18 decimals).
 
 ## x402 Services Live (api.octodamus.com)

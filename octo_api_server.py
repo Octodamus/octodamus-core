@@ -684,6 +684,12 @@ _DISCOVERY_META = {
         "tags": ["congress", "congressional trading", "insider", "smart money", "disclosures", "stocks", "SEC", "event feed", "market data", "Base USDC"],
         "example": {"window_days": 45, "total": 4, "buys": 1, "sells": 3, "trades": [{"ticker": "MSFT", "politician": "Ro Khanna", "party": "Democratic", "direction": "BUY", "amount_range": "$250,001 - $500,000", "date": "2026-06-16"}]},
     },
+    "/v2/arcus/perp": {
+        "name": "Octodamus Arcus Perp Facts",
+        "desc": "Live perp market facts from Arcus (dYdX Labs on Robinhood Chain) for tokenized-stock, index, and crypto perps: hourly funding (+ annualized), open interest (base + USD), mark vs oracle price, 24h volume, and margin fractions including the off-hours initial margin (Arcus raises margin when the NYSE is closed). Perp-venue complement to stock-perp-facts.",
+        "tags": ["arcus", "dydx", "perps", "tokenized equity", "robinhood chain", "funding rate", "open interest", "NVDA", "TSLA", "off-hours margin", "Base USDC"],
+        "example": {"ticker": "NVDA", "market": "NVDA-USD", "mark_price": 205.63, "oracle_price": 205.61, "mark_vs_oracle_pct": 0.01, "funding": {"rate_hourly": 4.79e-06, "rate_annualized_pct": 4.2}, "open_interest_usd": 53700.0, "margin": {"offhours_initial_fraction": 0.075, "max_leverage": 13.3}},
+    },
     "/v2/equity/basis": {
         "name": "Octodamus Equity Basis (tokenized arb)",
         "desc": "Premium/discount of a tokenized stock's LIVE Robinhood Chain (Uniswap) price vs its index-implied fair value -- the pure arb signal for 24/7 tokenized equities. Returns on-chain price + venue + 24h volume, fair value, basis_pct, and a PREMIUM/DISCOUNT/FAIR signal. Scam/leveraged pairs filtered.",
@@ -1028,6 +1034,7 @@ def _custom_openapi():
         "/v2/macro/facts":                              "0.02",
         "/v2/equity/fair-value":                        "0.02",
         "/v2/equity/basis":                             "0.02",
+        "/v2/arcus/perp":                               "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1909,6 +1916,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "Macro Facts",                      "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/macro/facts/preview"},
     {"name": "Equity Fair Value",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/equity/fair-value/preview"},
     {"name": "Equity Basis",                     "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/equity/basis/preview"},
+    {"name": "Arcus Perp Facts",                 "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/arcus/perp/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2146,6 +2154,7 @@ def acp_agent_info():
             {"id": "macro-facts",        "path": "/v2/macro/facts",                  "price_usdc": 0.02, "description": "Raw cross-asset macro numbers from FRED: yield curve, USD index, SPX, VIX, M2 + composite score"},
             {"id": "equity-fair-value",  "path": "/v2/equity/fair-value",            "price_usdc": 0.02, "description": "24/7 index-implied fair value for tokenized equities (NVDA/AAPL/SPY) when the NYSE is closed -- for Robinhood Chain / Arcus traders"},
             {"id": "equity-basis",       "path": "/v2/equity/basis",                 "price_usdc": 0.02, "description": "Premium/discount of a tokenized stock's live Robinhood Chain (Uniswap) price vs fair value -- the arb signal for 24/7 tokenized equities"},
+            {"id": "arcus-perp",         "path": "/v2/arcus/perp",                   "price_usdc": 0.02, "description": "Live Arcus (dYdX/Robinhood Chain) tokenized-stock perp facts: funding, open interest, mark vs oracle, off-hours margin"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -7341,6 +7350,106 @@ def equity_basis_preview():
         "output_schema": {"ticker": "string", "onchain": {"price": "float", "venue": "string",
             "volume_24h_usd": "float"}, "fair_value": "float", "basis_pct": "float",
             "signal": "PREMIUM|DISCOUNT|FAIR", "timestamp": "iso8601"},
+    }
+
+
+# -- Arcus Perp Facts — tokenized-stock perps on Robinhood Chain -------------
+# Live perp market data from Arcus (built by dYdX Labs on Robinhood Chain): funding,
+# open interest, mark vs oracle, 24h volume, and off-hours margin. The perp-venue
+# complement to /v2/stocks/perp-facts, for 24/7 tokenized-equity traders. $0.02.
+
+_ARCUS_MARKETS_URL = "https://api.arcus.xyz/v1/markets"
+
+
+def _arcus_perp_facts(ticker: str) -> dict:
+    """Live Arcus perp facts for a market (tokenized stock, index, or crypto)."""
+    tk  = (ticker or "NVDA").strip().upper()
+    out = {"agent": "Octodamus", "product": "arcus_perp_facts", "ticker": tk}
+    try:
+        import httpx as _hx
+        r = _hx.get(_ARCUS_MARKETS_URL, timeout=10)
+        markets = (r.json() or {}).get("markets", []) if r.status_code == 200 else []
+        mk = next((m for m in markets
+                   if str(m.get("baseAsset", "")).upper() == tk
+                   or str(m.get("marketDisplayName", "")).upper() == f"{tk}-USD"), None)
+        if not mk:
+            out["error"] = (f"No Arcus perp market for {tk}. Equity perps live include "
+                            "NVDA/TSLA/AAPL/MSFT/GOOGL/AMZN/META/SPY/QQQ/COIN.")
+        else:
+            mark   = float(mk.get("markPrice") or 0) or None
+            oracle = float(mk.get("oraclePrice") or 0) or None
+            fr     = float(mk.get("fundingRate") or 0)
+            oi     = float(mk.get("openInterest") or 0)
+            imf    = float(mk.get("initialMarginFraction") or 0) or None
+            out.update({
+                "market":              mk.get("marketDisplayName"),
+                "status":              mk.get("status"),
+                "category":            mk.get("category"),
+                "mark_price":          mark,
+                "oracle_price":        oracle,
+                "mark_vs_oracle_pct":  round((mark / oracle - 1) * 100, 4) if (mark and oracle) else None,
+                "last_trade_price":    float(mk.get("lastTradePrice") or 0) or None,
+                "funding": {
+                    "rate_hourly":          fr,
+                    "rate_annualized_pct":  round(fr * 24 * 365 * 100, 3),
+                    "next_rate_hourly":     float(mk.get("nextFundingRate") or 0),
+                    "next_funding_at":      mk.get("nextFundingAt"),
+                },
+                "open_interest":            round(oi, 4),
+                "open_interest_usd":        round(oi * mark, 2) if (oi and mark) else None,
+                "volume_24h_notional_usd":  round(float(mk.get("volume24hNotional") or 0), 2),
+                "trades_24h":               mk.get("trades24h"),
+                "price_change_24h_pct":     round(float(mk.get("priceChange24h") or 0) * 100, 3),
+                "margin": {
+                    "initial_fraction":          imf,
+                    "maintenance_fraction":      float(mk.get("maintenanceMarginFraction") or 0) or None,
+                    "offhours_initial_fraction": float(mk.get("offHoursInitialMarginFraction") or 0) or None,
+                    "max_leverage":              round(1 / imf, 1) if imf else None,
+                },
+            })
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "Arcus (dYdX Labs) perps on Robinhood Chain"
+    out["disclaimer"] = "Factual perp market data from Arcus. Funding is hourly. Not financial advice."
+    return out
+
+
+@app.get("/v2/arcus/perp", tags=["Derivatives"])
+def arcus_perp(request: Request, ticker: str = "NVDA"):
+    """Live Arcus (Robinhood Chain) perp facts: funding, OI, mark vs oracle, off-hours margin. $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, 0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "arcus_perp_facts",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/arcus/perp/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    tk = (ticker or "NVDA").upper()
+    return _sign_payload(_tcache(f"arcus_{tk}", 60, lambda: _arcus_perp_facts(tk)))
+
+
+@app.get("/v2/arcus/perp/preview", tags=["Derivatives"])
+def arcus_perp_preview():
+    return {
+        "agent": "Octodamus", "product": "arcus_perp_facts", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/arcus/perp?ticker=NVDA (x402 $0.02)",
+        "what_it_does": ("Live perp market facts from Arcus (built by dYdX Labs on Robinhood Chain) for "
+                         "tokenized-stock, index, and crypto perps: hourly funding rate (+ annualized), "
+                         "open interest (base + USD), mark vs oracle price, 24h volume, and margin fractions "
+                         "including the off-hours initial margin (Arcus raises margin when the NYSE is closed). "
+                         "The perp-venue complement to /v2/stocks/perp-facts. 60s cache."),
+        "tickers": ["NVDA", "TSLA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "SPY", "QQQ", "COIN", "BTC", "ETH"],
+        "output_schema": {"market": "string", "mark_price": "float", "oracle_price": "float",
+            "mark_vs_oracle_pct": "float", "funding": {"rate_hourly": "float", "rate_annualized_pct": "float"},
+            "open_interest_usd": "float", "margin": {"offhours_initial_fraction": "float", "max_leverage": "float"},
+            "timestamp": "iso8601"},
     }
 
 
