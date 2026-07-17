@@ -684,6 +684,12 @@ _DISCOVERY_META = {
         "tags": ["congress", "congressional trading", "insider", "smart money", "disclosures", "stocks", "SEC", "event feed", "market data", "Base USDC"],
         "example": {"window_days": 45, "total": 4, "buys": 1, "sells": 3, "trades": [{"ticker": "MSFT", "politician": "Ro Khanna", "party": "Democratic", "direction": "BUY", "amount_range": "$250,001 - $500,000", "date": "2026-06-16"}]},
     },
+    "/v2/equity/basis": {
+        "name": "Octodamus Equity Basis (tokenized arb)",
+        "desc": "Premium/discount of a tokenized stock's LIVE Robinhood Chain (Uniswap) price vs its index-implied fair value -- the pure arb signal for 24/7 tokenized equities. Returns on-chain price + venue + 24h volume, fair value, basis_pct, and a PREMIUM/DISCOUNT/FAIR signal. Scam/leveraged pairs filtered.",
+        "tags": ["tokenized equity", "basis", "arbitrage", "premium discount", "robinhood chain", "uniswap", "NVDA", "TSLA", "24/7 stocks", "Base USDC"],
+        "example": {"ticker": "NVDA", "onchain": {"price": 205.81, "venue": "robinhood/uniswap", "volume_24h_usd": 120750}, "fair_value": 204.60, "basis_pct": 0.59, "signal": "PREMIUM"},
+    },
     "/v2/equity/fair-value": {
         "name": "Octodamus Equity Fair Value (24/7)",
         "desc": "24/7 index-implied fair value for tokenized equities (NVDA/TSLA/AAPL/SPY/etc) while the NYSE is closed -- the reference a Robinhood Chain / Arcus / Uniswap tokenized-stock trader needs at night and on weekends. Returns regular close, reference index future (ES/NQ) + session move, assumed beta, fair-value estimate, and last-vs-fair premium. Every input exposed.",
@@ -1021,6 +1027,7 @@ def _custom_openapi():
         "/v2/congress/trades":                          "0.02",
         "/v2/macro/facts":                              "0.02",
         "/v2/equity/fair-value":                        "0.02",
+        "/v2/equity/basis":                             "0.02",
         # Sub-agent data endpoints (prices are each route's actual 402 gate amount).
         "/v2/nyse_macromind/signal":                    "0.25",
         "/v2/nyse_macromind/yield-curve":               "0.25",
@@ -1901,6 +1908,7 @@ OFFERING_REGISTRY: list[dict] = [
     {"name": "Congress Trades",                  "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/congress/trades/preview"},
     {"name": "Macro Facts",                      "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/macro/facts/preview"},
     {"name": "Equity Fair Value",                "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/equity/fair-value/preview"},
+    {"name": "Equity Basis",                     "price_usdc": 0.02, "cat": "subarc",     "preview_path": "/v2/equity/basis/preview"},
 
     # Guides
     {"name": "Derivatives Guide",                "price_usdc": 3.00, "cat": "guide",      "preview_path": "/v2/guide/derivatives/preview"},
@@ -2137,6 +2145,7 @@ def acp_agent_info():
             {"id": "congress-trades",    "path": "/v2/congress/trades",              "price_usdc": 0.02, "description": "Structured congressional stock-trade disclosures: politician, ticker, BUY/SELL, amount, date"},
             {"id": "macro-facts",        "path": "/v2/macro/facts",                  "price_usdc": 0.02, "description": "Raw cross-asset macro numbers from FRED: yield curve, USD index, SPX, VIX, M2 + composite score"},
             {"id": "equity-fair-value",  "path": "/v2/equity/fair-value",            "price_usdc": 0.02, "description": "24/7 index-implied fair value for tokenized equities (NVDA/AAPL/SPY) when the NYSE is closed -- for Robinhood Chain / Arcus traders"},
+            {"id": "equity-basis",       "path": "/v2/equity/basis",                 "price_usdc": 0.02, "description": "Premium/discount of a tokenized stock's live Robinhood Chain (Uniswap) price vs fair value -- the arb signal for 24/7 tokenized equities"},
         ],
         "discovery": {
             "x402":    "https://api.octodamus.com/.well-known/x402.json",
@@ -7223,6 +7232,115 @@ def equity_fair_value_preview():
         "output_schema": {"ticker": "string", "market_status": "open|closed", "regular_close": "float",
             "index": {"symbol": "string", "session_move_pct": "float"}, "assumed_beta": "float",
             "fair_value_estimate": "float", "last_vs_fair_pct": "float", "timestamp": "iso8601"},
+    }
+
+
+# -- Equity Basis — on-chain tokenized price vs fair value (arb signal) -------
+# The premium/discount of a tokenized stock's live Robinhood Chain price (Uniswap)
+# vs its index-implied fair value. This is the pure arb signal for 24/7 tokenized
+# equities. Real on-chain price (DexScreener) + real fair value. $0.02.
+
+def _onchain_tokenized_price(ticker: str, reference):
+    """Best real on-chain tokenized-stock price on Robinhood Chain (DexScreener).
+
+    Picks the highest-24h-volume pair whose price is within 25% of `reference` --
+    this rejects scam / leveraged (dNVDA5L) tokens and fake-liquidity pairs.
+    """
+    try:
+        import httpx as _hx
+        r = _hx.get(f"https://api.dexscreener.com/latest/dex/search?q={ticker}", timeout=10)
+        pairs = r.json().get("pairs", []) or []
+    except Exception:
+        return None
+    best = None
+    for p in pairs:
+        if p.get("chainId") != "robinhood":
+            continue
+        if str(p.get("baseToken", {}).get("symbol", "")).upper() != ticker.upper():
+            continue
+        pu = p.get("priceUsd")
+        if pu is None:
+            continue
+        pu = float(pu)
+        if reference and abs(pu / reference - 1) > 0.25:
+            continue
+        vol = float((p.get("volume") or {}).get("h24", 0) or 0)
+        rec = {"price": round(pu, 4), "venue": f"robinhood/{p.get('dexId')}",
+               "volume_24h_usd": round(vol, 2),
+               "liquidity_usd": round(float((p.get("liquidity") or {}).get("usd", 0) or 0), 2),
+               "pair_address": p.get("pairAddress")}
+        if best is None or vol > best["volume_24h_usd"]:
+            best = rec
+    return best
+
+
+def _equity_basis(ticker: str) -> dict:
+    """On-chain tokenized price vs index-implied fair value -> premium/discount arb signal."""
+    tk  = (ticker or "NVDA").strip().upper()
+    out = {"agent": "Octodamus", "product": "equity_basis", "ticker": tk}
+    try:
+        fv   = _equity_fair_value(tk)
+        fair = fv.get("fair_value_estimate")
+        reg  = fv.get("regular_close")
+        oc   = _onchain_tokenized_price(tk, reg or fair)
+        out["onchain"]        = oc
+        out["fair_value"]     = fair
+        out["regular_close"]  = reg
+        out["market_status"]  = fv.get("market_status")
+        if oc and fair:
+            basis = (oc["price"] / fair - 1) * 100
+            out["basis_pct"] = round(basis, 3)
+            out["signal"]    = "PREMIUM" if basis > 0.5 else ("DISCOUNT" if basis < -0.5 else "FAIR")
+            out["interpretation"] = (
+                f"On-chain {tk} trades {abs(basis):.2f}% "
+                f"{'above' if basis > 0 else 'below'} index-implied fair value "
+                f"({'rich -- sell/short on-chain vs the underlying' if basis > 0.5 else 'cheap -- buy on-chain vs the underlying' if basis < -0.5 else 'roughly fair'})."
+            )
+        elif not oc:
+            out["note"] = "No liquid on-chain tokenized pair found on Robinhood Chain for this ticker."
+    except Exception as e:
+        out["error"] = str(e)
+    out["timestamp"]  = datetime.utcnow().isoformat() + "Z"
+    out["source"]     = "DexScreener (Robinhood Chain Uniswap) + Octodamus index-implied fair value"
+    out["disclaimer"] = ("Basis = live on-chain tokenized price vs index-implied fair value estimate. "
+                         "Fair value assumptions (beta, index) are exposed in /v2/equity/fair-value. Not financial advice.")
+    return out
+
+
+@app.get("/v2/equity/basis", tags=["Derivatives"])
+def equity_basis(request: Request, ticker: str = "NVDA"):
+    """Premium/discount of a tokenized stock's Robinhood Chain price vs its fair value. $0.02 USDC."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature") or
+                 request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, 0.02),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": "Octodamus", "product": "equity_basis",
+                         "price_usdc": 0.02, "pay_to": _X402_TREASURY,
+                         "network": "base-mainnet (eip155:8453)",
+                         "preview": "GET https://api.octodamus.com/v2/equity/basis/preview",
+                     }))
+    _x402_verify_settle(request, _X402_REQS_2CENT)
+    tk = (ticker or "NVDA").upper()
+    return _sign_payload(_tcache(f"eq_basis_{tk}", 60, lambda: _equity_basis(tk)))
+
+
+@app.get("/v2/equity/basis/preview", tags=["Derivatives"])
+def equity_basis_preview():
+    return {
+        "agent": "Octodamus", "product": "equity_basis", "price_usdc": 0.02,
+        "buy": "GET https://api.octodamus.com/v2/equity/basis?ticker=NVDA (x402 $0.02)",
+        "what_it_does": ("The premium/discount (basis) of a tokenized stock's LIVE Robinhood Chain "
+                         "price (Uniswap, via DexScreener) versus its index-implied fair value -- the pure "
+                         "arb signal for 24/7 tokenized equities. Returns the on-chain price + venue + 24h "
+                         "volume, the fair value, basis_pct, and a PREMIUM/DISCOUNT/FAIR signal. Scam and "
+                         "leveraged token pairs are filtered out. 60s cache."),
+        "tickers": list(_EQ_BETA.keys()),
+        "output_schema": {"ticker": "string", "onchain": {"price": "float", "venue": "string",
+            "volume_24h_usd": "float"}, "fair_value": "float", "basis_pct": "float",
+            "signal": "PREMIUM|DISCOUNT|FAIR", "timestamp": "iso8601"},
     }
 
 

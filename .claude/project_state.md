@@ -500,9 +500,14 @@ Core memory files: data/memory/[agent_name]_core.md
   futures ES/NQ session move); exposes ALL inputs + last-vs-fair premium so traders recompute with own
   beta. Source: yfinance (stock close + ES=F/NQ=F futures). _EQ_BETA table = documented assumptions,
   not measured. COIN/MSTR flagged crypto-correlated (lower confidence). Live, cataloged, 30 paid ops.
-- NEXT Robinhood Chain candidates: /v2/equity/basis (on-chain tokenized price vs fair value = arb),
-  extend /v2/stocks/perp-facts to Arcus funding/OI, Robinhood Chain DEX-flow facts (Arbitrum eth_getLogs),
-  pre-trade rug check for the memecoin volume.
+- BASIS ENDPOINT BUILT: GET /v2/equity/basis?ticker=NVDA ($0.02). Premium/discount of a tokenized
+  stock's LIVE Robinhood Chain (Uniswap) price vs its index-implied fair value = the arb signal.
+  On-chain price via DexScreener (chainId 'robinhood'); robust filter = price within 25% of the
+  regular close (rejects scam/leveraged dNVDA5L) + highest 24h volume. Reuses _equity_fair_value.
+  Verified live: AAPL +4.4% PREMIUM, TSLA +2.1%, NVDA +0.66%, SPY ~fair. Live, cataloged, 31 paid ops.
+- NEXT Robinhood Chain candidates: extend /v2/stocks/perp-facts to Arcus funding/OI, Robinhood Chain
+  DEX-flow facts (Arbitrum Orbit chainID 4663, eth_getLogs), pre-trade rug check for memecoin volume.
+  Robinhood Chain stock-token contracts: docs.robinhood.com/chain/contracts (ERC-20, 18 decimals).
 
 ## x402 Services Live (api.octodamus.com)
 - GET /v2/signal ($1.00)                   oracle signal composite
