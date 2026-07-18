@@ -396,10 +396,18 @@ Core memory files: data/memory/[agent_name]_core.md
   httpx getaddrinfo (DNS) failures, ASGI "returned without completing response", engage
   internal-reasoning blocks. Review logs/dream_toolscan_latest.md.
 - MEMORY-SYSTEM AUDIT vs Anthropic context-eng lecture: Octodamus already has CLAUDE.md + file-system
-  memory + skills + in-band autonomous writes + WEEKLY DISTILL (= "dreaming"). Gaps still open:
-  (1) memory files NOT versioned (distill overwrites core.md in place, data/ gitignored -> no
-  rollback); (2) no concurrency guard (hash/lock) on memory writes; (3) distill is per-agent, no
-  fleet-wide cross-agent pattern pass. This tool-error scan closes the biggest gap (tool-call scrutiny).
+  memory + skills + in-band autonomous writes + WEEKLY DISTILL (= "dreaming").
+- MEMORY VERSIONING DONE (2026-07-18): write_core_memory() in octo_memory_db.py now snapshots the
+  prior content to data/memory/versions/<agent>/<timestamp>.md before every overwrite (keeps last 24),
+  and WARNS loudly on a destructive shrink (new < 35% of current & current > 500 chars = likely bad
+  distill). Rollback: rollback_core_memory(agent, 'latest'|<stem>) -- itself versioned/reversible.
+  CLI: `python octo_memory_db.py versions <agent>` / `rollback <agent> [version]`. Covers ALL core
+  writes (distill + append_core_memory) via the single write_core_memory choke-point. A bad dream is
+  now fully recoverable. (Note: .agents/profit-agent writes ben_core.md directly at agent.py:2356 --
+  append-only, lower risk, not routed through write_core_memory.)
+- MEMORY GAPS STILL OPEN: (2) no concurrency guard (hash/lock) on memory writes; (3) distill is
+  per-agent, no fleet-wide cross-agent pattern pass. The tool-error scan (octo_dream_toolscan.py)
+  closed the tool-call-scrutiny gap; versioning closed the rollback gap.
 
 ## Persistent Memory System (new 2026-04-28)
 - octo_memory_db.py     SQLite store (data/octodamus_memory.db)

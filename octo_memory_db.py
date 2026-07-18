@@ -449,10 +449,58 @@ def read_core_memory(agent: str) -> str:
     return f"# {agent.title()} Core Memory\nNo entries yet.\n"
 
 
+_VERSIONS_DIR  = MEMORY_DIR / "versions"
+_KEEP_VERSIONS = 24
+
+
+def _version_dir(agent: str) -> Path:
+    return _VERSIONS_DIR / agent.lower()
+
+
 def write_core_memory(agent: str, content: str):
+    """Overwrite a core-memory file, snapshotting the prior version first (rollback-safe).
+
+    A bad 'dream' (distill that wipes or corrupts memory) is fully recoverable via
+    rollback_core_memory(). Also warns loudly if a write shrinks memory drastically.
+    """
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     path = _core_path(agent)
+    try:
+        if path.exists():
+            current = path.read_text(encoding="utf-8")
+            if current.strip() and current != content:
+                vdir = _version_dir(agent)
+                vdir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+                (vdir / f"{stamp}.md").write_text(current, encoding="utf-8")
+                for old in sorted(vdir.glob("*.md"))[:-_KEEP_VERSIONS]:
+                    old.unlink(missing_ok=True)
+                if len(current) > 500 and len(content) < len(current) * 0.35:
+                    print(f"[Memory] WARNING: {agent} core memory shrank "
+                          f"{len(current)}->{len(content)} chars — possible bad distill. "
+                          f"Prior version saved as {stamp}.md (rollback available).")
+    except Exception as e:
+        print(f"[Memory] versioning skipped for {agent}: {e}")
     path.write_text(content, encoding="utf-8")
+
+
+def list_core_versions(agent: str) -> list[Path]:
+    """Prior core-memory snapshots for an agent, oldest -> newest."""
+    vdir = _version_dir(agent)
+    return sorted(vdir.glob("*.md")) if vdir.exists() else []
+
+
+def rollback_core_memory(agent: str, which: str = "latest") -> str:
+    """Restore a prior core-memory version. `which`='latest' or a version filename stem.
+    The rollback is itself versioned, so it can be undone."""
+    vers = list_core_versions(agent)
+    if not vers:
+        return f"No saved versions for {agent}."
+    target = vers[-1] if which in ("latest", "", None) else next((v for v in vers if which in v.name), None)
+    if not target:
+        return f"Version '{which}' not found for {agent}. Available: {[v.stem for v in vers]}"
+    write_core_memory(agent, target.read_text(encoding="utf-8"))
+    return f"Rolled back {agent} core memory to {target.stem} ({len(vers)} versions on file)."
 
 
 def append_core_memory(agent: str, section_header: str, content: str):
@@ -498,5 +546,19 @@ if __name__ == "__main__":
         agent = sys.argv[2] if len(sys.argv) > 2 else "octodamus"
         print(read_core_memory(agent))
 
+    elif cmd == "versions":
+        agent = sys.argv[2] if len(sys.argv) > 2 else "octodamus"
+        vers = list_core_versions(agent)
+        print(f"{agent} core-memory versions ({len(vers)}):")
+        for v in vers[-15:]:
+            print(f"  {v.stem}  ({v.stat().st_size} bytes)")
+        if not vers:
+            print("  (none yet)")
+
+    elif cmd == "rollback":
+        agent = sys.argv[2] if len(sys.argv) > 2 else "octodamus"
+        which = sys.argv[3] if len(sys.argv) > 3 else "latest"
+        print(rollback_core_memory(agent, which))
+
     else:
-        print(f"Usage: python octo_memory_db.py [migrate|status|core <agent>]")
+        print(f"Usage: python octo_memory_db.py [migrate|status|core <agent>|versions <agent>|rollback <agent> [version]]")
