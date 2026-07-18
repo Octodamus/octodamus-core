@@ -382,6 +382,25 @@ Core memory files: data/memory/[agent_name]_core.md
 
 ---
 
+## Dreaming pass 2 — fleet tool-error scan (new 2026-07-18)
+- octo_dream_toolscan.py: out-of-band immune system for SILENT recurring failures (the class of
+  bug that plagued the fleet -- e.g. tool_check_x402_revenue KeyError firing 31+ sessions unnoticed,
+  gdrive dead token failing 4h backups since Jun 2). Scans recent fleet logs (runner/api/watchdog/
+  acp/agent session logs), groups error lines into normalized signatures, ranks by prevalence,
+  emails the operator via octo_notify._send. Recency filtered on each LINE's timestamp (rolling logs
+  hold months); skips cloudflared/botcoin infra churn; benign filter for handled 429s/bind churn.
+- Wired into octo_memory_distill.run() -> runs on the Octodamus-MemoryDistill schedule (Sun/Wed/Sat).
+  Standalone: `python octo_dream_toolscan.py [--days 7] [--min 4] [--no-email]`. Report:
+  logs/dream_toolscan_latest.md.
+- First run surfaced real unknowns: ~89 tracebacks/7d, CoinGecko 429 price-fetch rate-limits,
+  httpx getaddrinfo (DNS) failures, ASGI "returned without completing response", engage
+  internal-reasoning blocks. Review logs/dream_toolscan_latest.md.
+- MEMORY-SYSTEM AUDIT vs Anthropic context-eng lecture: Octodamus already has CLAUDE.md + file-system
+  memory + skills + in-band autonomous writes + WEEKLY DISTILL (= "dreaming"). Gaps still open:
+  (1) memory files NOT versioned (distill overwrites core.md in place, data/ gitignored -> no
+  rollback); (2) no concurrency guard (hash/lock) on memory writes; (3) distill is per-agent, no
+  fleet-wide cross-agent pattern pass. This tool-error scan closes the biggest gap (tool-call scrutiny).
+
 ## Persistent Memory System (new 2026-04-28)
 - octo_memory_db.py     SQLite store (data/octodamus_memory.db)
   Tables: skill_posts, skill_amendments, calibration_estimates, ben_sessions, ben_lessons
