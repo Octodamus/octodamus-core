@@ -490,6 +490,14 @@ def run(agent: str = "all"):
     except Exception as e:
         print(f"[Distill] Dream tool-scan failed: {e}")
 
+    # Dreaming pass 3: fleet-wide "head teacher" — cross-agent patterns no single
+    # per-agent distill can see (shared mistakes, common gaps, inconsistencies).
+    try:
+        from octo_dream_fleet import run as _fleetdream
+        _fleetdream(email=True)
+    except Exception as e:
+        print(f"[Distill] Fleet dream failed: {e}")
+
     print("[Distill] Done.")
 
 

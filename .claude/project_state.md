@@ -405,9 +405,19 @@ Core memory files: data/memory/[agent_name]_core.md
   writes (distill + append_core_memory) via the single write_core_memory choke-point. A bad dream is
   now fully recoverable. (Note: .agents/profit-agent writes ben_core.md directly at agent.py:2356 --
   append-only, lower risk, not routed through write_core_memory.)
-- MEMORY GAPS STILL OPEN: (2) no concurrency guard (hash/lock) on memory writes; (3) distill is
-  per-agent, no fleet-wide cross-agent pattern pass. The tool-error scan (octo_dream_toolscan.py)
-  closed the tool-call-scrutiny gap; versioning closed the rollback gap.
+- FLEET-WIDE DREAMING DONE (2026-07-18): octo_dream_fleet.py -- the "head teacher" pass. Reads ALL
+  agents' core memories + the tool-error scan's recurring errors, runs a Haiku cross-agent analysis
+  (shared mistakes / knowledge gaps / inconsistencies / fleet opportunities + TOP ACTION), writes
+  logs/dream_fleet_latest.md and emails the operator. PROPOSES changes for review -- does NOT auto-write
+  any shared context (avoids the org-wide-corruption risk from the lecture). Robust ANTHROPIC key load
+  (env -> cache -> live). Wired as "dreaming pass 3" in octo_memory_distill.run() (Sun/Wed/Sat).
+  First run found real cross-agent patterns: NYSE_Tech(0/19)+X_Sentiment(0/9)+MacroMind all predict
+  without a validation gate; and proposed distributing Order_ChainFlow's compound-silence method to the
+  other directional agents. Standalone: python octo_dream_fleet.py [--no-email].
+- MEMORY GAP STILL OPEN (lowest priority): concurrency guard (hash/lock) on memory writes -- matters
+  only if two agents write the SAME core file simultaneously (rare with staggered schedules).
+- DREAMING NOW 3 PASSES on the MemoryDistill schedule: (1) per-agent distill, (2) fleet tool-error
+  scan (octo_dream_toolscan), (3) fleet-wide head-teacher (octo_dream_fleet).
 
 ## Persistent Memory System (new 2026-04-28)
 - octo_memory_db.py     SQLite store (data/octodamus_memory.db)
