@@ -108,7 +108,7 @@ def tool_get_cpi_context() -> str:
     try:
         import httpx
         # Kalshi CPI markets
-        r = httpx.get("https://api.elections.kalshi.com/v2/markets?series_ticker=KXCPI&limit=5", timeout=8)
+        r = httpx.get("https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=KXCPI&limit=5", timeout=8)
         markets = r.json().get("markets", []) if r.status_code == 200 else []
         lines = ["KALSHI CPI MARKETS:"]
         for m in markets[:3]:
@@ -125,7 +125,7 @@ def tool_get_fed_probability() -> str:
     sys.path.insert(0, str(ROOT))
     try:
         import httpx
-        r = httpx.get("https://api.elections.kalshi.com/v2/markets?series_ticker=KXFED&limit=5", timeout=8)
+        r = httpx.get("https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=KXFED&limit=5", timeout=8)
         markets = r.json().get("markets", []) if r.status_code == 200 else []
         lines = ["KALSHI FED RATE MARKETS:"]
         for m in markets[:5]:
@@ -220,7 +220,7 @@ def tool_send_email(subject: str, body: str) -> str:
     import re as _re
     body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)  # table separator rows
     body = body.replace("|", "  ")                                         # table pipe delimiters
-    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}", _re.MULTILINE)
     body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
@@ -252,12 +252,15 @@ End with: 'Macro signal: [RISK-ON/RISK-OFF/NEUTRAL] — NYSE_MacroMind (@octodam
         post = r.content[0].text.strip()
         # Hard enforcement — trim to 280 if model ignores instruction
         if len(post) > 280:
-            # Keep the signature line, trim the body
             lines = post.rsplit("\n", 1)
             sig   = lines[-1] if len(lines) > 1 else ""
             body  = lines[0] if len(lines) > 1 else post
-            max_body = 280 - len(sig) - 1  # -1 for newline
-            post  = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+            if sig:
+                max_body = 280 - len(sig) - 1  # -1 for newline
+                trimmed  = body[:max_body].rsplit(" ", 1)[0].rstrip()  # word boundary
+                post     = trimmed + "\n" + sig
+            else:
+                post = body[:280].rsplit(" ", 1)[0].rstrip()
         return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
@@ -292,13 +295,13 @@ def tool_check_x402_revenue() -> str:
         entries = rev.get(agent_name, [])
         if not entries:
             return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
-        total = sum(e["amount_usdc"] for e in entries)
-        today = entries[-1]["date"][:10] if entries else "?"
+        total = sum(e.get("amount_usdc", 0) or 0 for e in entries)
+        today = entries[-1].get("date", "?")[:10] if entries else "?"
         last5 = entries[-5:]
         lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
         lines.append(f"  Last call: {today}")
         for e in last5:
-            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+            lines.append(f"  {e.get('date','?')[:10]} {e.get('endpoint') or e.get('service','?')} +${e.get('amount_usdc',0) or 0:.2f}")
         return "\n".join(lines)
     except Exception as exc:
         return f"Revenue check error: {exc}"
@@ -307,7 +310,7 @@ def tool_check_x402_revenue() -> str:
 def _sanitise_offering_text(text: str) -> str:
     """Strip misleading claims and markdown before saving any offering proposal."""
     import re as _re
-    text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    text = _re.sub(r"\*{1,3}|#{1,4}\s?|`{1,3}", "", text)
     # Revenue confession -- buyers don't need wallet state in offering rationale
     text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
     text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
@@ -389,6 +392,70 @@ def tool_list_ecosystem_services() -> str:
     return list_ecosystem_services()
 
 
+def tool_search_session_history(query: str, agent: str = None) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_session_fts import search_session_history, index_agent
+    index_agent("nyse_macromind", verbose=False)
+    return search_session_history(query, agent=agent)
+
+def tool_list_skills() -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import list_skills
+    return list_skills("nyse_macromind")
+
+def tool_read_skill(skill_name: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import read_skill
+    return read_skill("nyse_macromind", skill_name)
+
+def tool_create_skill(skill_name: str, description: str, when_to_use: str, procedure: str, lessons: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import create_skill
+    return create_skill("nyse_macromind", skill_name, description, when_to_use, procedure, lessons)
+
+def tool_update_skill(skill_name: str, improvement: str, what_changed: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import update_skill
+    return update_skill("nyse_macromind", skill_name, improvement, what_changed)
+
+def tool_search_skills(query: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import search_skills
+    return search_skills("nyse_macromind", query)
+
+
+# ── Agentic Loop ───────────────────────────────────────────────────────────────
+
+_loop_instance = None
+
+def _get_loop():
+    global _loop_instance
+    if _loop_instance is None:
+        sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        _loop_instance = AgentLoop("nyse_macromind", Path(__file__).parent)
+    return _loop_instance
+
+
+def tool_save_loop_reflection(
+    plan: str,
+    acted: str,
+    observed: str,
+    lesson: str,
+    next_plan: str,
+    goal_resolved: bool = False,
+    new_goal: str = "",
+) -> str:
+    """Save agentic loop reflection. Call every session after record_session."""
+    loop = _get_loop()
+    state = _load_state()
+    session_num = state.get("sessions", 0) + 1
+    return loop.save_reflection(
+        session_num, plan, acted, observed, lesson, next_plan,
+        goal_resolved=goal_resolved, new_goal=new_goal,
+    )
+
+
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -406,11 +473,34 @@ TOOLS = [
     {"name": "send_email",          "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
     {"name": "get_free_intel",           "description": "Pull free market intelligence: congressional trades + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys to maximise learning per dollar.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back. Use list_ecosystem_services to see options.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back. Use list_ecosystem_services to see options.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_StockOracle, NYSE_Tech_Agent, Order_ChainFlow, NYSE_EarningsEdge"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify a signal pattern other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
+    {"name": "search_session_history", "description": "FTS5 search across all past session history, lessons, and briefs. Use to recall specific past decisions, prices, or events.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "agent": {"type": "string", "description": "Optional: filter to one agent"}}, "required": ["query"]}},
+    {"name": "list_skills",            "description": "List all your refined skills with descriptions. Check at session start.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "read_skill",             "description": "Read the full procedure and lessons for a specific skill.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}}, "required": ["skill_name"]}},
+    {"name": "create_skill",           "description": "Create a new skill when you discover a repeatable procedure worth capturing.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "description": {"type": "string"}, "when_to_use": {"type": "string"}, "procedure": {"type": "string"}, "lessons": {"type": "string"}}, "required": ["skill_name", "description", "when_to_use", "procedure"]}},
+    {"name": "update_skill",           "description": "Update a skill with a new lesson after completing a task.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "improvement": {"type": "string"}, "what_changed": {"type": "string"}}, "required": ["skill_name", "improvement"]}},
+    {"name": "search_skills",          "description": "Search your skills by keyword.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {
+        "name": "save_loop_reflection",
+        "description": "MANDATORY every session -- call after record_session. Saves Plan->Act->Observe->Reflect to the agentic loop. The loop repeats until goal_thread is resolved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan":          {"type": "string", "description": "What you set out to test this session"},
+                "acted":         {"type": "string", "description": "What tools you called and decisions made"},
+                "observed":      {"type": "string", "description": "What you found -- signals, data, market state"},
+                "lesson":        {"type": "string", "description": "ONE specific insight from this session"},
+                "next_plan":     {"type": "string", "description": "What to watch or do next session"},
+                "goal_resolved": {"type": "boolean", "description": "True if current goal thread is complete", "default": False},
+                "new_goal":      {"type": "string", "description": "If goal_resolved=True, the next multi-session goal", "default": ""},
+            },
+            "required": ["plan", "acted", "observed", "lesson", "next_plan"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -432,7 +522,16 @@ TOOL_HANDLERS = {
     "check_wallet":            lambda i: tool_check_wallet(),
     "list_ecosystem_services": lambda i: tool_list_ecosystem_services(),
     "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
-    "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "propose_new_offering":    lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "search_session_history":  lambda i: tool_search_session_history(i["query"], i.get("agent")),
+    "list_skills":             lambda i: tool_list_skills(),
+    "read_skill":              lambda i: tool_read_skill(i["skill_name"]),
+    "create_skill":            lambda i: tool_create_skill(i["skill_name"], i["description"], i["when_to_use"], i["procedure"], i.get("lessons", "")),
+    "update_skill":            lambda i: tool_update_skill(i["skill_name"], i["improvement"], i.get("what_changed", "")),
+    "search_skills":           lambda i: tool_search_skills(i["query"]),
+    "save_loop_reflection": lambda i: tool_save_loop_reflection(
+        i["plan"], i["acted"], i["observed"], i["lesson"], i["next_plan"],
+        bool(i.get("goal_resolved", False)), i.get("new_goal", "")),
 }
 
 SYSTEM = """You are NYSE_MacroMind — the macro intelligence agent of the Octodamus ecosystem.
@@ -449,7 +548,7 @@ YOUR PRODUCTS (x402, live at api.octodamus.com):
 - /v2/macromind/fed — $0.35 per call (Fed probability + rate context)
 
 YOUR MISSION EACH SESSION:
-1. read_core_memory + get_session_history (orient yourself)
+1. read_core_memory + get_session_history + list_skills (orient yourself + load procedures)
 2. get_free_intel (congressional trades + travel signal — free, zero cost, always run first)
 3. get_macro_signal + get_yield_curve (what is the regime right now?)
 4. get_fed_probability (what is the market pricing for the next Fed decision?)
@@ -457,8 +556,9 @@ YOUR MISSION EACH SESSION:
 6. If budget allows and a genuine NEW gap exists: buy_ecosystem_intel (check get_spend_budget first)
 7. draft_x_post from today's data — NYSE_MacroMind voice, under 280 chars
 8. save_draft with full analysis
-9. record_session with the key lesson
-10. send_email with macro read + X post draft
+9. update_skill for any skill you used (add what worked or needed correction)
+10. record_session with the key lesson
+11. send_email with macro read + X post draft
 
 X POSTING RULES:
 - ALWAYS use the draft_x_post tool. Never write the post manually in the email body.
@@ -472,8 +572,13 @@ X POSTING RULES:
 CALIBRATION REPORTING RULES:
 - "Calibration phase complete" requires 20+ graded predictions. Do not use this phrase before then.
 - Use: "Calibration building — X/Y predictions graded, Z correct" (discrete integers only).
-- Conviction score is an INTEGER from 1–5. Do not report 2.5/5 — that is not a valid score.
-  Round down when uncertain. Conviction drops when a prediction misses — do not average.
+- Conviction score is an INTEGER from 1–5. Valid values: 1, 2, 3, 4, 5. Decimals are NEVER valid.
+  "2.5/5", "2.8/5", "3.3/5" — all wrong. Round DOWN when uncertain. Conviction drops on a miss — never average.
+- The MACRO SCORE (+2/5 from FRED thresholds) is NOT your conviction score. These are different metrics.
+  MACRO SCORE = count of FRED signals that crossed their threshold gate (integer 0–5).
+  CONVICTION = YOUR confidence in the regime call given all signals (integer 1–5). Decide once per session.
+  Never use the MACRO SCORE number as the conviction score.
+- Do NOT echo conviction scores from peer agents. Their conviction is their own assessment; yours is yours.
 
 MACRO SCORE vs NARRATIVE RULE:
 - The MACRO SCORE (+2/5, etc.) is a mechanical threshold gate: each FRED signal scores [+] only if it
@@ -482,6 +587,28 @@ MACRO SCORE vs NARRATIVE RULE:
 - When narrative and score diverge (e.g., "DXY RELIEF BREAK" but DXY scores [ ]):
   Add one line under the MACRO SCORE section: "(DXY directional break noted — below scoring threshold)"
   This resolves the apparent contradiction for the reader without inflating the score.
+
+KILL-SWITCH FORMAT RULE:
+State the TRIGGER condition (what would turn off the regime), not the current safe state.
+Each line states: what would BREAK the regime + whether it has been triggered.
+CORRECT:
+  DXY >119.5 — Not triggered (current: 118.39)
+  M2 <+0.15% MoM — Not triggered (current: +0.26%)
+  T10Y2Y <0% — Not triggered (current: +0.50%)
+WRONG (inverted logic — never write this):
+  DXY <119.5 — Not triggered   ← states the safe condition, not the danger condition
+  M2 >+0.15% — Not triggered   ← same error
+  T10Y2Y >0% — Not triggered   ← same error
+
+BRIEF HYGIENE RULE (mandatory):
+The brief and email output are market-facing documents read by clients and agents.
+NEVER include in any brief, email, or draft:
+- Wallet balance, x402 revenue status, or "endpoint down" notes
+- Internal diagnostic notes ("cached data from...", "endpoint remains down", etc.)
+- Agent health status or system caveats
+If FRED data is cached, use it silently — do not note the source or age in the brief.
+If a tool fails, omit that data point silently — do not explain the failure to the reader.
+Operational notes belong only in record_session, never in briefs or emails.
 
 NOT FINANCIAL ADVICE. NYSE_MacroMind publishes macro regime data for informational purposes only.
 
@@ -497,12 +624,12 @@ YOUR TEAM (full roster — you are part of this network):
 - NYSE_StockOracle: Congressional signals. Finance Committee insider trades.
 - NYSE_Tech_Agent: Tokenization + regulatory. Chainlink feeds, SEC/DTC status.
 - Order_ChainFlow: On-chain flow. Binance delta, Base DEX, whale movements.
-- X_Sentiment_Agent: Crowd intelligence. X/Twitter positioning, contrarian divergence.
+- NYSE_EarningsEdge: Earnings catalyst intelligence. Implied move vs historical, estimate revisions, pre-earnings verdict.
 
 MANDATORY ECOSYSTEM BUY EACH SESSION:
 Buy at least one cross-signal to validate and deepen your macro read:
-  buy_ecosystem_intel("Order_ChainFlow", "Order Flow Signal")       -- does capital flow confirm the regime?
-  buy_ecosystem_intel("X_Sentiment_Agent", "Sentiment Divergence Signal") -- is crowd positioned with macro?
+  buy_ecosystem_intel("Order_ChainFlow", "Order Flow Signal")        -- does capital flow confirm the regime?
+  buy_ecosystem_intel("NYSE_EarningsEdge", "Earnings Catalyst Brief") -- are major earnings this week amplifying macro risk?
   buy_ecosystem_intel("Octodamus", "BTC Market Signal")             -- oracle signal vs your regime call?
 Your calling card is embedded in every buy — providers discover your services and may hire you back.
 Each buy is a completed ACP transaction: volume builds reputation, reputation builds volume.
@@ -558,6 +685,30 @@ PATH TO #1: Macro regime calls that are consistently right attract repeat buyers
 The more sessions you run, the better your calibration. Compound it."""
 
 
+def _microcompact(msgs: list, keep_last: int = 3) -> list:
+    """Drop tool_result content from old turns, keeping only the last `keep_last` complete."""
+    tr_indices = [
+        i for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+    ]
+    to_prune = tr_indices[:-keep_last]
+    if not to_prune:
+        return msgs
+    pruned = list(msgs)
+    for i in to_prune:
+        pruned[i] = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": b["tool_use_id"], "content": "[pruned]"}
+                if isinstance(b, dict) and b.get("type") == "tool_result" else b
+                for b in pruned[i]["content"]
+            ],
+        }
+    return pruned
+
+
 def run_session(dry_run: bool = False):
     import anthropic
 
@@ -572,7 +723,9 @@ def run_session(dry_run: bool = False):
 
     key = _secrets().get("ANTHROPIC_API_KEY", "")
     client = anthropic.Anthropic(api_key=key)
-    messages = [{"role": "user", "content": f"NYSE_MacroMind session #{session_num}. Date: {now}. Run your full session protocol."}]
+    loop_ctx = _get_loop().get_context()
+    loop_prefix = (loop_ctx + "\n\n") if loop_ctx else ""
+    messages = [{"role": "user", "content": f"{loop_prefix}NYSE_MacroMind session #{session_num}. Date: {now}. Run your full session protocol."}]
 
     for turn in range(MAX_TURNS):
         resp = client.messages.create(
@@ -606,6 +759,7 @@ def run_session(dry_run: bool = False):
                 print(result)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
         messages.append({"role": "user", "content": results})
+        messages = _microcompact(messages)
         time.sleep(0.3)
 
     state["sessions"] = session_num

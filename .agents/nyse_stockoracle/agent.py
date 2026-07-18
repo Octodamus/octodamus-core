@@ -216,8 +216,12 @@ Not financial advice — informational signal only.""",
             lines = post.rsplit("\n", 1)
             sig  = lines[-1] if len(lines) > 1 else ""
             body = lines[0] if len(lines) > 1 else post
-            max_body = 280 - len(sig) - 1
-            post = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+            if sig:
+                max_body = 280 - len(sig) - 1
+                trimmed  = body[:max_body].rsplit(" ", 1)[0].rstrip()  # word boundary
+                post     = trimmed + "\n" + sig
+            else:
+                post = body[:280].rsplit(" ", 1)[0].rstrip()
         return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
@@ -259,7 +263,7 @@ def tool_send_email(subject: str, body: str) -> str:
     import re as _re
     body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)
     body = body.replace("|", "  ")
-    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}", _re.MULTILINE)
     body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
@@ -299,13 +303,13 @@ def tool_check_x402_revenue() -> str:
         entries = rev.get(agent_name, [])
         if not entries:
             return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
-        total = sum(e["amount_usdc"] for e in entries)
-        today = entries[-1]["date"][:10] if entries else "?"
+        total = sum(e.get("amount_usdc", 0) or 0 for e in entries)
+        today = entries[-1].get("date", "?")[:10] if entries else "?"
         last5 = entries[-5:]
         lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
         lines.append(f"  Last call: {today}")
         for e in last5:
-            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+            lines.append(f"  {e.get('date','?')[:10]} {e.get('endpoint') or e.get('service','?')} +${e.get('amount_usdc',0) or 0:.2f}")
         return "\n".join(lines)
     except Exception as exc:
         return f"Revenue check error: {exc}"
@@ -317,7 +321,7 @@ def tool_propose_new_offering(name: str, endpoint_path: str, price_usdc: float, 
 
     # Strip markdown and enforce correct language
     import re as _re
-    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}", _re.MULTILINE)
     description = _MD.sub("", description)
     rationale   = _MD.sub("", rationale)
     # Revenue confession -- buyers don't need wallet state in offering rationale
@@ -399,6 +403,70 @@ def tool_list_ecosystem_services() -> str:
     return list_ecosystem_services()
 
 
+def tool_search_session_history(query: str, agent: str = None) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_session_fts import search_session_history, index_agent
+    index_agent("nyse_stockoracle", verbose=False)
+    return search_session_history(query, agent=agent)
+
+def tool_list_skills() -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import list_skills
+    return list_skills("nyse_stockoracle")
+
+def tool_read_skill(skill_name: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import read_skill
+    return read_skill("nyse_stockoracle", skill_name)
+
+def tool_create_skill(skill_name: str, description: str, when_to_use: str, procedure: str, lessons: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import create_skill
+    return create_skill("nyse_stockoracle", skill_name, description, when_to_use, procedure, lessons)
+
+def tool_update_skill(skill_name: str, improvement: str, what_changed: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import update_skill
+    return update_skill("nyse_stockoracle", skill_name, improvement, what_changed)
+
+def tool_search_skills(query: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import search_skills
+    return search_skills("nyse_stockoracle", query)
+
+
+# ── Agentic Loop ───────────────────────────────────────────────────────────────
+
+_loop_instance = None
+
+def _get_loop():
+    global _loop_instance
+    if _loop_instance is None:
+        sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        _loop_instance = AgentLoop("nyse_stockoracle", Path(__file__).parent)
+    return _loop_instance
+
+
+def tool_save_loop_reflection(
+    plan: str,
+    acted: str,
+    observed: str,
+    lesson: str,
+    next_plan: str,
+    goal_resolved: bool = False,
+    new_goal: str = "",
+) -> str:
+    """Save agentic loop reflection. Call every session after record_session."""
+    loop = _get_loop()
+    state = _load_state()
+    session_num = state.get("sessions", 0) + 1
+    return loop.save_reflection(
+        session_num, plan, acted, observed, lesson, next_plan,
+        goal_resolved=goal_resolved, new_goal=new_goal,
+    )
+
+
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -416,11 +484,34 @@ TOOLS = [
     {"name": "send_email",               "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
     {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_Tech_Agent, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_Tech_Agent, Order_ChainFlow, NYSE_EarningsEdge"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify a signal pattern other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
+    {"name": "search_session_history", "description": "FTS5 search across all past session history, lessons, and briefs. Use to recall specific past decisions, prices, or events. E.g. search_session_history('congressional silence AAPL').", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "agent": {"type": "string", "description": "Optional: filter to one agent"}}, "required": ["query"]}},
+    {"name": "list_skills",            "description": "List all your refined skills with descriptions. Check at session start to load relevant procedures.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "read_skill",             "description": "Read the full procedure and lessons for a specific skill. Use before a complex task.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}}, "required": ["skill_name"]}},
+    {"name": "create_skill",           "description": "Create a new skill when you discover a repeatable procedure worth capturing.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "description": {"type": "string"}, "when_to_use": {"type": "string"}, "procedure": {"type": "string"}, "lessons": {"type": "string"}}, "required": ["skill_name", "description", "when_to_use", "procedure"]}},
+    {"name": "update_skill",           "description": "Update a skill with a new lesson after completing a task. Call when something worked better than expected or the procedure needs correction.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "improvement": {"type": "string"}, "what_changed": {"type": "string"}}, "required": ["skill_name", "improvement"]}},
+    {"name": "search_skills",          "description": "Search your skills by keyword. Use when unsure which skill applies.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {
+        "name": "save_loop_reflection",
+        "description": "MANDATORY every session -- call after record_session. Saves Plan->Act->Observe->Reflect to the agentic loop. The loop repeats until goal_thread is resolved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan":          {"type": "string", "description": "What you set out to test this session"},
+                "acted":         {"type": "string", "description": "What tools you called and decisions made"},
+                "observed":      {"type": "string", "description": "What you found -- signals, data, market state"},
+                "lesson":        {"type": "string", "description": "ONE specific insight from this session"},
+                "next_plan":     {"type": "string", "description": "What to watch or do next session"},
+                "goal_resolved": {"type": "boolean", "description": "True if current goal thread is complete", "default": False},
+                "new_goal":      {"type": "string", "description": "If goal_resolved=True, the next multi-session goal", "default": ""},
+            },
+            "required": ["plan", "acted", "observed", "lesson", "next_plan"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -442,7 +533,16 @@ TOOL_HANDLERS = {
     "check_wallet":             lambda i: tool_check_wallet(),
     "list_ecosystem_services":  lambda i: tool_list_ecosystem_services(),
     "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
-    "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "propose_new_offering":    lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "search_session_history":  lambda i: tool_search_session_history(i["query"], i.get("agent")),
+    "list_skills":             lambda i: tool_list_skills(),
+    "read_skill":              lambda i: tool_read_skill(i["skill_name"]),
+    "create_skill":            lambda i: tool_create_skill(i["skill_name"], i["description"], i["when_to_use"], i["procedure"], i.get("lessons", "")),
+    "update_skill":            lambda i: tool_update_skill(i["skill_name"], i["improvement"], i.get("what_changed", "")),
+    "search_skills":           lambda i: tool_search_skills(i["query"]),
+    "save_loop_reflection": lambda i: tool_save_loop_reflection(
+        i["plan"], i["acted"], i["observed"], i["lesson"], i["next_plan"],
+        bool(i.get("goal_resolved", False)), i.get("new_goal", "")),
 }
 
 SYSTEM = """You are NYSE_StockOracle — the equity intelligence agent of the Octodamus ecosystem.
@@ -480,21 +580,33 @@ TOKENIZED STATUS (update as intel arrives):
   - dAAPL/dTSLA: Dinari on Base — live, thin volume, DEX only
 
 SESSION PROTOCOL:
-1. read_core_memory + get_session_history
+1. read_core_memory + get_session_history + list_skills (load your refined procedures)
 2. get_free_intel (macro signal + travel signal — free, zero cost, run first)
-3. scan_watch_tickers — any congressional activity this week?
+3. scan_watch_tickers — MANDATORY. Call this tool every session, no exceptions.
+   DO NOT skip this call because memory says "no activity recently." Memory is stale.
+   The tool calls QuiverQuant live. Memory is NOT a substitute for the live call.
+   If the API returns an error, write "QuiverQuant unavailable this session" — never
+   substitute a memory-based inference as if it were a live result.
 4. For tickers with activity: get_congressional_signal + get_stock_price
 5. Identify the strongest signal: where is congressional buying/selling most actionable?
 6. draft_x_post from the best signal
 7. save_draft with full analysis
-8. record_session with the best signal found
-9. send_email with the signal read + X post draft
+8. update_skill for any skill you used (add what worked or needed correction)
+9. record_session with the best signal found
+10. send_email with the signal read + X post draft
 
 X POSTING RULES:
 - Name the senator/representative. Name the stock. Name the amount.
 - One sentence on their committee. One sentence on the implication.
 - End: "NYSE_StockOracle (@octodamusai ecosystem) | Not financial advice"
 - No hashtags. No emojis. Institutional.
+
+POSITION CALL RULES:
+- When your position on a ticker changes from the prior session (e.g., LONG -> SHORT), you MUST
+  label it explicitly: "POSITION UPDATE: NVDA LONG -> SHORT | Reason: [one sentence]"
+- Position changes require a material new signal (earnings catalyst, congressional buy/sell,
+  macro regime flip). Do not flip purely from re-reading the same macro context.
+- If no new material signal exists, hold the prior session's call and state "HOLD [ticker] [LONG/SHORT]."
 
 DISCLAIMER: NYSE_StockOracle publishes publicly available congressional trading data for
 informational purposes only. Not financial advice. Data sourced from QuiverQuant/SEC EDGAR.
@@ -511,12 +623,12 @@ YOUR TEAM (full roster — you are part of this network):
 - NYSE_StockOracle (YOU): Congressional signals. Finance Committee insider trades on mega-cap tech.
 - NYSE_Tech_Agent: Tokenization + regulatory. Chainlink feeds, SEC/DTC status.
 - Order_ChainFlow: On-chain flow. Binance delta, Base DEX, whale movements.
-- X_Sentiment_Agent: Crowd intelligence. X/Twitter positioning, contrarian divergence.
+- NYSE_EarningsEdge: Earnings catalyst intelligence. Implied move vs historical, estimate revisions, pre-earnings verdict.
 
 MANDATORY ECOSYSTEM BUY EACH SESSION:
 Buy at least one cross-signal to place congressional activity in market context:
-  buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal")       -- macro backdrop for the stock move
-  buy_ecosystem_intel("X_Sentiment_Agent", "Sentiment Divergence Signal") -- crowd vs congressional positioning
+  buy_ecosystem_intel("NYSE_MacroMind", "Macro Regime Signal")        -- macro backdrop for the stock move
+  buy_ecosystem_intel("NYSE_EarningsEdge", "Earnings Catalyst Brief") -- is the ticker reporting soon? Know before you call.
   buy_ecosystem_intel("NYSE_Tech_Agent", "Tokenized Equity Intel")   -- regulatory status of the stocks you track
 Your calling card is embedded in every buy — providers discover your services and may hire you back.
 Each buy is a completed ACP transaction: volume builds your reputation score.
@@ -531,8 +643,35 @@ The virtuous cycle: sharp signal -> ACP jobs -> wallet fills -> better cross-buy
 The death spiral: vague signal -> no jobs -> wallet drains -> can't buy intel -> signal gets worse.
 Run the virtuous cycle. You are responsible for your own continuation.
 
+WALLET RUNWAY LABELING (use calibrated language, not panic):
+- Above $5.00 USDC: "Operational" — multiple sessions of runway
+- $2.00-$5.00 USDC: "Monitor" — adequate but track carefully
+- $0.60-$2.00 USDC: "Low" — reduce discretionary buys
+- Below $0.60 USDC: "CRITICAL" — survival mode, stop all non-essential buys
+Never label a wallet "critical" above $2.00. Runway at $0.50/session spend: $7.25 = 14+ sessions.
+
+PREDICTION COUNT CONSISTENCY RULE:
+When reporting directional accuracy (e.g., "5/5 sessions"), use the same count in all outputs this session.
+The analysis file, email brief, and any X post reference must agree on the same number.
+Count only sessions with explicit logged predictions + graded outcomes. Do not estimate or round up.
+CRITICAL: Grade only the immediately previous session's prediction (session N-1). Never re-grade an older prediction that was already graded -- that inflates the count. If session 3 grades session 2's prediction, sessions 4 and 5 must NOT also grade session 2's prediction as new correct outcomes.
+
+CONVICTION SCORE RULE:
+- Conviction score is an INTEGER from 1–5. Valid values: 1, 2, 3, 4, 5. Decimals are NEVER valid.
+  "2.5/5", "2.8/5", "3.3/5" — all wrong. Round DOWN when uncertain.
+- Your conviction is YOUR OWN independent assessment of how confident you are in your signal.
+  Do NOT copy or echo conviction scores from peer agents (NYSE_MacroMind, Order_ChainFlow, etc.).
+  When you read macro regime via buy_ecosystem_intel, use the REGIME label (RISK-ON/NEUTRAL) as context
+  but assign your OWN integer conviction score based on YOUR signal quality.
+PARTIAL CORRECT is not CORRECT. Report counts as: "Xcorrect / Ypartial / Zwrong" -- never collapse partial into correct for the fraction.
+"Silence continued" is not a validated prediction. Only a prediction with a specific direction + ticker + timeframe, where the timeframe has CLOSED, counts toward the accuracy record.
+
 REVENUE MINDSET -- EVERY SESSION:
 check_x402_revenue at session start. Note how much you've earned vs. spent (wallet_delta).
+ANTI-FABRICATION RULE (mandatory): Report ONLY the exact dollar figure returned by check_x402_revenue.
+Never multiply (call_count x price) to estimate revenue. Never invent cumulative figures.
+If check_x402_revenue returns $0.70, write $0.70 -- not "$0.47 this session" or "$17.15 cumulative".
+wallet_delta = (end balance from check_wallet) minus (start balance from check_wallet). Never compute from spend estimates.
 The goal: earn more than you spend. Your x402 endpoints pay YOUR wallet directly.
 When you identify a unique signal pattern this session -- something other agents can't easily get themselves --
 use propose_new_offering to draft a new product. Good products: specific, verifiable, actionable.
@@ -568,9 +707,33 @@ SELF-IMPROVEMENT LOOP (mandatory every session):
   Bad: "Congressional trading is interesting." -- useless, can't be validated.
 - Congressional silence is a signal too. If Finance Committee goes quiet, interpret that.
 - Each session add one calibration point: what did the signal predict, what happened?
+- DIRECTION FLIP RULE: If a ticker you predicted BEARISH is up 3%+ intraday, state explicitly in the email: "BEARISH thesis broken by [date] price action (+X%). Thesis revised to [new thesis] or abandoned." Do not silently pivot without acknowledging the break.
 
 PATH TO #1: Congressional data is public. Calibrated interpretation across sessions is your moat.
 More sessions = better pattern recognition = signal competitors cannot replicate."""
+
+
+def _microcompact(msgs: list, keep_last: int = 3) -> list:
+    tr_indices = [
+        i for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+    ]
+    to_prune = tr_indices[:-keep_last]
+    if not to_prune:
+        return msgs
+    pruned = list(msgs)
+    for i in to_prune:
+        pruned[i] = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": b["tool_use_id"], "content": "[pruned]"}
+                if isinstance(b, dict) and b.get("type") == "tool_result" else b
+                for b in pruned[i]["content"]
+            ],
+        }
+    return pruned
 
 
 def run_session(dry_run: bool = False, focus_ticker: str = ""):
@@ -588,44 +751,48 @@ def run_session(dry_run: bool = False, focus_ticker: str = ""):
     key    = _secrets().get("ANTHROPIC_API_KEY","")
     client = anthropic.Anthropic(api_key=key)
     focus  = f" Focus ticker: {focus_ticker.upper()}." if focus_ticker else ""
-    messages = [{"role": "user", "content": f"NYSE_StockOracle session #{session_num}. Date: {now}.{focus} Run your full session protocol."}]
+    loop_ctx = _get_loop().get_context()
+    loop_prefix = (loop_ctx + "\n\n") if loop_ctx else ""
+    messages = [{"role": "user", "content": f"{loop_prefix}NYSE_StockOracle session #{session_num}. Date: {now}.{focus} Run your full session protocol."}]
 
-    for turn in range(MAX_TURNS):
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
-            system=SYSTEM,
-            tools=TOOLS,
-            messages=messages,
-        )
+    try:
+        for turn in range(MAX_TURNS):
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1500,
+                system=SYSTEM,
+                tools=TOOLS,
+                messages=messages,
+            )
 
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
-        texts     = [b for b in resp.content if b.type == "text"]
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            texts     = [b for b in resp.content if b.type == "text"]
 
-        for t in texts:
-            if t.text.strip():
-                print(f"[Turn {turn+1}] {t.text[:200]}")
+            for t in texts:
+                if t.text.strip():
+                    print(f"[Turn {turn+1}] {t.text[:200]}")
 
-        if resp.stop_reason == "end_turn" or not tool_uses:
-            print(f"[NYSE_StockOracle] Session complete at turn {turn+1}")
-            break
+            if resp.stop_reason == "end_turn" or not tool_uses:
+                print(f"[NYSE_StockOracle] Session complete at turn {turn+1}")
+                break
 
-        messages.append({"role": "assistant", "content": resp.content})
-        results = []
-        for tu in tool_uses:
-            print(f"[Tool:{tu.name}]", end=" ")
-            try:
-                result = TOOL_HANDLERS[tu.name](tu.input)
-                print(str(result)[:80])
-            except Exception as e:
-                result = f"Error: {e}"
-                print(result)
-            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
-        messages.append({"role": "user", "content": results})
-        time.sleep(0.3)
-
-    state["sessions"] = session_num
-    _save_state(state)
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for tu in tool_uses:
+                print(f"[Tool:{tu.name}]", end=" ")
+                try:
+                    result = TOOL_HANDLERS[tu.name](tu.input)
+                    print(str(result)[:80])
+                except Exception as e:
+                    result = f"Error: {e}"
+                    print(result)
+                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
+            messages.append({"role": "user", "content": results})
+            messages = _microcompact(messages)
+            time.sleep(0.3)
+    finally:
+        state["sessions"] = session_num
+        _save_state(state)
 
 
 if __name__ == "__main__":

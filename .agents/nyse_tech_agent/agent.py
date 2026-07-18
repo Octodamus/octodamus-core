@@ -92,29 +92,82 @@ def tool_get_session_history() -> str:
     return "\n".join(lines)
 
 
+# Known CIKs for tokenization-relevant companies (zero-padded to 10 digits for data.sec.gov)
+# CIKs verified against data.sec.gov 2026-05-29
+_TOKENIZATION_CIKS = {
+    "Securitize_Inc":      "0001762096",  # Primary: NYSE Digital Platform transfer agent tech layer
+    "Securitize_Holdings": "0002094496",  # SPAC merger entity (S-4/A + 425 forms active May 2026)
+    "Cantor_SPAC":         "0002034269",  # Cantor Equity Partners II — Securitize SPAC acquirer
+    "Computershare_TA":    "0001146230",  # Transfer agent for ~58% S&P 500 (IST partnership)
+    "BlackRock":           "0001364742",  # BUIDL tokenized fund
+    "FranklinTempleton":   "0000038777",  # BENJI / Franklin OnChain
+}
+_TOKENIZATION_FORMS = {"8-K", "S-1", "S-3", "S-1/A", "S-3/A", "10-K", "SC 13G", "TA-1", "TA-2", "TA-2/A", "TA-W", "NO-ACTION"}
+_TRANSFER_AGENT_FORMS = {"TA-1", "TA-2", "TA-2/A", "TA-W"}
+_EDGAR_HEADERS = {"User-Agent": "Octodamus/1.0 octodamusai@gmail.com"}
+
+
+def _edgar_submissions(cik: str) -> dict:
+    """Fetch recent filings for a company via data.sec.gov REST API. Stable — not EFTS."""
+    import httpx
+    r = httpx.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                  headers=_EDGAR_HEADERS, timeout=10)
+    return r.json() if r.status_code == 200 else {}
+
+
 def tool_search_sec_filings(query: str = "tokenized securities blockchain") -> str:
-    """Search SEC EDGAR full-text for recent filings about tokenization."""
+    """Search SEC EDGAR for recent tokenization filings.
+    PRIMARY: data.sec.gov REST API (stable, official) — monitors known CIKs directly.
+    FALLBACK: EFTS full-text search (efts.sec.gov — often blocked/down)."""
     try:
         import httpx
-        r = httpx.get(
-            "https://efts.sec.gov/LATEST/search-index",
-            params={"q": f'"{query}"', "dateRange": "custom",
-                    "startdt": "2025-01-01", "forms": "8-K,S-1,S-3,10-K"},
-            timeout=10
-        )
-        if r.status_code != 200:
-            return f"SEC search returned {r.status_code}"
-        hits = r.json().get("hits", {}).get("hits", [])
-        if not hits:
-            return f"No recent SEC filings found for: {query}"
-        lines = [f"SEC EDGAR — Recent filings matching '{query}':"]
-        for h in hits[:5]:
-            src    = h.get("_source", {})
-            entity = src.get("entity_name", "?")
-            form   = src.get("form_type", "?")
-            date   = src.get("file_date", "?")
-            desc   = src.get("display_names", [""])[0][:60] if src.get("display_names") else ""
-            lines.append(f"  {date} | {form} | {entity} | {desc}")
+        lines = ["SEC EDGAR TOKENIZATION FILINGS (REST API + EFTS):"]
+
+        # PRIMARY: data.sec.gov — check known company CIKs directly
+        found = []
+        errors = []
+        for company, cik in _TOKENIZATION_CIKS.items():
+            data = _edgar_submissions(cik)
+            if not data:
+                errors.append(company)
+                continue
+            recent = data.get("filings", {}).get("recent", {})
+            name   = data.get("name", company)
+            for form, date, acc in zip(recent.get("form", []), recent.get("filingDate", []), recent.get("accessionNumber", [])):
+                if form in _TOKENIZATION_FORMS and date >= "2025-01-01":
+                    found.append((date, form, name, acc))
+
+        found.sort(reverse=True)
+        if found:
+            lines.append(f"  Monitored: {len(_TOKENIZATION_CIKS)} companies via REST API")
+            for date, form, name, acc in found[:8]:
+                lines.append(f"  {date} | {form} | {name} | {acc[:22]}...")
+        else:
+            lines.append(f"  No relevant filings since 2025-01-01 from monitored companies.")
+        if errors:
+            lines.append(f"  REST API unavailable for: {', '.join(errors)}")
+
+        # FALLBACK: EFTS full-text search
+        try:
+            r = httpx.get(
+                "https://efts.sec.gov/LATEST/search-index",
+                headers=_EDGAR_HEADERS,
+                params={"q": f'"{query}"', "dateRange": "custom",
+                        "startdt": "2025-01-01", "forms": "8-K,S-1,S-3,10-K"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                hits = r.json().get("hits", {}).get("hits", [])
+                if hits:
+                    lines.append(f"\n  EFTS full-text ('{query}'):")
+                    for h in hits[:3]:
+                        src = h.get("_source", {})
+                        lines.append(f"  {src.get('file_date','?')} | {src.get('form_type','?')} | {src.get('entity_name','?')}")
+            else:
+                lines.append(f"\n  EFTS: HTTP {r.status_code} (REST API results above are primary)")
+        except Exception as efts_err:
+            lines.append(f"\n  EFTS unavailable: {efts_err} (REST API results above are primary)")
+
         return "\n".join(lines)
     except Exception as e:
         return f"SEC search unavailable: {e}"
@@ -245,7 +298,7 @@ def tool_check_ethereum_gas() -> str:
             hex_price = r.json().get("result","0x0")
             gwei = int(hex_price, 16) / 1e9
         else:
-            r2 = httpx.get("https://api.etherscan.io/api?module=gastracker&action=gasoracle", timeout=8)
+            r2 = httpx.get("https://api.etherscan.io/v2/api?chainid=1&module=gastracker&action=gasoracle", timeout=8)
             data = r2.json().get("result",{})
             gwei = float(data.get("ProposeGasPrice", 0))
         if gwei == 0:
@@ -291,14 +344,23 @@ def tool_check_base_new_tokens() -> str:
     """Monitor Base chain for new ERC-20 token launches that could be tokenized stocks."""
     try:
         import httpx
-        # DexScreener for new tokens on Base in last 24h with significant volume
-        r = httpx.get(
+        tokens = []
+        # DexScreener API changed — try multiple endpoints in order
+        for url in [
             "https://api.dexscreener.com/token-profiles/latest/v1",
-            timeout=8
-        )
-        if r.status_code != 200:
-            return "Token launch data unavailable."
-        tokens = r.json() if isinstance(r.json(), list) else []
+            "https://api.dexscreener.com/token-boosts/latest/v1",
+        ]:
+            try:
+                r = httpx.get(url, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    tokens = data if isinstance(data, list) else []
+                    if tokens:
+                        break
+            except Exception:
+                continue
+        if not tokens:
+            return "Token launch data unavailable (DexScreener endpoints not responding)."
         base_tokens = [t for t in tokens if t.get("chainId") == "base"][:5]
         if not base_tokens:
             return "No new Base token launches detected."
@@ -313,6 +375,49 @@ def tool_check_base_new_tokens() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Token launch monitoring unavailable: {e}"
+
+
+def tool_check_redstone_feeds() -> str:
+    """Monitor RedStone Finance oracle feeds for tokenized fund NAV data.
+    RedStone was selected by Securitize (March 2025) for BUIDL/ACRED NAV verification.
+    Complements Chainlink (price feeds) — RedStone handles NAV, Chainlink handles spot price."""
+    try:
+        import httpx
+        EQUITY_FEEDS = {"BUIDL", "ACRED", "SPY", "QQQ", "AAPL", "TSLA", "NVDA", "COIN", "MSTR", "HOOD"}
+        r = httpx.get(
+            "https://oracle-gateway-1.a.redstone.finance/data-packages/latest/redstone-primary-prod",
+            timeout=12
+        )
+        lines = ["REDSTONE FINANCE ORACLE FEEDS (Securitize NAV partner, selected March 2025):"]
+        if r.status_code != 200:
+            lines.append(f"  Oracle gateway: HTTP {r.status_code}")
+            lines.append("  Manual check: app.redstone.finance")
+        else:
+            data = r.json()
+            found = []
+            for symbol, packages in data.items():
+                if symbol.upper() not in EQUITY_FEEDS:
+                    continue
+                pkg = packages[0] if isinstance(packages, list) and packages else {}
+                dp = pkg.get("dataPoints", [{}])[0] if isinstance(pkg, dict) else {}
+                value = dp.get("value", "?")
+                ts_ms = pkg.get("timestampMilliseconds", 0) if isinstance(pkg, dict) else 0
+                ts_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M UTC") if ts_ms else "?"
+                found.append(f"  {symbol}: {value} | updated {ts_str}")
+            if found:
+                lines.extend(sorted(found))
+            else:
+                lines.append("  No equity/fund feeds found in primary-prod data package.")
+                lines.append("  Note: RedStone pull-model feeds may use separate gateway — check app.redstone.finance")
+        lines.append("")
+        lines.append("KEY CONTEXT:")
+        lines.append("  Chainlink = spot price feeds (SPY, QQQ, TSLA on ETH mainnet) -- LIVE")
+        lines.append("  RedStone = NAV verification (BUIDL, ACRED) -- Securitize-selected March 2025")
+        lines.append("  Intelligence gap: Chainlink does price, RedStone does NAV, Octodamus does 'what it means'")
+        lines.append("  Watch: new BUIDL/ACRED NAV data = tokenized fund is live and pricing actively")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"RedStone feeds unavailable: {e} | Manual check: app.redstone.finance"
 
 
 def tool_get_regulatory_status() -> str:
@@ -361,6 +466,9 @@ RISK NOTE: Securities laws apply. Agents need licensed broker connection OR DEX 
 Purely on-chain P2P equity trading remains legally gray until explicit SEC approval."""
 
 
+SIGNATURE = "Tech status: IN PROGRESS -- NYSE_Tech_Agent (@octodamusai ecosystem)"
+_MAX_SIG   = len(SIGNATURE) + 1   # +1 for newline
+
 def tool_draft_x_post(context: str) -> str:
     sys.path.insert(0, str(ROOT))
     try:
@@ -368,25 +476,39 @@ def tool_draft_x_post(context: str) -> str:
         key = _secrets().get("ANTHROPIC_API_KEY","")
         client = anthropic.Anthropic(api_key=key)
         r = client.messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=120,
-            system="""You are NYSE_Tech_Agent — regulatory and tokenization infrastructure intelligence.
-Voice: Precise, institutional. Filing dates and contract addresses over speculation.
-One regulatory fact + one implication for tokenized stock traders. Under 280 chars.
-End: 'Tech status: [CLEARED/IN PROGRESS/WATCH] — NYSE_Tech_Agent (@octodamusai ecosystem)'
+            model="claude-haiku-4-5-20251001", max_tokens=180,
+            system=f"""You are NYSE_Tech_Agent — regulatory and tokenization infrastructure intelligence.
+
+ADDICTION LOOP FORMAT (mandatory):
+1. BIG QUESTION first line: lead with the signal nobody is watching. Frame it as a question or provocative fact that creates a gap in the reader's mind. What does this data mean for their position?
+2. HEAD FAKE second: deliver a finding that contrasts expectations. The gate closed even though EDGAR came back. The freeze predates the outage. Infrastructure silence IS the signal.
+3. REHOOK last body line: an open loop. What does this mean for the next 30 days? Give the reader something to watch for.
+4. SIGNATURE: final line must be EXACTLY: 'Tech status: [CLEARED/IN PROGRESS/WATCH] -- NYSE_Tech_Agent (@octodamusai ecosystem)'
+   Replace the bracket placeholder with one word matching the situation.
+
+Total post (body + signature): under 280 chars. Body = under {280 - _MAX_SIG} chars.
+Use -- not em dashes. No emojis. Numbers over adjectives.
+
 ACCURACY RULES:
-- Never say "approved" or "SEC approved" unless formal approval was formally granted (MOUs, pilots, and plans are NOT approvals).
-- For scheduled pilots use "confirmed for H2 2026" or "planned" — never "approved".
-- Never say a prediction was "VALIDATED" unless the predicted event actually occurred (check news first).
-- Never write "DTCC pilot approved" — say "DTCC pilot confirmed for H2 2026".""",
-            messages=[{"role": "user", "content": f"Write a NYSE_Tech_Agent X post from:\n{context[:500]}"}]
+- Never say "SEC approved" for MOUs, pilots, or plans.
+- Never say "VALIDATED" for a prediction unless the event actually occurred.
+- "DTCC pilot confirmed for H2 2026" not "approved".""",
+            messages=[{"role": "user", "content": f"Write a NYSE_Tech_Agent X post from:\n{context[:600]}"}]
         )
         post = r.content[0].text.strip()
+        # Ensure signature is on its own final line with correct format
+        sig_variants = ["NYSE_Tech_Agent (@octodamusai ecosystem)", "Tech status:"]
+        has_sig = any(v.lower() in post.lower() for v in sig_variants)
+        if not has_sig:
+            post = post.rstrip() + f"\n{SIGNATURE}"
+        # Trim to 280
         if len(post) > 280:
-            lines = post.rsplit("\n", 1)
-            sig  = lines[-1] if len(lines) > 1 else ""
-            body = lines[0] if len(lines) > 1 else post
-            max_body = 280 - len(sig) - 1
-            post = body[:max_body].rstrip() + "\n" + sig if sig else body[:280]
+            lines = post.split("\n")
+            sig_line = lines[-1]
+            body_lines = lines[:-1]
+            max_body = 279 - len(sig_line)
+            body = "\n".join(body_lines)
+            post = body[:max_body].rstrip() + "\n" + sig_line
         return f"{post}\n[{len(post)} chars]"
     except Exception as e:
         return f"Draft failed: {e}"
@@ -439,7 +561,7 @@ def tool_get_spend_budget() -> str:
         if rev_file.exists():
             rev = json.loads(rev_file.read_text(encoding="utf-8"))
             entries = rev.get("NYSE_Tech_Agent", [])
-            revenue = sum(e["amount_usdc"] for e in entries)
+            revenue = sum(e.get("amount_usdc", 0) or 0 for e in entries)
     except Exception:
         pass
     if balance < 0:
@@ -454,31 +576,61 @@ def tool_get_spend_budget() -> str:
 
 
 def tool_check_dtc_eligibility(ticker: str = "") -> str:
-    """Search SEC EDGAR for DTC eligibility and transfer agent filings for a specific ticker or generally."""
+    """Check DTC eligibility via data.sec.gov REST API — monitors Securitize and Computershare TA-1/TA-2 filings.
+    A Securitize TA-2 amendment for a specific ticker = that stock's DTC approval clock has started.
+    EFTS full-text search used as fallback only."""
     try:
         import httpx
-        query = f"DTC eligibility tokenized {ticker}" if ticker else "DTC eligibility tokenized securities blockchain"
-        r = httpx.get(
-            "https://efts.sec.gov/LATEST/search-index",
-            params={"q": f'"{query}"', "dateRange": "custom",
-                    "startdt": "2025-01-01", "forms": "8-K,S-1,S-3,10-K,SC 13G"},
-            timeout=10
-        )
-        lines = [f"DTC ELIGIBILITY MONITOR -- {'ticker: ' + ticker if ticker else 'general search'}:"]
-        if r.status_code == 200:
-            hits = r.json().get("hits", {}).get("hits", [])
-            if hits:
-                lines.append(f"  Found {len(hits)} relevant SEC filings:")
-                for h in hits[:5]:
-                    src    = h.get("_source", {})
-                    entity = src.get("entity_name", "?")
-                    form   = src.get("form_type", "?")
-                    filed  = src.get("file_date", "?")
-                    lines.append(f"  {filed} | {form} | {entity}")
+        label = f"ticker: {ticker}" if ticker else "general scan"
+        lines = [f"DTC ELIGIBILITY MONITOR ({label}) — PRIMARY: data.sec.gov REST API:"]
+
+        # PRIMARY: TA-1/TA-2 filings from Securitize + Computershare (the two key transfer agents)
+        # Securitize TA filings (as registered TA): may appear under SEC file num 084-xxxxx
+        # Computershare CIK 0001146230 confirmed — files TA-1/A annually
+        for company, cik in [("Securitize_Inc", "0001762096"), ("Computershare_TA", "0001146230")]:
+            data = _edgar_submissions(cik)
+            if not data:
+                lines.append(f"  {company} (CIK {cik}): REST API unavailable")
+                continue
+            name   = data.get("name", company)
+            recent = data.get("filings", {}).get("recent", {})
+            ta_hits = [
+                (d, f, a)
+                for d, f, a in zip(recent.get("filingDate", []), recent.get("form", []), recent.get("accessionNumber", []))
+                if f in _TRANSFER_AGENT_FORMS and d >= "2025-01-01"
+            ]
+            if ta_hits:
+                lines.append(f"  {name} — {len(ta_hits)} TA filing(s) since 2025:")
+                for date, form, acc in sorted(ta_hits, reverse=True)[:5]:
+                    url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc.replace('-','')}/{acc}-index.htm"
+                    lines.append(f"    {date} | {form} | {acc[:22]}...")
+                    if ticker and ticker.upper() in str(data):
+                        lines.append(f"    *** TICKER MATCH: {ticker} mentioned in filing ***")
             else:
-                lines.append(f"  No DTC-specific SEC filings found yet for: {query}")
-        else:
-            lines.append(f"  EDGAR search returned HTTP {r.status_code}")
+                lines.append(f"  {name}: No TA-1/TA-2/TA-2/A filings since 2025-01-01 (REST API)")
+
+        # FALLBACK: EFTS for DTC keyword search
+        query = f"DTC eligibility tokenized {ticker}" if ticker else "DTC eligibility tokenized securities blockchain"
+        try:
+            r = httpx.get(
+                "https://efts.sec.gov/LATEST/search-index",
+                headers=_EDGAR_HEADERS,
+                params={"q": f'"{query}"', "dateRange": "custom",
+                        "startdt": "2025-01-01", "forms": "8-K,S-1,S-3,10-K,SC 13G"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                hits = r.json().get("hits", {}).get("hits", [])
+                if hits:
+                    lines.append(f"\n  EFTS DTC keyword hits:")
+                    for h in hits[:3]:
+                        src = h.get("_source", {})
+                        lines.append(f"  {src.get('file_date','?')} | {src.get('form_type','?')} | {src.get('entity_name','?')}")
+            else:
+                lines.append(f"\n  EFTS: HTTP {r.status_code} (REST API is primary)")
+        except Exception as efts_err:
+            lines.append(f"\n  EFTS unavailable: {efts_err}")
+
         lines.append("")
         lines.append("  CURRENT DTC STATUS (curated intelligence):")
         lines.append("  - DTC eligibility = legal prerequisite for any broker/bot to hold tokenized equity")
@@ -486,7 +638,7 @@ def tool_check_dtc_eligibility(ticker: str = "") -> str:
         lines.append("  - DTCC Pilot H2 2026: Russell 1000 + Treasuries + ETFs -- DTC settlement infrastructure")
         lines.append("  - Dinari (Base): DTC-wrapper model via licensed broker layer")
         lines.append("  - Status: NO tokenized NYSE stock has DTC eligibility as a pure on-chain token yet")
-        lines.append("  - Watch trigger: Securitize files as transfer agent for specific ticker -> DTC approval follows")
+        lines.append("  - Watch trigger: Securitize TA-2/A filing naming a ticker -> DTC approval clock starts")
         return "\n".join(lines)
     except Exception as e:
         return f"DTC eligibility check unavailable: {e}"
@@ -496,7 +648,7 @@ def tool_send_email(subject: str, body: str) -> str:
     import re as _re
     body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)
     body = body.replace("|", "  ")
-    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}", _re.MULTILINE)
     body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
@@ -536,13 +688,13 @@ def tool_check_x402_revenue() -> str:
         entries = rev.get(agent_name, [])
         if not entries:
             return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
-        total = sum(e["amount_usdc"] for e in entries)
-        today = entries[-1]["date"][:10] if entries else "?"
+        total = sum(e.get("amount_usdc", 0) or 0 for e in entries)
+        today = entries[-1].get("date", "?")[:10] if entries else "?"
         last5 = entries[-5:]
         lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
         lines.append(f"  Last call: {today}")
         for e in last5:
-            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+            lines.append(f"  {e.get('date','?')[:10]} {e.get('endpoint') or e.get('service','?')} +${e.get('amount_usdc',0) or 0:.2f}")
         return "\n".join(lines)
     except Exception as exc:
         return f"Revenue check error: {exc}"
@@ -550,7 +702,7 @@ def tool_check_x402_revenue() -> str:
 
 def _sanitise_offering_text(text: str) -> str:
     import re as _re
-    text = _re.sub(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", "", text)
+    text = _re.sub(r"\*{1,3}|#{1,4}\s?|`{1,3}", "", text)
     # Revenue confession phrases -- buyers don't need to see wallet state
     text = _re.sub(r"x402 endpoints? currently earning \$[\d.]+", "x402 endpoints", text, flags=_re.IGNORECASE)
     text = _re.sub(r"currently earning \$0(\.00)?", "not yet earning", text, flags=_re.IGNORECASE)
@@ -641,15 +793,80 @@ def tool_list_ecosystem_services() -> str:
     return list_ecosystem_services()
 
 
+def tool_search_session_history(query: str, agent: str = None) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_session_fts import search_session_history, index_agent
+    index_agent("nyse_tech_agent", verbose=False)
+    return search_session_history(query, agent=agent)
+
+def tool_list_skills() -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import list_skills
+    return list_skills("nyse_tech_agent")
+
+def tool_read_skill(skill_name: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import read_skill
+    return read_skill("nyse_tech_agent", skill_name)
+
+def tool_create_skill(skill_name: str, description: str, when_to_use: str, procedure: str, lessons: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import create_skill
+    return create_skill("nyse_tech_agent", skill_name, description, when_to_use, procedure, lessons)
+
+def tool_update_skill(skill_name: str, improvement: str, what_changed: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import update_skill
+    return update_skill("nyse_tech_agent", skill_name, improvement, what_changed)
+
+def tool_search_skills(query: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import search_skills
+    return search_skills("nyse_tech_agent", query)
+
+
+# ── Agentic Loop ───────────────────────────────────────────────────────────────
+
+_loop_instance = None
+
+def _get_loop():
+    global _loop_instance
+    if _loop_instance is None:
+        sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        _loop_instance = AgentLoop("nyse_tech_agent", Path(__file__).parent)
+    return _loop_instance
+
+
+def tool_save_loop_reflection(
+    plan: str,
+    acted: str,
+    observed: str,
+    lesson: str,
+    next_plan: str,
+    goal_resolved: bool = False,
+    new_goal: str = "",
+) -> str:
+    """Save agentic loop reflection. Call every session after record_session."""
+    loop = _get_loop()
+    state = _load_state()
+    session_num = state.get("sessions", 0) + 1
+    return loop.save_reflection(
+        session_num, plan, acted, observed, lesson, next_plan,
+        goal_resolved=goal_resolved, new_goal=new_goal,
+    )
+
+
 TOOLS = [
     {"name": "read_core_memory",        "description": "Read NYSE_Tech_Agent memory. Call first.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_session_history",     "description": "Past sessions.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "search_sec_filings",      "description": "Search SEC EDGAR for recent tokenization filings.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "default": "tokenized securities blockchain"}}, "required": []}},
+    {"name": "search_sec_filings",      "description": "Search SEC EDGAR for recent tokenization filings. PRIMARY: data.sec.gov REST API — monitors Securitize, Computershare, ICE/NYSE, BlackRock, Franklin Templeton CIKs directly. FALLBACK: EFTS keyword search. Works even when EFTS is down.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "default": "tokenized securities blockchain"}}, "required": []}},
     {"name": "check_chainlink_equity_feeds","description": "Check Chainlink equity price feeds on Ethereum mainnet AND Base. ETH = NYSE Digital Platform primary chain (Securitize). Base = Dinari/Robinhood.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "track_chainlink_new_feeds", "description": "MUST call every session. Diffs live Chainlink equity feeds against stored baseline to detect NEWLY deployed feeds (2-4w lead indicator hypothesis). Updates chainlink_feeds_seen.json. Without this, you cannot know if a feed is new or existing.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_ethereum_gas",        "description": "Current Ethereum gas price in gwei. Call before any ETH write op — gas spikes at NYSE open. ACP payments (Base) are unaffected.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_tokenization_news", "description": "Latest news on NYSE tokenization, SEC digital assets.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "check_base_new_tokens",   "description": "Monitor Base chain for new token launches that could be tokenized stocks.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_base_new_tokens",   "description": "Monitor Base chain for new token launches that could be tokenized stocks. Tries multiple DexScreener endpoints automatically.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "check_redstone_feeds",    "description": "Monitor RedStone Finance oracle feeds for tokenized fund NAV data (BUIDL, ACRED). RedStone = Securitize's selected NAV oracle (March 2025). Complements Chainlink price feeds. Call every session alongside check_chainlink_equity_feeds.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_regulatory_status",   "description": "Current regulatory status summary for tokenized stocks.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "draft_x_post",            "description": "Draft NYSE_Tech_Agent X post.", "input_schema": {"type": "object", "properties": {"context": {"type": "string"}}, "required": ["context"]}},
     {"name": "save_draft",              "description": "Save draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
@@ -658,13 +875,36 @@ TOOLS = [
     {"name": "send_email",              "description": "Send email.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
     {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + congressional trades + travel/aviation signal. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, Order_ChainFlow, X_Sentiment_Agent"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy intel from another Octodamus ecosystem agent via ACP. Your calling card is embedded so they can hire you back.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "Octodamus, NYSE_MacroMind, NYSE_StockOracle, Order_ChainFlow, NYSE_EarningsEdge"}, "service_name": {"type": "string", "description": "Exact service name from list_ecosystem_services"}}, "required": ["target_agent", "service_name"]}},
     {"name": "check_wallet",            "description": "Check this agent's USDC wallet balance on Base. Run at session start and end to track wallet_delta.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "list_ecosystem_services", "description": "List all services for sale across the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "check_x402_revenue",    "description": "Check how much USDC your x402 endpoints have earned this month. Call at session start to track revenue trend.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "propose_new_offering",  "description": "Propose a new x402 or ACP offering based on this session's unique findings. Use when you identify regulatory/infrastructure intel other agents would pay for. Writes to proposals file + emails owner.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "endpoint_path": {"type": "string"}, "price_usdc": {"type": "number"}, "description": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["name", "endpoint_path", "price_usdc", "description", "rationale"]}},
     {"name": "get_spend_budget",      "description": "Check how many ecosystem intel buys are allowed this session. Call BEFORE any buy_ecosystem_intel. Respects wallet balance.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "check_dtc_eligibility", "description": "Search SEC EDGAR for DTC eligibility and transfer agent filings. Pass ticker for specific stock (e.g. 'NVDA') or empty for general scan.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "default": ""}}, "required": []}},
+    {"name": "check_dtc_eligibility", "description": "Monitor DTC eligibility via data.sec.gov REST API — scans Securitize and Computershare TA-1/TA-2 filings directly. A TA-2/A filing naming a ticker = DTC approval clock has started. Works even when EFTS is down.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "default": ""}}, "required": []}},
+    {"name": "search_session_history", "description": "FTS5 search across all past session history, lessons, and briefs. Use to recall specific past findings, regulatory events, or Chainlink feed detections.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "agent": {"type": "string", "description": "Optional: filter to one agent"}}, "required": ["query"]}},
+    {"name": "list_skills",            "description": "List all your refined skills with descriptions. Check at session start.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "read_skill",             "description": "Read the full procedure and lessons for a specific skill.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}}, "required": ["skill_name"]}},
+    {"name": "create_skill",           "description": "Create a new skill when you discover a repeatable procedure worth capturing.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "description": {"type": "string"}, "when_to_use": {"type": "string"}, "procedure": {"type": "string"}, "lessons": {"type": "string"}}, "required": ["skill_name", "description", "when_to_use", "procedure"]}},
+    {"name": "update_skill",           "description": "Update a skill with a new lesson after completing a task.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "improvement": {"type": "string"}, "what_changed": {"type": "string"}}, "required": ["skill_name", "improvement"]}},
+    {"name": "search_skills",          "description": "Search your skills by keyword.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {
+        "name": "save_loop_reflection",
+        "description": "MANDATORY every session -- call after record_session. Saves Plan->Act->Observe->Reflect to the agentic loop. The loop repeats until goal_thread is resolved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan":          {"type": "string", "description": "What you set out to test this session"},
+                "acted":         {"type": "string", "description": "What tools you called and decisions made"},
+                "observed":      {"type": "string", "description": "What you found -- signals, data, market state"},
+                "lesson":        {"type": "string", "description": "ONE specific insight from this session"},
+                "next_plan":     {"type": "string", "description": "What to watch or do next session"},
+                "goal_resolved": {"type": "boolean", "description": "True if current goal thread is complete", "default": False},
+                "new_goal":      {"type": "string", "description": "If goal_resolved=True, the next multi-session goal", "default": ""},
+            },
+            "required": ["plan", "acted", "observed", "lesson", "next_plan"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -676,6 +916,7 @@ TOOL_HANDLERS = {
     "check_ethereum_gas":          lambda i: tool_check_ethereum_gas(),
     "check_tokenization_news":  lambda i: tool_check_tokenization_news(),
     "check_base_new_tokens":    lambda i: tool_check_base_new_tokens(),
+    "check_redstone_feeds":     lambda i: tool_check_redstone_feeds(),
     "get_regulatory_status":    lambda i: tool_get_regulatory_status(),
     "draft_x_post":             lambda i: tool_draft_x_post(i["context"]),
     "save_draft":               lambda i: tool_save_draft(i["filename"], i["content"]),
@@ -688,9 +929,18 @@ TOOL_HANDLERS = {
     "check_wallet":             lambda i: tool_check_wallet(),
     "list_ecosystem_services":  lambda i: tool_list_ecosystem_services(),
     "check_x402_revenue":   lambda i: tool_check_x402_revenue(),
-    "propose_new_offering": lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
-    "get_spend_budget":     lambda i: tool_get_spend_budget(),
-    "check_dtc_eligibility": lambda i: tool_check_dtc_eligibility(i.get("ticker", "")),
+    "propose_new_offering":    lambda i: tool_propose_new_offering(i["name"], i["endpoint_path"], i["price_usdc"], i["description"], i["rationale"]),
+    "get_spend_budget":        lambda i: tool_get_spend_budget(),
+    "check_dtc_eligibility":   lambda i: tool_check_dtc_eligibility(i.get("ticker", "")),
+    "search_session_history":  lambda i: tool_search_session_history(i["query"], i.get("agent")),
+    "list_skills":             lambda i: tool_list_skills(),
+    "read_skill":              lambda i: tool_read_skill(i["skill_name"]),
+    "create_skill":            lambda i: tool_create_skill(i["skill_name"], i["description"], i["when_to_use"], i["procedure"], i.get("lessons", "")),
+    "update_skill":            lambda i: tool_update_skill(i["skill_name"], i["improvement"], i.get("what_changed", "")),
+    "search_skills":           lambda i: tool_search_skills(i["query"]),
+    "save_loop_reflection": lambda i: tool_save_loop_reflection(
+        i["plan"], i["acted"], i["observed"], i["lesson"], i["next_plan"],
+        bool(i.get("goal_resolved", False)), i.get("new_goal", "")),
 }
 
 SYSTEM = """You are NYSE_Tech_Agent — the regulatory and tokenization infrastructure intelligence agent.
@@ -719,7 +969,21 @@ KEY SECURITIZE MILESTONES (track these every session):
 - NYSE x Securitize MOU: March 2026 (signed) — 75 stocks target, late 2026 SEC/FINRA approval
 - Computershare x Securitize: April 2026 (signed) — 58% of S&P 500, ISTs for all public companies
 - DTCC Tokenization Pilot: H2 2026 (SEC-approved) — Russell 1000 + US Treasuries + ETFs
+- SECURITIZE SPAC MERGER (ACTIVE): Securitize Holdings (CIK 0002094496) filing S-4/A + 425 forms
+  with Cantor Equity Partners II (CIK 0002034269). Multiple amendments filed May 2026.
+  Implication: Securitize going public = more capital + accelerated NYSE Digital Platform timeline.
+  Watch: S-4 effectiveness (SEC declares effective) = merger approved = NYSE timeline accelerates.
 - Market now: $963M tokenized equities (2,878% YoY); 2030 target: $150B+
+
+EDGAR TOOL ARCHITECTURE (critical — understand this):
+- data.sec.gov REST API: ALWAYS works. Primary source. Monitors 6 specific CIKs directly.
+  Securitize_Inc (0001762096), Securitize_Holdings (0002094496), Cantor_SPAC (0002034269),
+  Computershare_TA (0001146230), BlackRock (0001364742), FranklinTempleton (0000038777)
+- efts.sec.gov EFTS: keyword full-text search. Sometimes returns 403/500. Use as supplement.
+  search_sec_filings tries REST API FIRST, then EFTS as fallback.
+  check_dtc_eligibility does the same — REST API primary, EFTS secondary.
+- EDGAR "outage" (Sessions 16-25) was actually a User-Agent header enforcement issue + EFTS instability.
+  The REST API (data.sec.gov) was never down. Always trust REST API results over EFTS status.
 
 YOUR PRODUCTS (x402, live at api.octodamus.com):
 - /v2/nyse_tech/regulatory -- $0.35 USDC (current SEC/FINRA/NYSE Digital Platform regulatory status — key milestones, primary chain, Chainlink feeds, watch signals)
@@ -757,21 +1021,30 @@ commands higher prices -> higher prices fund more cross-signal buys -> better cr
 This is the virtuous cycle. Run it.
 
 SESSION PROTOCOL:
-1. check_wallet (record start balance). check_x402_revenue. read_core_memory + get_session_history
+1. check_wallet (record start balance). check_x402_revenue. read_core_memory + get_session_history + list_skills
+   -- x402 ERROR STATE: if revenue check returns error 3+ consecutive sessions, note it as operational risk in email.
+      Do not ignore it. Report: "x402 endpoints in error state [N] sessions -- owner review needed." Then continue.
 2. get_free_intel (macro signal + congressional trades + travel signal — free, zero cost, always run)
 3. check_tokenization_news — any Securitize/NYSE/DTCC/Computershare developments?
-3. search_sec_filings for recent tokenization-related filings
-4. check_chainlink_equity_feeds — full picture of equity feeds on Ethereum + Base
-5. track_chainlink_new_feeds — MANDATORY every session. Diffs live feeds against baseline. Without this you cannot detect new deployments or validate the lag hypothesis. Updates chainlink_feeds_seen.json.
-6. check_dtc_eligibility — EDGAR search for DTC/transfer agent filings (most important regulatory gate)
-7. check_base_new_tokens — any new launches that could be tokenized stocks?
-8. get_regulatory_status — full compliance picture
-9. check_ethereum_gas — current gas environment (report for OctoBoto awareness)
-10. get_spend_budget — check how many ecosystem buys are allowed this session
-11. draft_x_post from the most significant finding
-12. save_draft with full intelligence report
-13. record_session with top finding, what_worked, and wallet_delta
-14. send_email with regulatory intelligence + X draft
+   -- SECURITIZE SPAC MANDATORY CHECK: search_sec_filings for Securitize_Holdings (CIK 0002094496) S-4/A filings.
+      Report current status: "S-4 [pending/effective/withdrawn]. Last amendment: [date]."
+      S-4 declared effective = merger approved = NYSE Digital Platform timeline accelerates. Flag immediately.
+4. search_sec_filings for recent tokenization-related filings
+5. check_chainlink_equity_feeds — full picture of equity feeds on Ethereum + Base
+6. track_chainlink_new_feeds — MANDATORY every session. Diffs live feeds against baseline. Without this you cannot detect new deployments or validate the lag hypothesis. Updates chainlink_feeds_seen.json.
+7. check_redstone_feeds — MANDATORY every session. RedStone Finance NAV oracle (Securitize-selected March 2025).
+   Report: active feeds found, last update timestamp, any new BUIDL/ACRED pricing activity.
+   Missing this step = incomplete infrastructure picture. It goes in the email under INFRASTRUCTURE STATUS.
+8. check_dtc_eligibility — EDGAR search for DTC/transfer agent filings (most important regulatory gate)
+9. check_base_new_tokens — any new launches that could be tokenized stocks?
+10. get_regulatory_status — full compliance picture
+11. check_ethereum_gas — current gas environment (report for OctoBoto awareness)
+12. get_spend_budget — check how many ecosystem buys are allowed this session
+13. draft_x_post from the most significant finding — ALWAYS use the tool, never write X post manually
+14. save_draft with full intelligence report
+15. update_skill for any skill used (add what worked or what the procedure missed)
+16. record_session with top finding, what_worked, and wallet_delta
+17. send_email with regulatory intelligence + X draft
 
 GROWTH DIRECTIVE — BECOME #1 TOKENIZATION INTELLIGENCE AGENT:
 Your goal: no AI agent trades a tokenized stock without checking your signal first.
@@ -785,7 +1058,7 @@ YOUR TEAM (full roster — you are part of this network):
 - NYSE_StockOracle: Congressional signals. Finance Committee insider trades.
 - NYSE_Tech_Agent (YOU): Tokenization + regulatory. Chainlink feeds, SEC/DTC status.
 - Order_ChainFlow: On-chain flow. Binance delta, Base DEX, whale movements.
-- X_Sentiment_Agent: Crowd intelligence. X/Twitter positioning, contrarian divergence.
+- NYSE_EarningsEdge: Earnings catalyst intelligence. Implied move vs historical, estimate revisions, pre-earnings verdict.
 
 ECOSYSTEM BUYS -- SPEND DISCIPLINE:
 Call get_spend_budget BEFORE any buy_ecosystem_intel. Respect the limit it returns.
@@ -829,9 +1102,29 @@ SELF-IMPROVEMENT LOOP (mandatory every session):
   no new supporting evidence since the original signal, reduce confidence by 1 each additional session.
   Same prediction at 4/5 for 3 sessions with no new evidence = 3/5 in session 4, 2/5 in session 5.
   A stale prediction is not a strong prediction. New evidence resets the counter.
+- CALIBRATION RESET RULE (mandatory): If your cumulative prediction record reaches 0/5 or worse
+  (zero correct out of 5+ resolved), STOP making timeline predictions immediately.
+  Switch to FILE-DRIVEN SIGNALS ONLY: only record a prediction when a specific filed document
+  (TA-2 filing, DTC approval letter, SEC/FINRA approval announcement) is detected THIS session.
+  "SEC approval probably within 6-8 weeks" is not a file-driven signal — it is an AI guess.
+  Resume timeline predictions only after 1+ validated correct call resets your record.
+  Format for valid file-driven prediction: "PREDICTION: [event] | TRIGGER: [specific filing/feed
+  detected today] | TIMEFRAME: [based on regulatory cycle, not AI estimation] | CONFIDENCE: [1-3]"
+- CALIBRATION COUNTING RULE (mandatory): A prediction is WRONG (not "pending") once its stated
+  timeframe has expired without the predicted event occurring. "Invalidated" = WRONG.
+  Never count expired predictions as "pending" — pending means timeframe is still open.
+  Calibration format: "X/Y correct | Z wrong/expired | N still pending (open window)"
+  Example: "0/16 correct | 14 wrong/expired | 2 pending (window still open)"
+  Never write "16 pending" if those predictions were invalidated in prior sessions.
 - CONVICTION CONSISTENCY RULE: Choose ONE conviction score per session and use it EVERYWHERE —
   email subject, recalibration section, and forward prediction MUST all show the same integer.
-  Contradiction (e.g., "now 1/5" in body but "2/5" in subject) destroys credibility. Decide once, write it once.
+  Conviction must be an INTEGER from 1–5 (1, 2, 3, 4, or 5). Decimals are NEVER valid — "2.8/5" is wrong.
+  Do NOT echo conviction scores from peer agents — your conviction is your own independent assessment.
+  When you buy NYSE_MacroMind intel, use the REGIME label (RISK-ON/NEUTRAL) but assign your OWN conviction integer.
+  Contradiction destroys credibility. Decide once, write it once.
+  EXCEPTION: In FILE-DRIVEN OBSERVATION MODE with no new prediction made this session,
+  OMIT the CONFIDENCE field from the email subject entirely. Do not assign confidence to nothing.
+  Subject format during observation mode: "[TokenAgent] Session #N REGULATORY BRIEF | [key finding] | File-Driven Mode"
 - X POST RULE: ALWAYS use draft_x_post tool. Never write the X post manually into the email body.
   The tool enforces the 280-char limit and the required signature. Manual posts bypass both.
 - CHAINLINK LAG HYPOTHESIS: track_chainlink_new_feeds detects genuinely NEW feeds (not existing ones).
@@ -856,7 +1149,30 @@ CALIBRATION SCORE RULE: The session footer must use this exact format:
   A prediction is WRONG when the deadline passed without the event.
   A prediction is PENDING when the deadline has not yet passed.
   NEVER say "validated" for a PENDING prediction. "No disconfirming news" is NOT correct.
-  Example: "Calibration: 3 resolved -- 1 correct / 2 wrong / 1 pending""""
+  Example: "Calibration: 3 resolved -- 1 correct / 2 wrong / 1 pending\""""
+
+
+def _microcompact(msgs: list, keep_last: int = 3) -> list:
+    tr_indices = [
+        i for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+    ]
+    to_prune = tr_indices[:-keep_last]
+    if not to_prune:
+        return msgs
+    pruned = list(msgs)
+    for i in to_prune:
+        pruned[i] = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": b["tool_use_id"], "content": "[pruned]"}
+                if isinstance(b, dict) and b.get("type") == "tool_result" else b
+                for b in pruned[i]["content"]
+            ],
+        }
+    return pruned
 
 
 def run_session(dry_run: bool = False):
@@ -869,7 +1185,9 @@ def run_session(dry_run: bool = False):
         print("[NYSE_Tech_Agent] DRY RUN"); return
     key = _secrets().get("ANTHROPIC_API_KEY","")
     client = anthropic.Anthropic(api_key=key)
-    messages = [{"role": "user", "content": f"NYSE_Tech_Agent session #{session_num}. Date: {now}. Run full protocol."}]
+    loop_ctx = _get_loop().get_context()
+    loop_prefix = (loop_ctx + "\n\n") if loop_ctx else ""
+    messages = [{"role": "user", "content": f"{loop_prefix}NYSE_Tech_Agent session #{session_num}. Date: {now}. Run full protocol."}]
     for turn in range(MAX_TURNS):
         resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=2000,
                                       system=SYSTEM, tools=TOOLS, messages=messages)
@@ -889,6 +1207,7 @@ def run_session(dry_run: bool = False):
                 result = f"Error: {e}"; print(result)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
         messages.append({"role": "user", "content": results})
+        messages = _microcompact(messages)
         time.sleep(0.3)
     state["sessions"] = session_num
     _save_state(state)

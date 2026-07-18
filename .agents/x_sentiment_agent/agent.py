@@ -316,13 +316,13 @@ def tool_check_x402_revenue() -> str:
         entries = rev.get(agent_name, [])
         if not entries:
             return f"{agent_name} x402 revenue: $0.00 (no calls recorded yet)"
-        total = sum(e["amount_usdc"] for e in entries)
-        today = entries[-1]["date"][:10] if entries else "?"
+        total = sum(e.get("amount_usdc", 0) or 0 for e in entries)
+        today = entries[-1].get("date", "?")[:10] if entries else "?"
         last5 = entries[-5:]
         lines = [f"{agent_name} x402 REVENUE: ${total:.2f} total ({len(entries)} calls)"]
         lines.append(f"  Last call: {today}")
         for e in last5:
-            lines.append(f"  {e['date'][:10]} {e['endpoint']} +${e['amount_usdc']:.2f}")
+            lines.append(f"  {e.get('date','?')[:10]} {e.get('endpoint') or e.get('service','?')} +${e.get('amount_usdc',0) or 0:.2f}")
         return "\n".join(lines)
     except Exception as exc:
         return f"Revenue check error: {exc}"
@@ -404,7 +404,7 @@ def tool_get_spend_budget() -> str:
         if rev_file.exists():
             rev = json.loads(rev_file.read_text(encoding="utf-8"))
             entries = rev.get("X_Sentiment_Agent", [])
-            total_revenue = sum(e["amount_usdc"] for e in entries)
+            total_revenue = sum(e.get("amount_usdc", 0) or 0 for e in entries)
     except Exception:
         pass
 
