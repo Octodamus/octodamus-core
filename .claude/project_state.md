@@ -1,5 +1,18 @@
 # Octodamus — Project State
-# Last updated: 2026-07-15
+# Last updated: 2026-07-18
+
+## GDrive Backup — now FULL-ECOSYSTEM disaster recovery (2026-07-18)
+- octo_gdrive.py backs up the WHOLE ecosystem (Octodamus + OctoBoto + Ben + all 9 sub-agents),
+  restorable on a fresh machine. Runs every 4h (Octodamus-GDrive-Backup task).
+- FIXED two gaps: (1) the SQLite memory/session DBs (data/octodamus_memory.db, data/session_fts.db)
+  and event journals (data/acp_events.jsonl) were being DROPPED -- .db/.jsonl weren't in the include
+  list. Now included. .db files are snapshotted via SQLite's online-backup API (consistent point-in-time
+  copy, no torn/locked reads). (2) node_modules was silently bloating every backup -- now excluded, plus
+  .env/.sol/.csv/.pdf added. Net: backup went 10.5MB(bloated+incomplete) -> 5.7MB(lean+complete), 1639 files.
+- Manifest now carries an ecosystem summary (agents, databases, event_journals, core_memories, secrets).
+- NEW restore path: `python octo_gdrive.py --mode pull --dest DIR` downloads + extracts octodamus_latest.zip.
+  Then pip install -r requirements.txt, npm install in skill dirs, run octo_startup.ps1.
+- Verified: snapshot DB opens clean (integrity_check ok), all 10 core memories + all 9 agents captured.
 
 ---
 
