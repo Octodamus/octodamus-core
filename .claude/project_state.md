@@ -414,8 +414,13 @@ Core memory files: data/memory/[agent_name]_core.md
   First run found real cross-agent patterns: NYSE_Tech(0/19)+X_Sentiment(0/9)+MacroMind all predict
   without a validation gate; and proposed distributing Order_ChainFlow's compound-silence method to the
   other directional agents. Standalone: python octo_dream_fleet.py [--no-email].
-- MEMORY GAP STILL OPEN (lowest priority): concurrency guard (hash/lock) on memory writes -- matters
-  only if two agents write the SAME core file simultaneously (rare with staggered schedules).
+- CONCURRENCY GUARD DONE (2026-07-18): optimistic hash-before-write in octo_memory_db.write_core_memory.
+  Pass expected_hash=content_hash(what_you_read); if the file changed since (an in-band append landed
+  during the distill's ~15s LLM window), the overwrite is REFUSED (returns False) so the newer update
+  survives -- the distill reconciles next cycle. append_core_memory now re-reads-and-retries (the
+  lecture's re-pull->re-draft->re-commit) so two racing appends both land. All 4 distill writes route
+  through _commit_distill() with the guard. Verified with a 5-case race test (all pass). This closes the
+  LAST memory gap from the lecture audit -- the memory system is now fully aligned.
 - DREAMING NOW 3 PASSES on the MemoryDistill schedule: (1) per-agent distill, (2) fleet tool-error
   scan (octo_dream_toolscan), (3) fleet-wide head-teacher (octo_dream_fleet).
 

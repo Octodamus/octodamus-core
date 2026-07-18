@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from octo_memory_db import (
     init_db, db_skill_stats, db_top_posts, db_ben_all_lessons,
-    db_calibration_stats, read_core_memory, write_core_memory,
+    db_calibration_stats, read_core_memory, write_core_memory, content_hash,
 )
 
 ROOT         = Path(__file__).parent
@@ -26,6 +26,21 @@ SECRETS_FILE = ROOT / ".octo_secrets"
 CALLS_FILE   = ROOT / "data" / "octo_calls.json"
 BEN_HIST     = ROOT / ".agents" / "profit-agent" / "data" / "ben_history.json"
 BEN_STATE    = ROOT / ".agents" / "profit-agent" / "state.json"
+
+
+def _commit_distill(agent: str, new_memory: str, base: str, label: str) -> str:
+    """Write a freshly-distilled core memory, guarded against a concurrent in-band write.
+
+    `base` is the hash of the memory this distill read BEFORE the ~15s LLM call. If an
+    in-band append landed during that window, the guard refuses the overwrite so the
+    newer in-band update survives; the distill re-runs next cycle over the merged state.
+    """
+    if write_core_memory(agent, new_memory, expected_hash=base):
+        print(f"[Distill] {label} updated ({len(new_memory)} chars)")
+        return new_memory
+    print(f"[Distill] {label} core changed mid-distill (in-band update landed) — kept the "
+          f"newer version, skipped this overwrite; reconciles next cycle.")
+    return read_core_memory(agent)
 
 
 def _haiku(prompt: str, system: str) -> str:
@@ -205,9 +220,7 @@ Rewrite the core memory as a compact, useful markdown document. Rules:
 
     system = "You maintain persistent memory for an AI oracle. Be precise, concise, and actionable. Include the oracle call record. Only include facts that improve future posts or calls."
     new_memory = _haiku(prompt, system)
-    write_core_memory("octodamus", new_memory)
-    print(f"[Distill] Octodamus updated ({len(new_memory)} chars)")
-    return new_memory
+    return _commit_distill("octodamus", new_memory, content_hash(current), "Octodamus")
 
 
 # ── OctoBoto distillation ──────────────────────────────────────────────────────
@@ -262,9 +275,7 @@ Rewrite the core memory as a compact, useful markdown document. Rules:
 
     system = "You maintain persistent memory for an autonomous trading bot. Be precise about biases, win rates, calibration data. Only state what the data actually shows."
     new_memory = _haiku(prompt, system)
-    write_core_memory("octoboto", new_memory)
-    print(f"[Distill] OctoBoto updated ({len(new_memory)} chars)")
-    return new_memory
+    return _commit_distill("octoboto", new_memory, content_hash(current), "OctoBoto")
 
 
 # ── Agent_Ben distillation ────────────────────────────────────────────────────
@@ -322,9 +333,7 @@ Rewrite the core memory as a compact, useful markdown document. Rules:
 
     system = "You maintain persistent memory for an autonomous AI trading agent. Be blunt, specific, and experience-based. Use the actual wallet numbers provided. Generic advice is useless."
     new_memory = _haiku(prompt, system)
-    write_core_memory("ben", new_memory)
-    print(f"[Distill] Ben updated ({len(new_memory)} chars)")
-    return new_memory
+    return _commit_distill("ben", new_memory, content_hash(current), "Ben")
 
 
 # ── Sub-agent distillation ────────────────────────────────────────────────────
@@ -428,9 +437,7 @@ Rules:
 
     system = f"You maintain memory for {agent_name}. Keep only what is TRUE and validated. Delete unvalidated predictions. Lean accurate memory beats fat speculative memory."
     new_memory = _haiku(prompt, system)
-    write_core_memory(mem_key, new_memory)
-    print(f"[Distill] {agent_name} updated ({len(new_memory)} chars)")
-    return new_memory
+    return _commit_distill(mem_key, new_memory, content_hash(current), agent_name)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ JSON files remain as fallback but this is the source of truth going forward.
 DB: data/octodamus_memory.db
 """
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -457,31 +458,53 @@ def _version_dir(agent: str) -> Path:
     return _VERSIONS_DIR / agent.lower()
 
 
-def write_core_memory(agent: str, content: str):
+def content_hash(text: str) -> str:
+    """Stable short hash of memory content — the base for optimistic concurrency."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def core_memory_hash(agent: str) -> str:
+    """Hash of the agent's core memory as it currently sits on disk."""
+    return content_hash(read_core_memory(agent))
+
+
+def write_core_memory(agent: str, content: str, expected_hash: str | None = None) -> bool:
     """Overwrite a core-memory file, snapshotting the prior version first (rollback-safe).
 
-    A bad 'dream' (distill that wipes or corrupts memory) is fully recoverable via
-    rollback_core_memory(). Also warns loudly if a write shrinks memory drastically.
+    Optimistic concurrency guard (the lecture's hash-before-write): a long read->think->
+    write (the distill spends ~15s in the LLM between reading a core file and overwriting
+    it) can silently clobber an in-band append that landed in that window. Pass the hash of
+    the content you read as `expected_hash`; if the file changed since, the write is
+    REFUSED (returns False) so the caller can re-read and retry instead of overwriting.
+
+    A bad 'dream' (distill that wipes or corrupts memory) is separately recoverable via
+    rollback_core_memory(); this also warns loudly if a write shrinks memory drastically.
+    Returns True on write, False if refused by the concurrency guard.
     """
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     path = _core_path(agent)
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    if expected_hash is not None and current.strip() and content_hash(current) != expected_hash:
+        print(f"[Memory] CONCURRENT-WRITE guard: {agent} core changed since it was read "
+              f"(in-band update landed mid-write) -- refusing overwrite to avoid clobbering. "
+              f"Caller should re-read and retry.")
+        return False
     try:
-        if path.exists():
-            current = path.read_text(encoding="utf-8")
-            if current.strip() and current != content:
-                vdir = _version_dir(agent)
-                vdir.mkdir(parents=True, exist_ok=True)
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-                (vdir / f"{stamp}.md").write_text(current, encoding="utf-8")
-                for old in sorted(vdir.glob("*.md"))[:-_KEEP_VERSIONS]:
-                    old.unlink(missing_ok=True)
-                if len(current) > 500 and len(content) < len(current) * 0.35:
-                    print(f"[Memory] WARNING: {agent} core memory shrank "
-                          f"{len(current)}->{len(content)} chars — possible bad distill. "
-                          f"Prior version saved as {stamp}.md (rollback available).")
+        if current.strip() and current != content:
+            vdir = _version_dir(agent)
+            vdir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+            (vdir / f"{stamp}.md").write_text(current, encoding="utf-8")
+            for old in sorted(vdir.glob("*.md"))[:-_KEEP_VERSIONS]:
+                old.unlink(missing_ok=True)
+            if len(current) > 500 and len(content) < len(current) * 0.35:
+                print(f"[Memory] WARNING: {agent} core memory shrank "
+                      f"{len(current)}->{len(content)} chars — possible bad distill. "
+                      f"Prior version saved as {stamp}.md (rollback available).")
     except Exception as e:
         print(f"[Memory] versioning skipped for {agent}: {e}")
     path.write_text(content, encoding="utf-8")
+    return True
 
 
 def list_core_versions(agent: str) -> list[Path]:
@@ -504,9 +527,17 @@ def rollback_core_memory(agent: str, which: str = "latest") -> str:
 
 
 def append_core_memory(agent: str, section_header: str, content: str):
-    existing = read_core_memory(agent)
+    """Append a section, concurrency-safe: if another writer lands between our read and
+    write, re-read and retry (re-pull -> re-draft -> re-commit) so no update is lost."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     addition = f"\n\n## {section_header} ({now})\n{content}"
+    for _ in range(4):
+        existing = read_core_memory(agent)
+        if write_core_memory(agent, existing.rstrip() + addition,
+                             expected_hash=content_hash(existing)):
+            return
+    # Exhausted retries under sustained contention — force the append so it isn't dropped.
+    existing = read_core_memory(agent)
     write_core_memory(agent, existing.rstrip() + addition)
 
 
