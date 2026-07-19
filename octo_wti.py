@@ -147,14 +147,20 @@ def get_wti_term_structure() -> dict:
     try:
         import yfinance as yf
         from datetime import datetime
-        # Front month and 3-month forward (CLN = July contract, ~3 months out)
-        year2 = str(datetime.now().year)[-2:]  # "26"
         front = yf.Ticker("CL=F").history(period="5d")["Close"].iloc[-1]
-        # Try N (July) then Q (August) as ~3-month forward — yfinance uses 2-digit year
+        # Build ~3-month-forward crude contracts from TODAY so we never query an expired
+        # month (the old hardcoded "N" tried July every time -> CLN26 delisted-warning spam).
+        _CODES = {1:"F",2:"G",3:"H",4:"J",5:"K",6:"M",7:"N",8:"Q",9:"U",10:"V",11:"X",12:"Z"}
+        now = datetime.now()
+        candidates = []
+        for k in range(3, 7):                      # 3..6 months out, all still active
+            m = (now.month - 1 + k) % 12 + 1
+            y = now.year + (now.month - 1 + k) // 12
+            candidates.append(f"CL{_CODES[m]}{str(y)[-2:]}.NYM")
         forward = None
-        for suffix in ["N", "Q", "U", "V", "M"]:
+        for sym in candidates:
             try:
-                h = yf.Ticker(f"CL{suffix}{year2}.NYM").history(period="5d")
+                h = yf.Ticker(sym).history(period="5d")
                 if not h.empty:
                     forward = h["Close"].iloc[-1]
                     break

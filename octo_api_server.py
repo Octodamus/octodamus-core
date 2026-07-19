@@ -318,24 +318,36 @@ def _cdp_jwt(uri: str) -> str:
     sig = _b64m.urlsafe_b64encode(priv.sign(f"{hdr}.{pld}".encode())).rstrip(b"=").decode()
     return f"{hdr}.{pld}.{sig}"
 
+_CDP_HOST  = "api.cdp.coinbase.com"
+_X402_PATH = "platform/v2/x402"
+
+def _cdp_auth_headers():
+    """Per-operation CDP JWT auth headers (shared by the sync + async facilitators)."""
+    return {
+        "supported": {"Authorization": f"Bearer {_cdp_jwt(f'GET {_CDP_HOST}/{_X402_PATH}/supported')}"},
+        "verify":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/verify')}"},
+        "settle":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/settle')}"},
+    }
+
 def _build_facilitator() -> HTTPFacilitatorClientSync:
     if _CDP_KEY_ID and _CDP_KEY_SECRET:
-        _CDP_HOST = "api.cdp.coinbase.com"
-        _X402_PATH = "platform/v2/x402"
-        def _cdp_auth():
-            return {
-                "supported": {"Authorization": f"Bearer {_cdp_jwt(f'GET {_CDP_HOST}/{_X402_PATH}/supported')}"},
-                "verify":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/verify')}"},
-                "settle":    {"Authorization": f"Bearer {_cdp_jwt(f'POST {_CDP_HOST}/{_X402_PATH}/settle')}"},
-            }
         return HTTPFacilitatorClientSync(
-            FacilitatorConfig(url=_FACILITATOR_URL, auth_provider=CreateHeadersAuthProvider(_cdp_auth))
+            FacilitatorConfig(url=_FACILITATOR_URL, auth_provider=CreateHeadersAuthProvider(_cdp_auth_headers))
         )
     return HTTPFacilitatorClientSync(FacilitatorConfig(url=_FACILITATOR_URL))
 
+def _build_facilitator_aio() -> HTTPFacilitatorClient:
+    # Must carry the same CDP auth as the sync client — without it, get_supported/init
+    # against the CDP facilitator returns 401 Unauthorized (the recurring init warning).
+    if _CDP_KEY_ID and _CDP_KEY_SECRET:
+        return HTTPFacilitatorClient(
+            FacilitatorConfig(url=_FACILITATOR_URL, auth_provider=CreateHeadersAuthProvider(_cdp_auth_headers))
+        )
+    return HTTPFacilitatorClient(FacilitatorConfig(url=_FACILITATOR_URL))
+
 _x402_facilitator     = _build_facilitator()                            # sync — for require_key_v2
 _x402_server          = x402ResourceServerSync(_x402_facilitator)
-_x402_facilitator_aio = HTTPFacilitatorClient(FacilitatorConfig(url=_FACILITATOR_URL))  # async — for PaymentMiddlewareASGI
+_x402_facilitator_aio = _build_facilitator_aio()                        # async — for PaymentMiddlewareASGI (now authed)
 _x402_server_aio      = x402ResourceServer(_x402_facilitator_aio)
 _x402_initialized     = False
 
@@ -3515,6 +3527,11 @@ def _load_stripe_config() -> dict:
     return {}
 
 _stripe_cfg             = _load_stripe_config()
+# The Stripe SDK logs every API error response ("Stripe v1 API error received") to its own
+# logger. We already catch Stripe exceptions at each call site and return proper HTTP errors,
+# so silence the SDK's chatter (mostly probes hitting /v1/upgrade) to keep logs clean.
+import logging as _logging
+_logging.getLogger("stripe").setLevel(_logging.CRITICAL)
 _STRIPE_KEY             = os.environ.get("STRIPE_PRODUCTS_API_KEY", "")
 _TRANSAK_API_KEY        = os.environ.get("TRANSAK_API_KEY", "")
 _TRANSAK_WEBHOOK_SEC    = os.environ.get("TRANSAK_WEBHOOK_SECRET", "")

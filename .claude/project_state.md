@@ -17,9 +17,17 @@ Acted on the dream-scan email (31 recurring error patterns). Split into real bug
 - SCANNER TUNING (octo_dream_toolscan benign filter): stop counting traceback scaffolding ("Traceback...",
   "The above exception..."), transient DNS (getaddrinfo/Errno 11001), node DeprecationWarning/punycode,
   expected-absent optional config, 404 probes, and ASGI client-disconnects. Count 31 -> 18.
-- LEFT VISIBLE (low-priority, informational): $CLN26.NYM delisted (expired crude futures, yfinance warns,
-  agent handles), x402 facilitator get_supported 401 (non-fatal init warning, endpoints still earn),
-  Stripe v1 API error (Stripe intentionally not configured).
+- REMAINING THREE NOW FIXED TOO (2026-07-19):
+  * WTI term structure (octo_wti.get_wti_term_structure): hardcoded "N" (July) => queried expired CLN26
+    every time. Now builds ~3-6mo-forward contracts from today's date (CLV26/CLX26/CLZ26/CLF27) so only
+    active months are queried. No more "possibly delisted" spam.
+  * x402 facilitator 401 (REAL BUG): the ASYNC facilitator (_x402_facilitator_aio, used by
+    PaymentMiddlewareASGI) was built WITHOUT the CDP auth provider -> get_supported 401'd. Extracted
+    _cdp_auth_headers() and added _build_facilitator_aio() so the async client carries the same CDP JWT
+    auth as the sync one. Verified post-restart: "x402 initialized via api.cdp.coinbase.com", 401 gone.
+  * Stripe chatter: the Stripe SDK logs every API error ("Stripe v1 API error received"); we already
+    catch + return HTTP errors, so set logging.getLogger("stripe") to CRITICAL to silence the noise.
+  API server restarted (Restart-Service OctoDataAPI) to activate the facilitator + stripe changes.
 
 ## GDrive Backup — now FULL-ECOSYSTEM disaster recovery (2026-07-18)
 - octo_gdrive.py backs up the WHOLE ecosystem (Octodamus + OctoBoto + Ben + all 9 sub-agents),
