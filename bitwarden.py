@@ -34,6 +34,7 @@ Bitwarden item names:
     AGENT - Octodamus - POLYBACKTEST - API Key
     AGENT - Octodamus - Firecrawl API
     AGENT - Octodamus - Finnhub API
+    AGENT - Octodamus - RuwayAi API Key  (password=RUNWAYML_API_SECRET)
 """
 
 import json
@@ -86,6 +87,7 @@ OCTODAMUS_SECRETS = {
     "AGENT - Octodamus - Finnhub API":                 "FINNHUB_API_KEY",
     "AGENT - Octodamus - LunarCrush - API":            "LUNARCRUSH_API_KEY",
     "AGENT - Octodamus - xAI Grok API":               "GROK_API_KEY",
+    "AGENT - Octodamus - RuwayAi API Key":            "RUNWAYML_API_SECRET",
     # Signal Signing Key loaded separately (username=pubkey, password=privkey)
     # Limitless loaded separately below (needs both username + password)
 }
@@ -122,8 +124,19 @@ def _bw(args: list) -> str:
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"BW CLI error: {result.stderr.strip()}")
+        raise RuntimeError(f"BW CLI error: {_clean_bw_stderr(result.stderr)}")
     return result.stdout.strip()
+
+
+def _clean_bw_stderr(stderr: str) -> str:
+    """Drop node's punycode DeprecationWarning noise so it doesn't pollute error
+    messages/logs (it was being flagged as a recurring 'error' by the dream-scan)."""
+    keep = [ln for ln in (stderr or "").splitlines()
+            if ln.strip()
+            and not ln.lstrip().startswith("(node:")
+            and "DeprecationWarning" not in ln
+            and "trace-deprecation" not in ln]
+    return " ".join(keep).strip() or "unknown error"
 
 
 def _get_item(item_name: str) -> dict:
@@ -306,6 +319,7 @@ _AGENT_WALLETS = [
     ("AGENT - Order_ChainFlow - Wallet",    "ORDER_CHAINFLOW_ADDRESS",        "ORDER_CHAINFLOW_PRIVATE_KEY"),
     ("AGENT - X_Sentiment_Agent - Wallet",  "X_SENTIMENT_ADDRESS",            "X_SENTIMENT_PRIVATE_KEY"),
     ("AGENT - NYSE_Tech_Agent - Wallet",    "NYSE_TECH_ADDRESS",              "NYSE_TECH_PRIVATE_KEY"),
+    ("AGENT - TokenBot_NYSE_Base - Wallet", "TOKENBOT_NYSE_ADDRESS",          "TOKENBOT_NYSE_PRIVATE_KEY"),
 ]
 
 
@@ -366,13 +380,24 @@ def _load_gmail_from_bw() -> dict:
 
 
 def _save_cache(secrets: dict) -> None:
-    """Write secrets to local cache file for background tasks."""
+    """Write secrets to local cache file for background tasks.
+    Merges with existing cache so manually-added keys survive a Bitwarden reload.
+    Bitwarden values take priority over existing cache values.
+    """
+    merged = {}
+    if CACHE_FILE.exists():
+        try:
+            existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            merged = existing.get("secrets", {})
+        except Exception:
+            pass
+    merged.update(secrets)  # Bitwarden values win on conflict
     cache = {
         "saved_at": datetime.now(timezone.utc).isoformat(),
-        "secrets": secrets,
+        "secrets": merged,
     }
     CACHE_FILE.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    print(f"[Bitwarden] âœ… Secrets cached to {CACHE_FILE.name}")
+    print(f"[Bitwarden] âœ… Secrets cached to {CACHE_FILE.name} ({len(merged)} keys)")
 
 
 def _load_cache() -> dict | None:
@@ -431,7 +456,9 @@ def _load_from_bitwarden(verbose: bool = False) -> dict:
                 missing_critical.append(env_var)
             else:
                 if verbose:
-                    print(f"[Bitwarden] Optional missing: {item_name} | error: {e}")
+                    # Quiet, non-error phrasing — these keys are expected-absent and the
+                    # raw CLI error just added node/"Not found." noise to the logs.
+                    print(f"[Bitwarden] Optional not set: {item_name}")
 
     # Optional secrets
     for item_name, env_var in OCTODAMUS_OPTIONAL_SECRETS.items():

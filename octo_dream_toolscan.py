@@ -41,7 +41,17 @@ _BENIGN_RE = re.compile(
     r"no calls ready|No expired calls|not STRONG|already posted|No Oracle call found|"
     r"Backup complete|no new resolved|HTTP/1\.1 451|HTTP/1\.1 200|429 \"|"
     r"code=429|rate.?limit|bind on address|address already in use|"  # known-handled infra churn
-    r"actively refused it\.\" connIndex|Terminating session)",
+    r"actively refused it\.\" connIndex|Terminating session|"
+    # Traceback scaffolding — not errors themselves; the real exception line is counted separately
+    r"Traceback \(most recent call last\)|The above exception was the direct cause|"
+    r"During handling of the above exception|"
+    # Transient network/DNS churn (bot auto-recovers) and dependency deprecation noise
+    r"getaddrinfo failed|Errno 11001|DeprecationWarning|punycode|node:\d|"
+    # Expected-absent optional config + external 404 probes
+    r"Optional not set|Optional missing|BW CLI error|Not found\.|"
+    r"HTTP/1\.1 404|404 Not Found|"
+    # Client disconnected mid-response (no exception follows) — not a server bug
+    r"ASGI callable returned without completing response)",
     re.IGNORECASE,
 )
 

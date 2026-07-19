@@ -17,6 +17,27 @@ GECKO_BASE = "https://api.coingecko.com/api/v3"
 HEADERS    = {"User-Agent": "octodamus-oracle/1.0 (@octodamusai)"}
 _DELAY     = 1.2
 
+# CoinGecko free tier rate-limits hard (HTTP 429). The API server hits these fetchers on
+# many endpoints, so cache recent results and serve the last good value on failure.
+_CACHE: dict = {}
+_CACHE_TTL   = 90  # seconds
+
+
+def _ttl_cache(key: str, ttl: int = _CACHE_TTL):
+    def deco(fn):
+        def wrap(*args, **kwargs):
+            ck = f"{key}:{args!r}"
+            hit = _CACHE.get(ck)
+            if hit and (time.time() - hit[0]) < ttl:
+                return hit[1]
+            val = fn(*args, **kwargs)
+            if val:                       # only cache real data
+                _CACHE[ck] = (time.time(), val)
+                return val
+            return hit[1] if hit else val  # serve stale on 429/empty instead of nothing
+        return wrap
+    return deco
+
 TRACK_IDS = [
     "bitcoin", "ethereum", "solana", "binancecoin", "ripple",
     "cardano", "avalanche-2", "polkadot", "chainlink", "uniswap",
@@ -24,6 +45,7 @@ TRACK_IDS = [
 ]
 
 
+@_ttl_cache("global")
 def _get_global() -> dict:
     """Fetch global crypto market data. Always returns dict."""
     try:
@@ -45,6 +67,7 @@ def _get_global() -> dict:
         return {}
 
 
+@_ttl_cache("trending")
 def _get_trending() -> list:
     """Fetch trending coins. Always returns list."""
     try:
@@ -65,6 +88,7 @@ def _get_trending() -> list:
         return []
 
 
+@_ttl_cache("prices")
 def _get_prices(ids: list) -> list:
     """Fetch price/volume/change data. Always returns list."""
     try:

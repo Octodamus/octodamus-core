@@ -1,6 +1,26 @@
 # Octodamus — Project State
 # Last updated: 2026-07-18
 
+## Dream-Scan Triage — 31 recurring errors fixed/tuned (2026-07-19)
+Acted on the dream-scan email (31 recurring error patterns). Split into real bugs vs noise:
+- ENGAGE SKIP LEAK (43x, was emailing each time): octo_engage.generate_take used exact `== "SKIP"`,
+  so wrapped forms ("SKIP.", '"SKIP"', "SKIP - no angle") leaked to the poster -> BLOCKED + emailed.
+  Added _looks_like_skip() (first-token match), applied at both returns + the run() guard. octo_x_engage
+  already did this correctly.
+- BITWARDEN NOISE (~126x: "Not found." x63 + "Optional missing"+punycode x63): the BW CLI's node
+  punycode DeprecationWarning was embedded in error msgs. Added _clean_bw_stderr() to strip node noise;
+  optional-missing now logs a quiet "Optional not set: X" (no raw CLI error). bitwarden.py.
+- COINGECKO 429 (55x): octo_gecko had no cache. Added _ttl_cache (90s) with serve-stale-on-failure to
+  _get_global/_get_trending/_get_prices -> stops hammering the free tier.
+- ALREADY-FIXED (historical, aging out): oracle-recording UnboundLocal (parse_call_from_post, fixed 07-15,
+  0 since) and payment-scanner threading NameError (scanner now logs "started", not "skipped").
+- SCANNER TUNING (octo_dream_toolscan benign filter): stop counting traceback scaffolding ("Traceback...",
+  "The above exception..."), transient DNS (getaddrinfo/Errno 11001), node DeprecationWarning/punycode,
+  expected-absent optional config, 404 probes, and ASGI client-disconnects. Count 31 -> 18.
+- LEFT VISIBLE (low-priority, informational): $CLN26.NYM delisted (expired crude futures, yfinance warns,
+  agent handles), x402 facilitator get_supported 401 (non-fatal init warning, endpoints still earn),
+  Stripe v1 API error (Stripe intentionally not configured).
+
 ## GDrive Backup — now FULL-ECOSYSTEM disaster recovery (2026-07-18)
 - octo_gdrive.py backs up the WHOLE ecosystem (Octodamus + OctoBoto + Ben + all 9 sub-agents),
   restorable on a fresh machine. Runs every 4h (Octodamus-GDrive-Backup task).

@@ -290,7 +290,8 @@ RULES:
   Only use the cashtag for the asset the story is actually about.
   Crypto gets $BTC/$ETH/$SOL. Stocks get $TSLA/$AAPL/$NVDA. Oil gets $OIL. Gold gets $GOLD.
   Macro/Fed/AI stories with no single asset: no cashtag.
-- If the headline has no angle worth taking, reply: SKIP
+- If the headline has no angle worth taking AND no live commodity data is injected, reply: SKIP
+- COMMODITY DATA RULE: When this prompt contains a LIVE COMMODITY DATA block, you MUST generate a take using those numbers. Do NOT reply SKIP. The price level, COT positioning, RSI, or term structure IS the angle — anchor your commentary to those specific figures.
 - Never make a directional call on an asset that already has an open call listed below
 
 OPEN CALLS (do not duplicate these):
@@ -313,6 +314,36 @@ def fetch_live_prices() -> str:
     return "\n".join(lines)
   except Exception as e:
     print(f"[Engage] Price fetch failed: {e}")
+    return ""
+
+
+def fetch_oil_context() -> str:
+  """Fetch live WTI price + COT positioning + term structure for oil article context."""
+  try:
+    from octo_wti import get_wti_technicals, get_wti_cot, get_dxy_signal, get_wti_term_structure
+    ta = get_wti_technicals()
+    if not ta or not ta.get("price"):
+      return ""
+    lines = [f"WTI Crude: ${ta['price']:.2f}"]
+    lines.append(f"  52w range: ${ta['low_52w']:.2f} - ${ta['high_52w']:.2f} ({ta['pos_52w']:.0f}th percentile)")
+    lines.append(f"  RSI: {ta['rsi']} | MACD: {ta['macd']:+.2f} | EMA20: ${ta['ema20']:.2f} vs EMA50: ${ta['ema50']:.2f}")
+    cot = get_wti_cot()
+    if cot.get("net_pct") is not None:
+      label = (
+        "specs crowded long -- contrarian BEAR" if cot["signal"] == "spec_long"
+        else ("specs net short -- contrarian BULL" if cot["signal"] == "spec_short"
+              else "neutral positioning")
+      )
+      lines.append(f"  COT managed money: net {cot['net']:+,.0f} contracts ({cot['net_pct']:+.1f}% OI) — {label}")
+    ts = get_wti_term_structure()
+    if ts.get("structure"):
+      lines.append(f"  Term structure: {ts['structure']} (front ${ts['front']:.2f} vs fwd ${ts['forward']:.2f}, spread {ts['spread']:+.2f})")
+    dxy = get_dxy_signal()
+    if dxy != "neutral":
+      lines.append(f"  DXY: {dxy.replace('_', ' ')}")
+    return "\n".join(lines)
+  except Exception as e:
+    print(f"[Engage] Oil context fetch failed: {e}")
     return ""
 
 
@@ -414,6 +445,17 @@ def scrape_article_body(url: str) -> str:
   return ""
 
 
+def _looks_like_skip(text: str) -> bool:
+    """The model returns a SKIP sentinel to decline an article. Match it robustly:
+    exact '== SKIP' let wrapped forms ('SKIP.', '"SKIP"', '**SKIP**', 'SKIP - no angle',
+    'skip') leak to the poster, where they were blocked + emailed 40+ times."""
+    if not text:
+        return True
+    t = text.strip().strip('*_`"\'.:').strip()
+    first = t.split()[0].upper() if t.split() else ""
+    return first == "SKIP"
+
+
 def generate_take(article: dict, open_calls_text: str, live_prices: str = "") -> str | None:
   system = _SYSTEM.replace("{open_calls}", open_calls_text)
 
@@ -431,6 +473,27 @@ def generate_take(article: dict, open_calls_text: str, live_prices: str = "") ->
   if live_prices:
     content += f"\n\nLIVE PRICES (use these exact numbers only, do not invent):\n{live_prices}"
 
+  # Inject commodity context for oil/gold articles — prevents SKIP on thin articles
+  _ticker = article.get("ticker", "")
+  _title_lower = article.get("title", "").lower()
+  if _ticker in ("OIL", "WTI", "GOLD") or any(
+      w in _title_lower for w in ("oil", "wti", "crude", "opec", "brent", "barrel")
+  ):
+    oil_ctx = fetch_oil_context()
+    if oil_ctx:
+      content += f"\n\nLIVE COMMODITY DATA (use these exact numbers — do not SKIP when this block is present):\n{oil_ctx}"
+
+  # Inject recent posts so the model doesn't repeat the same market-data summary
+  try:
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from octodamus_runner import _get_recent_posts
+    recent = _get_recent_posts(n=10)
+    if recent:
+      content += recent
+  except Exception:
+    pass
+
   # Route through OpenRouter free model for cost efficiency
   if _CLAW_ENGAGE and _claw_engage:
     try:
@@ -444,7 +507,7 @@ def generate_take(article: dict, open_calls_text: str, live_prices: str = "") ->
         timeout=30,
       )
       result = r.choices[0].message.content.strip()
-      return None if result == "SKIP" else result
+      return None if _looks_like_skip(result) else result
     except Exception:
       pass
 
@@ -457,7 +520,7 @@ def generate_take(article: dict, open_calls_text: str, live_prices: str = "") ->
     messages=[{"role": "user", "content": content}],
   )
   result = msg.content[0].text.strip()
-  return None if result == "SKIP" else result
+  return None if _looks_like_skip(result) else result
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -495,7 +558,7 @@ def run(count: int = DEFAULT_COUNT):
 
     take = generate_take(article, open_calls_text, live_prices)
 
-    if not take:
+    if not take or _looks_like_skip(take):
       print(f"[Engage] SKIP: {article['title'][:70]}")
       posted_titles.append(article["title"])
       continue
@@ -507,11 +570,25 @@ def run(count: int = DEFAULT_COUNT):
       trimmed = take.rstrip()
       if cashtag and cashtag not in trimmed:
         trimmed = f"{trimmed} {cashtag}"
-      trimmed = trimmed[:256]
+      # 280 total; URL as t.co = 23 chars + 1 space = 24 reserved when URL present
+      # Use 230 (tighter than prompt's 235) to ensure sentence-complete truncation has room
+      _char_limit = 230 if url else 265
+
+      def _sentence_trim(text: str, limit: int) -> str:
+          if len(text) <= limit:
+              return text
+          for sep in (". ", "! ", "? "):
+              idx = text.rfind(sep, 0, limit)
+              if idx > limit // 2:
+                  return text[:idx + len(sep)].strip()
+          return text[:limit].rsplit(' ', 1)[0]
+
+      trimmed = _sentence_trim(trimmed, _char_limit)
       # Also catch company names without cashtags via the global enforcer
       try:
         from octo_x_poster import ensure_cashtag as _ensure_ct
-        trimmed = _ensure_ct(trimmed)[:256]
+        trimmed = _ensure_ct(trimmed)
+        trimmed = _sentence_trim(trimmed, _char_limit)
       except Exception:
         pass
       tweet_text = f"{trimmed}\n{url}" if url else trimmed
