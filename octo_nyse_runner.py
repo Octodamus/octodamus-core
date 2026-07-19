@@ -10,7 +10,7 @@ Agents:
   NYSE_StockOracle  — congressional trading signals + mega-cap stock action
   NYSE_Tech_Agent   — tech sector + tokenized equity regulatory intel
   Order_ChainFlow   — on-chain order flow, whale activity, DEX flows
-  X_Sentiment_Agent — X/Twitter crowd sentiment + contrarian divergence
+  NYSE_EarningsEdge — upcoming earnings catalyst: implied move vs historical, estimate revisions
 
 Each agent:
   1. Checks its USDC + ETH balance (survival gate)
@@ -79,11 +79,11 @@ TEAM_CHANNEL   = ROOT / "data" / "agent_team_channel.json"
 
 # Maps agent name → octo_memory_db agent key (matches data/memory/{key}_core.md)
 _MEMORY_KEYS = {
-    "NYSE_MacroMind":    "nyse_macromind",
-    "NYSE_StockOracle":  "nyse_stockoracle",
-    "NYSE_Tech_Agent":   "nyse_tech_agent",
-    "Order_ChainFlow":   "order_chainflow",
-    "X_Sentiment_Agent": "x_sentiment_agent",
+    "NYSE_MacroMind":     "nyse_macromind",
+    "NYSE_StockOracle":   "nyse_stockoracle",
+    "NYSE_Tech_Agent":    "nyse_tech_agent",
+    "Order_ChainFlow":    "order_chainflow",
+    "NYSE_EarningsEdge":  "nyse_earningsedge",
 }
 
 AGENT_CONFIGS = {
@@ -92,7 +92,7 @@ AGENT_CONFIGS = {
         "specialty":  "cross-asset macro regime",
         "buys_from":  "Octodamus",
         "buy_service":"Agent Market Intel Bundle",   # $2.00 — full macro + signal context
-        "peer_invite":"X_Sentiment_Agent",
+        "peer_invite":"Order_ChainFlow",
         "claude_role": (
             "You are NYSE_MacroMind, an autonomous macro intelligence agent operating on "
             "the Virtuals ACP network. Your specialty: US macro regime analysis — yield "
@@ -142,7 +142,7 @@ AGENT_CONFIGS = {
         "specialty":  "on-chain order flow, whale activity, DEX inflows",
         "buys_from":  "Octodamus",
         "buy_service":"BTC Bull Trap Monitor",        # $1.50 — on-chain divergence signal
-        "peer_invite":"X_Sentiment_Agent",
+        "peer_invite":"NYSE_EarningsEdge",
         "claude_role": (
             "You are Order_ChainFlow, an autonomous on-chain order flow agent on the "
             "Virtuals ACP network. Your specialty: BTC/ETH cumulative delta, whale "
@@ -154,22 +154,25 @@ AGENT_CONFIGS = {
         ),
         "data_fn":    "onchain",
     },
-    "X_Sentiment_Agent": {
-        "addr_key":   "X_SENTIMENT_ADDRESS",
-        "specialty":  "X/Twitter crowd sentiment + contrarian divergence",
+    "NYSE_EarningsEdge": {
+        "addr_key":   "X_SENTIMENT_ADDRESS",          # reusing existing funded wallet
+        "specialty":  "upcoming earnings catalysts + implied move vs historical",
         "buys_from":  "Octodamus",
-        "buy_service":"Fear vs Crowd Divergence",     # $2.00 — top divergence signal
+        "buy_service":"BTC Market Signal",             # $1.00 — macro context for earnings risk
         "peer_invite":"NYSE_MacroMind",
         "claude_role": (
-            "You are X_Sentiment_Agent, an autonomous crowd sentiment agent on the "
-            "Virtuals ACP network. Your specialty: X/Twitter crowd positioning for BTC, "
-            "ETH, SOL, NVDA — detecting crowded longs, narrative vs price gaps, and "
-            "contrarian setups. Your job: produce a pre-market sentiment brief with "
-            "crowd consensus score (0-100), a CONTRARIAN BEAR / BULL / ALIGNED verdict, "
-            "and the asset most vulnerable to a sentiment-driven reversal at open. "
-            "Be direct. No fluff."
+            "You are NYSE_EarningsEdge, an autonomous earnings catalyst agent on the "
+            "Virtuals ACP network. Your specialty: upcoming earnings events for mega-cap "
+            "tech and crypto-adjacent stocks — which names report this week, what the "
+            "options market implies for the move, whether analyst estimates have been "
+            "revised up or down, and the pre-earnings positioning risk. "
+            "Your job: given the earnings calendar and macro context, identify the top "
+            "2-3 upcoming catalysts, their implied move, estimate revision direction, "
+            "and a verdict (HIGH RISK / ELEVATED / NEUTRAL) for holding into earnings. "
+            "If no major names report this week, note the quiet window and its "
+            "implication for positioning. Be direct. No fluff."
         ),
-        "data_fn":    "sentiment",
+        "data_fn":    "earnings",
     },
 }
 
@@ -280,12 +283,38 @@ def _get_specialty_data(data_fn: str) -> dict:
             except Exception:
                 pass
 
-        elif data_fn == "sentiment":
+        elif data_fn == "earnings":
             try:
-                from octo_grok_sentiment import get_grok_sentiment
-                data["grok"] = {a: get_grok_sentiment(a) for a in ["BTC", "ETH", "SOL"]}
+                import httpx
+                from datetime import timedelta
+                sec = _secrets()
+                fk = sec.get("FINNHUB_API_KEY", "")
+                if fk:
+                    today_str = date.today().isoformat()
+                    end_str   = (date.today() + timedelta(days=7)).isoformat()
+                    r = httpx.get(
+                        "https://finnhub.io/api/v1/calendar/earnings",
+                        params={"from": today_str, "to": end_str, "token": fk},
+                        timeout=8,
+                    )
+                    if r.status_code == 200:
+                        all_earnings = r.json().get("earningsCalendar", [])
+                        watch = {"NVDA", "TSLA", "AAPL", "MSFT", "GOOGL", "META",
+                                 "AMZN", "COIN", "HOOD", "MSTR", "AMD", "INTC"}
+                        relevant = [e for e in all_earnings if e.get("symbol") in watch]
+                        data["earnings_watch"] = relevant[:10]
+                        data["total_reporting"] = len(all_earnings)
             except Exception:
                 pass
+            try:
+                # Add current price context for reporting tickers
+                reporting = [e["symbol"] for e in data.get("earnings_watch", [])]
+                if reporting:
+                    from financial_data_client import get_stock_prices
+                    data["prices"] = get_stock_prices(reporting[:6])
+            except Exception:
+                pass
+
     except Exception as e:
         log.warning(f"Specialty data fetch ({data_fn}) failed: {e}")
 
@@ -309,10 +338,7 @@ def _generate_brief(
     if specialty_data:
         ctx_block += f"\nSpecialty data:\n{json.dumps(specialty_data, indent=2, default=str)[:1500]}\n"
     if team_signals:
-        ctx_block += "\nPeer agent signals (for cross-validation):\n"
-        for peer, sig in team_signals.items():
-            if peer != agent_name:
-                ctx_block += f"  {peer}: {sig.get('regime','?')} — {sig.get('excerpt','')[:100]}\n"
+        ctx_block += _peer_consensus_block(agent_name, team_signals)
     if core_memory and "No entries yet" not in core_memory:
         # Inject last 600 chars of core memory (most recent entries at the bottom)
         ctx_block += f"\nYour core memory (what you've learned):\n{core_memory[-600:]}\n"
@@ -327,8 +353,11 @@ def _generate_brief(
                 "content": (
                     f"{ctx_block}\n"
                     f"Generate your pre-market brief for {market_ctx['date']}. "
-                    f"3-5 sentences max. Include your regime verdict, key signals, "
-                    f"and NYSE open implication."
+                    f"Start directly with your REGIME VERDICT line — do NOT add a markdown "
+                    f"title or header. 3-5 sentences max. Include regime verdict, key signals, "
+                    f"and NYSE open implication. "
+                    f"Do not include wallet balance, x402 revenue figures, or operational "
+                    f"status notes — briefs are client-facing intelligence only."
                 ),
             }],
         )
@@ -390,12 +419,75 @@ def _load_team_channel() -> dict:
     return {}
 
 
+_PEER_FRESH_HOURS = 20  # a peer verdict older than this is stale — excluded from consensus
+
+
+def _peer_bucket(regime: str) -> str:
+    """Normalize a regime verdict into one of three consensus buckets."""
+    r = (regime or "").upper()
+    if "RISK-ON" in r or "BULLISH" in r:  return "RISK-ON"
+    if "RISK-OFF" in r or "BEARISH" in r: return "RISK-OFF"
+    return "NEUTRAL"  # NEUTRAL / TRANSITION / GUARDED / unknown
+
+
+def _signal_age_hours(sig: dict):
+    """Hours since a peer posted its verdict, or None if unparseable."""
+    try:
+        posted = datetime.fromisoformat(str(sig.get("posted_at", "")).replace("Z", ""))
+        return (datetime.utcnow() - posted).total_seconds() / 3600
+    except Exception:
+        return None
+
+
+def _peer_consensus_block(agent_name: str, team_signals: dict) -> str:
+    """Deterministic, freshness-filtered peer-consensus tally injected into each agent.
+
+    Fixes briefs fabricating consensus (agents claimed '3 of 5 RISK-ON' when the channel
+    held 5 fresh NEUTRAL + 1 stale 64-day-old RISK-ON): stale verdicts (>20h) are excluded
+    from the count and labeled, and the exact tally is supplied so the brief can't overstate
+    agreement or count a stale peer as current."""
+    rows, tally = [], {"RISK-ON": 0, "NEUTRAL": 0, "RISK-OFF": 0}
+    for peer, sig in (team_signals or {}).items():
+        if peer == agent_name:
+            continue
+        age = _signal_age_hours(sig)
+        stale = age is None or age > _PEER_FRESH_HOURS
+        if not stale:
+            tally[_peer_bucket(sig.get("regime", ""))] += 1
+        age_str = f"{age:.0f}h ago" if age is not None else "age unknown"
+        rows.append(f"  {peer}: {sig.get('regime','?')} ({age_str}"
+                    f"{' [STALE-excluded]' if stale else ''}) — {sig.get('excerpt','')[:90]}")
+    if not rows:
+        return ""
+    total = sum(tally.values())
+    dominant = max(tally, key=tally.get) if total else "NEUTRAL"
+    return (
+        "\nPeer agent signals (for cross-validation):\n" + "\n".join(rows) +
+        f"\nPEER CONSENSUS TALLY (fresh <={_PEER_FRESH_HOURS}h only): "
+        f"RISK-ON {tally['RISK-ON']}, NEUTRAL {tally['NEUTRAL']}, RISK-OFF {tally['RISK-OFF']} "
+        f"(of {total} fresh peers) -> dominant: {dominant}. "
+        f"Report peer consensus using THESE exact counts. Do NOT claim a RISK-ON/RISK-OFF "
+        f"consensus the tally doesn't support; [STALE-excluded] peers are not part of it."
+    )
+
+
+def _clean_brief_for_channel(text: str) -> str:
+    """Strip markdown headers/formatting for clean plain-text channel storage."""
+    import re as _re
+    lines = text.strip().splitlines()
+    # Drop leading # header lines (Claude often starts with "# AGENT | PRE-MARKET BRIEF | ...")
+    lines = [l for l in lines if not l.strip().startswith("#")]
+    # Strip ** bold markers and leading/trailing whitespace per line
+    lines = [_re.sub(r"\*{1,3}", "", l).strip() for l in lines if l.strip()]
+    return " ".join(lines)[:200]
+
+
 def _post_team_channel(agent_name: str, regime: str, brief_excerpt: str):
     """Write this agent's signal to the shared team channel."""
     channel = _load_team_channel()
     channel[agent_name] = {
         "regime":    regime,
-        "excerpt":   brief_excerpt[:200],
+        "excerpt":   _clean_brief_for_channel(brief_excerpt),
         "posted_at": datetime.utcnow().isoformat(),
     }
     try:
@@ -406,11 +498,31 @@ def _post_team_channel(agent_name: str, regime: str, brief_excerpt: str):
 
 
 def _extract_regime(brief: str) -> str:
-    """Extract the regime verdict from a brief (RISK-ON / RISK-OFF / TRANSITION / etc.)."""
-    for keyword in ("RISK-ON", "RISK-OFF", "TRANSITION", "NEUTRAL", "BULLISH", "BEARISH",
-                    "ACCUMULATION", "DISTRIBUTION", "CONTRARIAN", "ALIGNED"):
-        if keyword in brief.upper():
-            return keyword
+    """Extract the regime verdict from a brief (RISK-ON / RISK-OFF / TRANSITION / etc.).
+
+    Priority: scan labeled verdict lines first (REGIME VERDICT / DIRECTIONAL CALL /
+    REGIME:) so a ChainFlow brief saying NEUTRAL isn't overridden by a peer-mention
+    of RISK-ON appearing earlier in the same text.
+    """
+    import re as _re
+    keywords = ("RISK-ON", "RISK-OFF", "TRANSITION", "NEUTRAL", "BULLISH", "BEARISH",
+                "ACCUMULATION", "DISTRIBUTION", "CONTRARIAN", "ALIGNED")
+    verdict_pattern = _re.compile(
+        r"(?:REGIME VERDICT|DIRECTIONAL CALL|VERDICT|REGIME)[:\s*|]+([A-Z -]+)",
+        _re.IGNORECASE,
+    )
+    for line in brief.splitlines():
+        m = verdict_pattern.search(line)
+        if m:
+            candidate = m.group(1).upper().strip().split()[0]
+            for kw in keywords:
+                if kw in candidate or candidate in kw:
+                    return kw
+    # Fallback: first keyword found anywhere in text
+    upper = brief.upper()
+    for kw in keywords:
+        if kw in upper:
+            return kw
     return "UNKNOWN"
 
 # ── Per-agent session ──────────────────────────────────────────────────────────
@@ -533,6 +645,16 @@ def _run_agent(agent_name: str, config: dict, market_ctx: dict, state: dict, cli
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    # Guard: refuse to run more than once per calendar day.
+    # Prevents duplicate emails if this script is triggered multiple times
+    # by any mechanism (Task Scheduler, manual, external process).
+    today_str_guard = date.today().isoformat()
+    guard_file = ROOT / "data" / f".nyse_ran_{today_str_guard}"
+    if guard_file.exists():
+        log.warning(f"Already ran today ({today_str_guard}). Exiting — delete {guard_file.name} to force re-run.")
+        return
+    guard_file.touch()
+
     log.info("=" * 60)
     log.info("Octodamus NYSE Sub-Agent Runner — Pre-Market Session")
     log.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
@@ -577,7 +699,16 @@ def main():
     summary_lines = []
     for name, result in results.items():
         s = state.get(name, {})
-        action = "BUY" if "Job #" in result else ("HOLD" if "SKIPPED" in result else "ERR")
+        if "Job #" in result:
+            action = "BUY "
+        elif "INTEL REPEAT BLOCKED" in result or "Cooldown" in result:
+            action = "COOL"  # cooldown active — not an error
+        elif "SKIPPED" in result:
+            action = "HOLD"
+        elif result.startswith("ERROR") or result.startswith("CRASH") or result.startswith("Unknown"):
+            action = "ERR "
+        else:
+            action = "PASS"
         mem    = s.get("memory_status", "UNKNOWN")
         regime = s.get("last_regime", "?")
         line   = (
@@ -597,20 +728,73 @@ def main():
         today_str = market_ctx.get("date", date.today().isoformat())
         btc_str   = f"${market_ctx.get('btc_price', 0):,} ({market_ctx.get('btc_24h', 0):+.1f}%)"
         fg_str    = f"{market_ctx.get('fear_greed', '?')}/100 {market_ctx.get('fear_greed_label', '')}"
+
+        # Scan briefs for data degradation alerts to surface in email
+        data_alerts = []
+        team_ch = _load_team_channel()
+        for peer, sig in team_ch.items():
+            ex = sig.get("excerpt", "")
+            if any(w in ex.upper() for w in ("UNAVAILABLE", "DEGRADATION", "FAILED", "NO DATA", "OPAQUE")):
+                data_alerts.append(f"  {peer}: data quality issue — check brief")
+
         email_body = (
             f"NYSE Sub-Agent Session — {today_str}\n"
             f"BTC: {btc_str} | F&G: {fg_str}\n\n"
             f"{'='*52}\n"
             f"AGENT SUMMARY\n"
             f"{'='*52}\n"
-            + "\n".join(summary_lines) +
-            f"\n\n{'='*52}\n"
+        )
+        email_body += "\n".join(summary_lines)
+        email_body += "\n  Legend: [BUY]=intel bought | [COOL]=cooldown, buy skipped | [HOLD]=low balance | [ERR]=error\n"
+
+        if data_alerts:
+            email_body += (
+                f"\n{'='*52}\n"
+                f"!! DATA ISSUES (check brief files)\n"
+                f"{'='*52}\n"
+                + "\n".join(data_alerts) + "\n"
+            )
+
+        email_body += (
+            f"\n{'='*52}\n"
             f"TEAM CHANNEL (peer signals)\n"
             f"{'='*52}\n"
         )
-        for peer, sig in _load_team_channel().items():
-            email_body += f"  {peer}: {sig.get('regime','?')} | {sig.get('excerpt','')[:100]}\n"
-        email_body += f"\nBriefs: {DRAFTS_DIR}"
+        _fresh_tally = {"RISK-ON": 0, "NEUTRAL": 0, "RISK-OFF": 0}
+        for peer, sig in team_ch.items():
+            excerpt = sig.get("excerpt", "")[:140]
+            age = _signal_age_hours(sig)
+            stale = age is None or age > _PEER_FRESH_HOURS
+            tag = f" [STALE {age:.0f}h]" if (stale and age is not None) else (" [STALE]" if stale else "")
+            if not stale:
+                _fresh_tally[_peer_bucket(sig.get("regime", ""))] += 1
+            email_body += f"  {peer}: {sig.get('regime','?')}{tag} — {excerpt}\n"
+        _ft = sum(_fresh_tally.values())
+        email_body += (f"  CONSENSUS (fresh <={_PEER_FRESH_HOURS}h): "
+                       f"RISK-ON {_fresh_tally['RISK-ON']}, NEUTRAL {_fresh_tally['NEUTRAL']}, "
+                       f"RISK-OFF {_fresh_tally['RISK-OFF']} of {_ft}\n")
+
+        # Full agent briefs
+        brief_lines = [f"\n{'='*52}", "AGENT BRIEFS", f"{'='*52}"]
+        any_brief = False
+        for agent_name in AGENT_CONFIGS:
+            bf = DRAFTS_DIR / f"{agent_name.lower()}_{today_str}.md"
+            if bf.exists():
+                any_brief = True
+                content = bf.read_text(encoding="utf-8")
+                # Strip markdown heading lines (start with #), keep body
+                body_lines = [
+                    ln for ln in content.splitlines()
+                    if not ln.startswith("#") and not ln.startswith("---") and not ln.startswith("*Generated")
+                    and not ln.startswith("*Powered")
+                ]
+                body_text = "\n".join(body_lines).strip()
+                brief_lines.append(f"\n{agent_name}")
+                brief_lines.append(body_text)
+        if any_brief:
+            email_body += "\n".join(brief_lines)
+        else:
+            email_body += f"\nBriefs: {DRAFTS_DIR}"
         _send(f"NYSE Agents {today_str} — session complete", email_body)
         log.info("Session email sent.")
     except Exception as e:

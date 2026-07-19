@@ -1,6 +1,20 @@
 # Octodamus — Project State
 # Last updated: 2026-07-18
 
+## NYSE Peer-Consensus Fabrication Fix (2026-07-19)
+NYSE sub-agent briefs were fabricating peer consensus -- MacroMind claimed "3 of 5 RISK-ON" and
+StockOracle "four agents align RISK-ON" when the team channel actually held 5 fresh NEUTRAL + 1
+X_Sentiment RISK-ON that was 1540h (~64 days) STALE. Two root causes, both fixed in octo_nyse_runner.py:
+- Freshness: peer verdicts >20h old (_PEER_FRESH_HOURS) are now excluded from consensus + labeled
+  [STALE-excluded]. X_Sentiment_Agent hasn't posted to the channel in 64 days (runs outside the NYSE
+  orchestrator); its stale RISK-ON no longer pollutes everyone's read.
+- Fabrication: agents had to count the raw peer list themselves and overstated it. Added
+  _peer_consensus_block() -- a DETERMINISTIC tally (RISK-ON/NEUTRAL/RISK-OFF counts + dominant) injected
+  into every brief, with "report consensus using THESE exact counts." Verified: MacroMind now sees
+  RISK-ON 0, NEUTRAL 4 -> dominant NEUTRAL. Email report also marks [STALE Nh] + prints the fresh tally.
+- FLAGGED (operator action): NYSE_StockOracle wallet USDC=$0.05 -> [HOLD], can't buy intel. Needs a USDC
+  refill on Base (0x46037F1a6D10308c9892f297a0d419aAA25131A4). Same pattern as [[project_tokenbot_gas]].
+
 ## Fleet-Dream Triage (2026-07-19) — verified before acting
 Dream proposed 4 cross-agent findings. Verified each against actual code/memory (dream was
 well-grounded, but most items were already-handled or not-a-bug):
