@@ -400,6 +400,19 @@ def tool_record_session(lesson: str, top_signal: str = "", what_worked: str = ""
     return f"Session recorded. History: {len(history)} entries."
 
 
+def tool_record_signal_outcome(correct: bool, note: str = "") -> str:
+    """Log whether a prior Exit-Completion signal was correct, keeping the flagship product's
+    track record (43/43) honest and current. Call when you grade a past exit-completion call."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_track_record import record_outcome, format_record_block
+        record_outcome("exit_completion", bool(correct))
+        b = format_record_block("exit_completion")
+        return f"Recorded {'WIN' if correct else 'MISS'}. Exit-Completion track record now {b['record']} ({b['accuracy_pct']}%)."
+    except Exception as e:
+        return f"Track-record update failed: {e}"
+
+
 def tool_send_email(subject: str, body: str) -> str:
     import re as _re
     body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)
@@ -621,6 +634,7 @@ TOOLS = [
     {"name": "save_draft",          "description": "Save a draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "list_drafts",         "description": "List drafts.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "record_session",      "description": "Record session lesson.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "top_signal": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}}, "required": ["lesson"]}},
+    {"name": "record_signal_outcome", "description": "Log whether a prior Exit-Completion signal call was correct, to keep the flagship product's 43/43 track record honest and current. Call when you can grade a past exit-completion call against what actually happened.", "input_schema": {"type": "object", "properties": {"correct": {"type": "boolean"}, "note": {"type": "string", "default": ""}}, "required": ["correct"]}},
     {"name": "send_email",          "description": "Send email to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Append distilled lessons to your persistent core memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Content: 3-5 compressed bullets worth keeping across all future sessions.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
     {"name": "get_free_intel",           "description": "Pull free market intelligence: macro signal (FRED) + travel/aviation signal + CoinGecko snapshot. Zero cost. Run at session start before any ecosystem buys.", "input_schema": {"type": "object", "properties": {}, "required": []}},
@@ -668,6 +682,7 @@ TOOL_HANDLERS = {
     "save_draft":          lambda i: tool_save_draft(i["filename"], i["content"]),
     "list_drafts":         lambda i: tool_list_drafts(),
     "record_session":      lambda i: tool_record_session(i["lesson"], i.get("top_signal",""), i.get("what_worked","")),
+    "record_signal_outcome": lambda i: tool_record_signal_outcome(bool(i["correct"]), i.get("note","")),
     "send_email":              lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":      lambda i: tool_update_core_memory(i["section"], i["content"]),
     "get_free_intel":          lambda i: tool_get_free_intel(),

@@ -1,6 +1,25 @@
 # Octodamus — Project State
 # Last updated: 2026-07-18
 
+## Proven-Edge Flagship Products (2026-07-19)
+First move on "more data sales for profit." Reframe: supply isn't the bottleneck (20 live services +
+22 proposals); the revenue was CIRCULAR (all buyers were other fleet agents paying operator-seeded USDC).
+Real profit needs external buyers + differentiation. Built two flagships led by their AUDITABLE track record:
+- octo_track_record.py + data/agent_track_records.json: single source of truth for validated edges.
+  record_outcome() keeps it honest/auto-updating; format_record_block() leads each product. Seeded with
+  the REAL current numbers (verified vs core memory, NOT the stale proposal figures): Exit-Completion 43/43
+  (Order_ChainFlow #54-79), Confluence 36/36 (StockOracle #25-80).
+- Flagship handlers (octo_report_handlers): handle_exit_completion_signal, handle_confluence_signal —
+  lead with track record + live signal from latest brief + verification pointer. Registered in get_handler.
+- Premium ACP services (octo_agent_cards): Order_ChainFlow "Institutional Exit-Completion Signal (FLAGSHIP)"
+  $8.00; NYSE_StockOracle "Congressional Confluence Signal (FLAGSHIP)" $5.00.
+- x402 HTTP endpoints (external buyers = new money): /v2/signals/exit-completion ($8), /v2/signals/confluence
+  ($5) + free /preview endpoints showing the track record. Verified live: preview returns 43/43, paid = 402.
+- Self-update tools: record_signal_outcome added to Order_ChainFlow + StockOracle so the record stays honest
+  as they grade sessions (prevents "43/43" rotting into a lie). Verified round-trip.
+- STILL OPEN (offered, not built): Fleet Consensus product, auto-publish pipeline (proposal->endpoint),
+  human distribution funnel. The real constraint remains EXTERNAL DEMAND, not supply.
+
 ## NYSE Peer-Consensus Fabrication Fix (2026-07-19)
 NYSE sub-agent briefs were fabricating peer consensus -- MacroMind claimed "3 of 5 RISK-ON" and
 StockOracle "four agents align RISK-ON" when the team channel actually held 5 fresh NEUTRAL + 1

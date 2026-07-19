@@ -440,6 +440,18 @@ _X402_REQ_2CENT = PaymentRequirements(
 )
 _X402_REQS_2CENT = [_X402_REQ_2CENT]
 
+# Flagship "proven-edge" products — premium priced on their documented track record.
+_X402_REQ_800CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="8000000", pay_to=_X402_TREASURY, max_timeout_seconds=300, extra=_USDC_EXTRA,
+)
+_X402_REQ_500CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="5000000", pay_to=_X402_TREASURY, max_timeout_seconds=300, extra=_USDC_EXTRA,
+)
+_X402_REQS_800CENT = [_X402_REQ_800CENT]
+_X402_REQS_500CENT = [_X402_REQ_500CENT]
+
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 
 # x402 routes for PaymentMiddlewareASGI — dedicated agent-native endpoint.
@@ -1063,6 +1075,9 @@ def _custom_openapi():
         "/v2/nyse_tech/dtc_pipeline/subscribe":         "2.00",
         "/v2/nyse_tech/chainlink_lead_signals":         "0.50",
         "/v2/nyse_tech/gas_settlement_optimizer":       "0.50",
+        # Flagship proven-edge products (premium — priced on documented track record).
+        "/v2/signals/exit-completion":                  "8.00",
+        "/v2/signals/confluence":                       "5.00",
     }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)
@@ -7613,6 +7628,69 @@ def chainflow_whales_preview():
     return {"agent": "Order_ChainFlow", "product": "whale_activity", "price_usdc": 0.35,
             "buy": "GET https://api.octodamus.com/v2/order_chainflow/whales (x402 $0.35)",
             "what_it_does": "Large USDC transactions (>$100k) on Base chain. Count, total volume, ACTIVE/MODERATE/QUIET signal."}
+
+
+# ── Flagship proven-edge products ─────────────────────────────────────────────
+def _flagship_gate(request: Request, price_usdc: float, reqs: list, agent: str,
+                   product: str, preview_path: str):
+    """402 gate for a premium flagship product (returns a Response, or None once paid)."""
+    x_payment = (request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature")
+                 or request.headers.get("X-Payment") or request.headers.get("X-PAYMENT"))
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(status_code=402, headers=_x402_headers_disc(request.url.path, price_usdc),
+                     media_type="application/json", content=json.dumps({
+                         "x402": "x402/1", "error": "payment_required",
+                         "agent": agent, "product": product, "price_usdc": price_usdc,
+                         "pay_to": _X402_TREASURY, "network": "base-mainnet (eip155:8453)",
+                         "preview": f"GET https://api.octodamus.com{preview_path}",
+                     }))
+    _x402_verify_settle(request, reqs)
+    return None
+
+
+@app.get("/v2/signals/exit-completion", tags=["Flagship Signals"])
+def flagship_exit_completion(request: Request):
+    """FLAGSHIP — Order_ChainFlow Institutional Exit-Completion Signal (43/43 on file). $8.00 USDC.
+    Detects when institutional distribution is COMPLETE (whale silence + bridge floor). The
+    documented track record is the product; the response leads with it."""
+    gate = _flagship_gate(request, 8.00, _X402_REQS_800CENT, "Order_ChainFlow",
+                          "exit_completion", "/v2/signals/exit-completion/preview")
+    if gate: return gate
+    from octo_report_handlers import handle_exit_completion_signal
+    return _sign_payload(handle_exit_completion_signal(dict(request.query_params)))
+
+
+@app.get("/v2/signals/exit-completion/preview", tags=["Flagship Signals"])
+def flagship_exit_completion_preview():
+    from octo_track_record import format_record_block
+    return {"agent": "Order_ChainFlow", "product": "Institutional Exit-Completion Signal",
+            "price_usdc": 8.00, "track_record": format_record_block("exit_completion"),
+            "buy": "GET https://api.octodamus.com/v2/signals/exit-completion (x402 $8.00)",
+            "what_it_does": "Tells you when institutional distribution is COMPLETE — downside supply "
+                            "exhaustion via 27+ session whale silence + bridge floor <0.35x. Floor "
+                            "detection, not re-entry timing. You are paying for a documented edge."}
+
+
+@app.get("/v2/signals/confluence", tags=["Flagship Signals"])
+def flagship_confluence(request: Request):
+    """FLAGSHIP — NYSE_StockOracle Congressional-Silence + Multi-Day-Weakness Confluence
+    (36/36 on file). $5.00 USDC. Macro-regime-independent bearish directional bias for equities."""
+    gate = _flagship_gate(request, 5.00, _X402_REQS_500CENT, "NYSE_StockOracle",
+                          "confluence", "/v2/signals/confluence/preview")
+    if gate: return gate
+    from octo_report_handlers import handle_confluence_signal
+    return _sign_payload(handle_confluence_signal(dict(request.query_params)))
+
+
+@app.get("/v2/signals/confluence/preview", tags=["Flagship Signals"])
+def flagship_confluence_preview():
+    from octo_track_record import format_record_block
+    return {"agent": "NYSE_StockOracle", "product": "Congressional-Silence + Multi-Day-Weakness Confluence",
+            "price_usdc": 5.00, "track_record": format_record_block("confluence"),
+            "buy": "GET https://api.octodamus.com/v2/signals/confluence (x402 $5.00)",
+            "what_it_does": "Bearish directional bias on mega-cap equities from congressional silence "
+                            "(60+ days) + multi-day price weakness. Macro-regime independent. Documented edge."}
 
 
 # -- X_Sentiment_Agent — Crowd Sentiment Intelligence endpoints --------------

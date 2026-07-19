@@ -1523,6 +1523,72 @@ def handle_nyse_earningsedge_brief(req: dict) -> dict:
     return _handle_subarc_brief("nyse_earningsedge", "NYSE_EarningsEdge", req)
 
 
+def _latest_brief_text(agent_key: str) -> tuple:
+    """(brief_text, data_as_of) for an agent's most recent daily brief, or ('', '')."""
+    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
+    if not files:
+        return "", ""
+    latest = files[-1]
+    as_of = datetime.utcfromtimestamp(os.path.getmtime(latest)).strftime("%Y-%m-%d %H:%M UTC")
+    return latest.read_text(encoding="utf-8"), as_of
+
+
+def _extract_line(text: str, *needles: str) -> str:
+    """First brief line containing any needle (case-insensitive), markdown stripped."""
+    import re as _re
+    for ln in (text or "").splitlines():
+        low = ln.lower()
+        if any(n.lower() in low for n in needles):
+            return _re.sub(r"\*{1,3}", "", ln).strip()
+    return ""
+
+
+def _flagship(signal_id: str, agent_key: str, agent_display: str,
+              live_needles: tuple, current_when_empty: str) -> dict:
+    """Premium 'proven-edge' product: leads with the auditable track record, then the
+    current live reading of that same signal. The track record IS the product."""
+    from octo_track_record import format_record_block
+    tr = format_record_block(signal_id)
+    brief, as_of = _latest_brief_text(agent_key)
+    current = _extract_line(brief, *live_needles) or current_when_empty
+    return {
+        "type":            f"{signal_id}_flagship",
+        "agent":           agent_display,
+        "track_record":    tr,
+        "current_signal":  current,
+        "data_as_of":      as_of or "no brief yet (generated 5:30am PST daily)",
+        "how_to_verify":   f"Cross-check each graded session against the timestamped briefs: {tr.get('evidence','')}",
+        "note":            ("This is a proven-edge product. You are paying for a signal with a "
+                            "documented, on-file accuracy record — not a one-off opinion."),
+        "powered_by":      "@octodamusai ecosystem",
+    }
+
+
+def handle_exit_completion_signal(req: dict) -> dict:
+    """FLAGSHIP — Order_ChainFlow Institutional Exit-Completion Signal (43/43 on file).
+    Tells you when institutional distribution is COMPLETE (whale silence + bridge floor),
+    i.e. when downside supply pressure has exhausted. Floor detection, not re-entry timing."""
+    out = _flagship(
+        "exit_completion", "order_chainflow", "Order_ChainFlow",
+        ("exit meter", "exit cycle", "distribution", "exit complete"),
+        "No exit-completion reading in the latest brief — check back after the next session.",
+    )
+    out["product"] = "Institutional Exit-Completion Signal"
+    return out
+
+
+def handle_confluence_signal(req: dict) -> dict:
+    """FLAGSHIP — NYSE_StockOracle Congressional-Silence + Multi-Day-Weakness Confluence
+    (36/36 on file). Macro-regime-independent bearish directional bias for mega-cap equities."""
+    out = _flagship(
+        "confluence", "nyse_stockoracle", "NYSE_StockOracle",
+        ("confluence", "congressional silence", "directional", "regime verdict"),
+        "No confluence reading in the latest brief — check back after the next session.",
+    )
+    out["product"] = "Congressional-Silence + Multi-Day-Weakness Confluence Signal"
+    return out
+
+
 def handle_tokenized_stock_signal(req: dict) -> dict:
     """
     Oracle analysis for a stock ticker in the context of tokenized equity on Base.
@@ -1627,6 +1693,10 @@ def get_handler(report_type: str):
         return handle_polymarket_alpha
     if any(k in t for k in ["conviction", "conviction_score"]):
         return handle_conviction_score
+    if any(k in t for k in ["exit_completion", "exit_meter", "exit_signal", "distribution_complete"]):
+        return handle_exit_completion_signal
+    if any(k in t for k in ["confluence", "silence_weakness", "silence_plus_weakness"]):
+        return handle_confluence_signal
     if any(k in t for k in ["silence_signal", "congressional_silence", "congress_silence", "execution_risk"]):
         return handle_congressional_silence_signal
     if any(k in t for k in ["congressional", "congress", "stock_trade", "stock_alert"]):
