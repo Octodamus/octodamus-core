@@ -15,9 +15,16 @@ well-grounded, but most items were already-handled or not-a-bug):
 - NOT A BUG (would break a working agent): the macro-regime "inconsistency" -- NYSE_StockOracle's
   Congressional-silence signal is legitimately macro-independent (36/36 accuracy). Different signals
   correctly use different gates. No standardization forced.
-- ENHANCEMENT, NOT A FIX (left for a deliberate decision): wiring octo_coinglass liquidation-cluster
-  data into directional agents' prompts. Data exists; it's a feature add that changes agent behavior,
-  not a bug. Flagged for the user to greenlight.
+- ENHANCEMENT NOW DONE (greenlit 2026-07-19): wired liquidation-cascade visibility + the F&G<30
+  crowd-fade gate into Octodamus. NOTE: the forward liquidation CLUSTER MAP (liquidation_map) is
+  403 plan-gated, so realized liquidation HISTORY is used as the cascade proxy.
+  * Daily/narrative prompt: octo_coinglass.build_oracle_context() now appends a "LIQUIDATION CASCADE
+    READ + CROWD-FADE GATE" block (via _liquidation_cascade_gate) -- reads F&G + 12h realized
+    liquidations and emits CLEARED/BLOCKED at F&G<30. Live example today: F&G=29, $2M liq -> BLOCKED.
+  * Call engine: octo_report_handlers.directional_call Signal 4 -- the F&G<25 "buy the fear" bull
+    point now only counts when a cascade is visible (max(liq_long,liq_short) >= $25M/4h);
+    _CROWD_FADE_LIQ_MIN_M. No cg data => withhold (safe default). Verified: F&G=20 no-cascade leans
+    DOWN, F&G=20 with $60M cascade goes RANGE. Operationalizes calls #32-37 memory rule.
 - STRATEGY OBSERVATION (no code): Ben distribution-only revenue + Order_ChainFlow 43/43 exit edge.
 
 ## Dream-Scan Triage — 31 recurring errors fixed/tuned (2026-07-19)

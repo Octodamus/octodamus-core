@@ -336,6 +336,11 @@ def _fetch_coinglass_compact(ticker: str) -> dict:
 
 # ── Upgraded directional call — 11 signals ───────────────────────────────────
 
+# Capitulation-scale forced liquidations ($M, single 4h bar) that make a crowd-fade at
+# fear extremes supportable. Below this, the F&G<25 "buy the fear" point is withheld.
+_CROWD_FADE_LIQ_MIN_M = 25.0
+
+
 def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None, delta=None, tv=None) -> str:
     """
     Oracle directional scoring engine.
@@ -373,9 +378,16 @@ def directional_call(ticker, price, chg_24h, ta, deriv, fng, cg=None, delta=None
     # Signal 3: RSI
     if rsi < 45:       bull += 1
     elif rsi > 65:     bear += 1
-    # Signal 4: Fear & Greed
-    if fng < 25:       bull += 1
-    elif fng > 75:     bear += 1
+    # Signal 4: Fear & Greed — the sub-25 "buy the fear" crowd-fade only counts when a
+    # liquidation cascade is visible. Fading crowded fear WITHOUT cascade confirmation
+    # failed repeatedly (Octodamus calls #32-37); with no cg data, default to withholding.
+    if fng < 25:
+        _cf_liq = max(float(cg.get("liq_long", 0) or 0), float(cg.get("liq_short", 0) or 0))  # $M, 4h
+        if _cf_liq >= _CROWD_FADE_LIQ_MIN_M:
+            bull += 1        # cascade visible -> fading the fear is supportable
+        # else: withhold the crowd-fade point until forced-liquidation confirms capitulation
+    elif fng > 75:
+        bear += 1
     # Signal 5: Kraken funding rate
     if fr < 0:         bull += 1
     elif fr > 0.005:   bear += 1

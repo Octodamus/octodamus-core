@@ -457,8 +457,67 @@ def build_oracle_context(symbol: str = "BTC") -> str:
                 lines.append(f"  Longs: ${long_liq/1e6:.1f}M | Shorts: ${short_liq/1e6:.1f}M | {dominant}")
         lines.append("")
 
+    lines.append(_liquidation_cascade_gate(symbol, liq_hist))
     lines.append("=== END COINGLASS INTELLIGENCE ===")
     return "\n".join(lines)
+
+
+# Capitulation-scale forced-liquidation over ~12h on one side. Above this, a crowd-fade at
+# fear extremes is supportable (a cascade has cleared leverage); below it, it is not.
+_CASCADE_USD_THRESHOLD = 50e6
+
+
+def _liquidation_cascade_gate(symbol: str, liq_hist) -> str:
+    """Operationalize Octodamus's memory rule: 'do not fade crowding at F&G<30 without
+    liquidation heat-map visibility' (calls #32-37 failed that exact setup). The forward
+    liquidation CLUSTER MAP is plan-gated (403), so use realized liquidation history as the
+    cascade proxy and emit an explicit CLEARED/BLOCKED gate the oracle can act on directly."""
+    out = ["► LIQUIDATION CASCADE READ + CROWD-FADE GATE",
+           "  (forward cluster map is plan-gated; using realized liquidation history as the cascade proxy)"]
+
+    # Cascade proxy from the last ~12h of liquidation history.
+    cascade_visible = False
+    if isinstance(liq_hist, list) and liq_hist:
+        recent = liq_hist[-3:]
+        long_liq  = sum(float(b.get("aggregated_long_liquidation_usd", 0) or 0) for b in recent)
+        short_liq = sum(float(b.get("aggregated_short_liquidation_usd", 0) or 0) for b in recent)
+        tot = long_liq + short_liq
+        if tot > 0:
+            side = "longs" if long_liq > short_liq else "shorts"
+            cascade_visible = max(long_liq, short_liq) >= _CASCADE_USD_THRESHOLD
+            out.append(f"  Realized: ${tot/1e6:.0f}M liquidated in 12h ({side} taking the pain)"
+                       + ("  -> CASCADE VISIBLE (capitulation-scale)" if cascade_visible
+                          else "  -> no capitulation-scale cascade"))
+        else:
+            out.append("  Realized: no forced liquidations in the last 12h")
+    else:
+        out.append("  Realized: liquidation history unavailable this fetch")
+
+    # Fear & Greed (parallel-array response: data_list / time_list).
+    fg_val = None
+    try:
+        fg = fear_greed()
+        dl = fg.get("data_list") if isinstance(fg, dict) else None
+        if isinstance(dl, list) and dl:
+            last = dl[-1]
+            fg_val = float(last.get("value") if isinstance(last, dict) else last)
+    except Exception:
+        pass
+
+    if fg_val is not None:
+        out.append(f"  Fear & Greed: {fg_val:.0f}")
+        if fg_val < 30:
+            if cascade_visible:
+                out.append("  GATE @ F&G<30: CLEARED — a liquidation cascade is visible, so a crowd-fade "
+                           "(buying crowded fear) is supportable.")
+            else:
+                out.append("  GATE @ F&G<30: BLOCKED — crowded fear but NO liquidation cascade visible. "
+                           "Do NOT fade the crowd here (memory: calls #32-37 failed this exact setup). "
+                           "Hold/observe until forced-liquidation confirms capitulation.")
+        else:
+            out.append("  GATE: F&G>=30 — crowd-fade gate not engaged (rule applies at F&G<30).")
+
+    return "\n".join(out) + "\n"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
