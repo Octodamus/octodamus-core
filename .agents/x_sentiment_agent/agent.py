@@ -199,11 +199,23 @@ def tool_get_divergence_score(asset: str) -> str:
         elif score >= 35:
             divergence_type = "CAUTION"
 
+        # Liquidation-cascade confirmation (shared oracle gate). A crowd fade is far more
+        # reliable when forced liquidations confirm the reversal — this is the order-flow
+        # confirmation Rule #3 asks for. Only crypto perps carry Coinglass liquidation data.
+        liq_ctx = ""
+        if asset.upper() in ("BTC", "ETH", "SOL"):
+            try:
+                from octo_coinglass import liquidation_gate_context
+                liq_ctx = "\n" + liquidation_gate_context(asset.upper())
+            except Exception:
+                pass
+
         return (f"DIVERGENCE SCORE {asset.upper()}: {score}/70\n"
                 f"  Crowd: {crowd_pct:.0f}% {'BULLISH' if crowd_bullish else 'BEARISH'}\n"
                 f"  Price 24h: {chg:+.2f}%\n"
                 f"  Signal: {divergence_type}\n"
-                f"  Score breakdown: crowd_extreme={crowd_extreme}/40 + price_contradiction={price_pts}/30")
+                f"  Score breakdown: crowd_extreme={crowd_extreme}/40 + price_contradiction={price_pts}/30"
+                f"{liq_ctx}")
     except Exception as e:
         return f"Divergence score unavailable for {asset}: {e}"
 

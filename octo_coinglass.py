@@ -462,6 +462,16 @@ def build_oracle_context(symbol: str = "BTC") -> str:
     return "\n".join(lines)
 
 
+def liquidation_gate_context(symbol: str = "BTC") -> str:
+    """Standalone liquidation-cascade read + crowd-fade gate, for any agent that makes a
+    fade/contrarian decision (X_Sentiment, MacroMind). Same realized-history proxy as the
+    oracle uses (forward cluster map is plan-gated)."""
+    try:
+        return _liquidation_cascade_gate(symbol, liquidation_history(symbol, "4h"))
+    except Exception as e:
+        return f"LIQUIDATION CASCADE READ: unavailable ({e})"
+
+
 # Capitulation-scale forced-liquidation over ~12h on one side. Above this, a crowd-fade at
 # fear extremes is supportable (a cascade has cleared leverage); below it, it is not.
 _CASCADE_USD_THRESHOLD = 50e6

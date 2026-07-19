@@ -25,6 +25,12 @@ well-grounded, but most items were already-handled or not-a-bug):
     point now only counts when a cascade is visible (max(liq_long,liq_short) >= $25M/4h);
     _CROWD_FADE_LIQ_MIN_M. No cg data => withhold (safe default). Verified: F&G=20 no-cascade leans
     DOWN, F&G=20 with $60M cascade goes RANGE. Operationalizes calls #32-37 memory rule.
+  * SUB-AGENTS (wired 2026-07-19): exposed octo_coinglass.liquidation_gate_context(symbol) as the
+    shared public helper. X_Sentiment_Agent: tool_get_divergence_score now appends the cascade read
+    for BTC/ETH/SOL (the order-flow confirmation its Rule #3 asks for). NYSE_MacroMind: new tool
+    get_liquidation_cascade(asset) (schema+dispatch) to tell retail capitulation (cascade visible)
+    from orderly institutional repricing (no cascade); guards non-crypto tickers. Order_ChainFlow
+    left exit-only per the dream. Agents run as fresh processes -> pick up on next session.
 - STRATEGY OBSERVATION (no code): Ben distribution-only revenue + Order_ChainFlow 43/43 exit edge.
 
 ## Dream-Scan Triage — 31 recurring errors fixed/tuned (2026-07-19)

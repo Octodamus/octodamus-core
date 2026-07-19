@@ -172,6 +172,20 @@ def tool_get_yield_curve() -> str:
         return f"Yield curve unavailable: {e}"
 
 
+def tool_get_liquidation_cascade(asset: str = "BTC") -> str:
+    """Liquidation-cascade read for BTC/ETH/SOL — helps tell retail capitulation (a forced
+    liquidation cascade) from orderly institutional repricing (no cascade)."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from octo_coinglass import liquidation_gate_context
+        a = (asset or "BTC").upper()
+        if a not in ("BTC", "ETH", "SOL"):
+            return f"Liquidation cascade data only available for BTC/ETH/SOL (got {a})."
+        return liquidation_gate_context(a)
+    except Exception as e:
+        return f"Liquidation cascade unavailable: {e}"
+
+
 def tool_save_draft(filename: str, content: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in filename)
     if not safe.endswith(".md"):
@@ -464,6 +478,7 @@ TOOLS = [
     {"name": "get_macro_signal",    "description": "Get current macro regime signal: RISK-ON/RISK-OFF/NEUTRAL with 5-component score.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_fred_data",       "description": "Get specific FRED series data.", "input_schema": {"type": "object", "properties": {"series": {"type": "string", "description": "T10Y2Y, DTWEXBGS, SP500, VIXCLS, M2SL, or all", "default": "all"}}, "required": []}},
     {"name": "get_yield_curve",     "description": "Get yield curve (T10Y2Y) status and interpretation.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "get_liquidation_cascade", "description": "Liquidation-cascade read for BTC/ETH/SOL. Distinguishes retail capitulation (forced-liquidation cascade visible) from orderly institutional repricing (no cascade). Use when a market move needs a retail-vs-institutional read.", "input_schema": {"type": "object", "properties": {"asset": {"type": "string", "description": "BTC, ETH, or SOL", "default": "BTC"}}, "required": []}},
     {"name": "get_fed_probability", "description": "Get Fed rate decision probability from Kalshi.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_cpi_context",     "description": "Get CPI market prices from Kalshi.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "draft_x_post",        "description": "Draft a NYSE_MacroMind X post in NYSE_MacroMind voice.", "input_schema": {"type": "object", "properties": {"context": {"type": "string"}}, "required": ["context"]}},
@@ -509,6 +524,7 @@ TOOL_HANDLERS = {
     "get_macro_signal":    lambda i: tool_get_macro_signal(),
     "get_fred_data":       lambda i: tool_get_fred_data(i.get("series","all")),
     "get_yield_curve":     lambda i: tool_get_yield_curve(),
+    "get_liquidation_cascade": lambda i: tool_get_liquidation_cascade(i.get("asset", "BTC")),
     "get_fed_probability": lambda i: tool_get_fed_probability(),
     "get_cpi_context":     lambda i: tool_get_cpi_context(),
     "draft_x_post":        lambda i: tool_draft_x_post(i["context"]),
