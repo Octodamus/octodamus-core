@@ -1,6 +1,25 @@
 # Octodamus — Project State
 # Last updated: 2026-07-18
 
+## Fleet-Dream Triage (2026-07-19) — verified before acting
+Dream proposed 4 cross-agent findings. Verified each against actual code/memory (dream was
+well-grounded, but most items were already-handled or not-a-bug):
+- FIXED (real code bug): OctoBoto confidence miscoding. octo_boto_ai.py took the LLM's
+  self-reported confidence="high" verbatim even when its own probability was mid-band (p=0.38).
+  Added reconciliation: HIGH requires p<=0.10 or p>=0.90, else capped to medium. Stops an
+  uncertain estimate from driving high-confidence sizing/execution. (Paper trading; no capital.)
+- ALREADY SELF-CORRECTED (no code change): NYSE_Tech (19/19 timeline fails were sessions #31-48;
+  memory locked predictions since #49, 25 clean sessions) and X_Sentiment (0/9 was sessions #1-9;
+  Rule #1 macro-inversion gate active since #11). These are LLM agents whose core memory IS their
+  rulebook -- the gate is enforced in memory and working.
+- NOT A BUG (would break a working agent): the macro-regime "inconsistency" -- NYSE_StockOracle's
+  Congressional-silence signal is legitimately macro-independent (36/36 accuracy). Different signals
+  correctly use different gates. No standardization forced.
+- ENHANCEMENT, NOT A FIX (left for a deliberate decision): wiring octo_coinglass liquidation-cluster
+  data into directional agents' prompts. Data exists; it's a feature add that changes agent behavior,
+  not a bug. Flagged for the user to greenlight.
+- STRATEGY OBSERVATION (no code): Ben distribution-only revenue + Order_ChainFlow 43/43 exit edge.
+
 ## Dream-Scan Triage — 31 recurring errors fixed/tuned (2026-07-19)
 Acted on the dream-scan email (31 recurring error patterns). Split into real bugs vs noise:
 - ENGAGE SKIP LEAK (43x, was emailing each time): octo_engage.generate_take used exact `== "SKIP"`,

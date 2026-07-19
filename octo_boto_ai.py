@@ -21,7 +21,8 @@ from typing import Optional
 
 import anthropic
 
-from octo_boto_math import best_trade, composite_score, is_valid_market, resolution_risk_score
+from octo_boto_math import (best_trade, composite_score, is_valid_market,
+                            resolution_risk_score, hours_until, ev_threshold_for_market)
 
 try:
     from octo_boto_brain import get_brain_context
@@ -726,11 +727,14 @@ def batch_estimate(
 
         vol24   = float(m.get("volume24h", 0) or 0)
         vel_pct = float(m.get("_velocity_pct", 0) or 0)  # injected by octo_boto.py
+        htc     = hours_until(m.get("end_date") or m.get("endDate") or "")
 
         # Apply volume-adjusted EV floor (thin markets need bigger edge)
-        # Then apply overtrade penalty (Freeport: top traders do 2.1 trades/day, not 5.8)
+        # Apply short-term boost for same-day markets (<24h) — need bigger edge, less exit flexibility
+        # Apply overtrade penalty (Freeport: top traders do 2.1 trades/day, not 5.8)
         from octo_boto_math import volume_ev_floor, ev_threshold_with_overtrade_penalty
         adjusted_min_ev = volume_ev_floor(vol24, min_ev)
+        adjusted_min_ev = ev_threshold_for_market(htc, adjusted_min_ev)
         adjusted_min_ev = ev_threshold_with_overtrade_penalty(adjusted_min_ev)
 
         # Build orderbook context + live CLOB depth
@@ -769,6 +773,7 @@ def batch_estimate(
             days_to_close=m.get("days_to_close"),
             market_age_hours=age_hours,
             resolution_risk=risk,
+            hours_to_close=htc,
         )
 
         return {"market": m, "ai": ai, "trade": trade, "score": score,
@@ -832,6 +837,12 @@ def _parse(text: str, fallback_price: float) -> dict:
         conf = str(data.get("confidence", "low")).lower().strip()
         if conf not in ("high", "medium", "low"):
             conf = "low"
+        # A trade is only HIGH confidence if its probability sits in the near-certain band
+        # (p<=0.10 or p>=0.90). The model sometimes self-reports "high" on a mid-band estimate
+        # (the p=0.38-executed-as-high miscoding); reconcile the label with the number so an
+        # uncertain probability can't drive high-confidence sizing/execution.
+        if conf == "high" and 0.10 < prob < 0.90:
+            conf = "medium"
 
         edge = str(data.get("edge", "NONE")).upper().strip()
         if edge not in ("YES_BUY", "NO_BUY", "NONE"):
