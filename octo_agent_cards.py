@@ -232,6 +232,7 @@ AGENT_CARDS = {
         "agent":       "Octodamus",
         "description": "AI crypto oracle. BTC/ETH/SOL signals, Fear & Greed, Polymarket edges, macro regime, 27 live feeds.",
         "services": [
+            {"name": "Fleet Consensus (FLAGSHIP)",  "price_usdc": 3.00, "job_description": "The whole Octodamus fleet's daily cross-validated regime read in one call: consensus (RISK-ON/NEUTRAL/RISK-OFF) + agreement % + avg conviction + per-agent verdicts with DISSENT shown, plus the fleet's proven-edge signals (Exit-Completion 43/43, Confluence 36/36) attached. 6 specialized agents cross-checking each other — un-copyable panel."},
             {"name": "BTC Market Signal",           "price_usdc": 1.00, "job_description": "Give me the current Octodamus oracle signal for BTC with confidence score and reasoning."},
             {"name": "Polymarket Edge Report",      "price_usdc": 1.00, "job_description": "Give me current Polymarket edge plays with EV scoring."},
             {"name": "BTC Bull Trap Monitor",       "price_usdc": 1.50, "job_description": "Run the BTC bull trap monitor. Return divergence type, confidence, and recommended action."},

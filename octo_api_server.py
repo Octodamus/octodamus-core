@@ -449,8 +449,13 @@ _X402_REQ_500CENT = PaymentRequirements(
     scheme="exact", network="eip155:8453", asset=_X402_USDC,
     amount="5000000", pay_to=_X402_TREASURY, max_timeout_seconds=300, extra=_USDC_EXTRA,
 )
+_X402_REQ_300CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="3000000", pay_to=_X402_TREASURY, max_timeout_seconds=300, extra=_USDC_EXTRA,
+)
 _X402_REQS_800CENT = [_X402_REQ_800CENT]
 _X402_REQS_500CENT = [_X402_REQ_500CENT]
+_X402_REQS_300CENT = [_X402_REQ_300CENT]
 
 _MICRO_PRICE_USDC = 0.01  # $0.01 per call
 
@@ -1078,6 +1083,7 @@ def _custom_openapi():
         # Flagship proven-edge products (premium — priced on documented track record).
         "/v2/signals/exit-completion":                  "8.00",
         "/v2/signals/confluence":                       "5.00",
+        "/v2/signals/fleet-consensus":                  "3.00",
     }
     for path, ops in schema.get("paths", {}).items():
         paid = _is_paid(path)
@@ -7691,6 +7697,38 @@ def flagship_confluence_preview():
             "buy": "GET https://api.octodamus.com/v2/signals/confluence (x402 $5.00)",
             "what_it_does": "Bearish directional bias on mega-cap equities from congressional silence "
                             "(60+ days) + multi-day price weakness. Macro-regime independent. Documented edge."}
+
+
+@app.get("/v2/signals/fleet-consensus", tags=["Flagship Signals"])
+def flagship_fleet_consensus(request: Request):
+    """FLAGSHIP — Octodamus Fleet Consensus. $3.00 USDC. The whole fleet's daily cross-validated
+    regime read in one call: consensus + agreement + avg conviction + dissent + proven edges.
+    No data vendor has 7 specialized agents cross-checking each other daily."""
+    gate = _flagship_gate(request, 3.00, _X402_REQS_300CENT, "Octodamus",
+                          "fleet_consensus", "/v2/signals/fleet-consensus/preview")
+    if gate: return gate
+    from octo_report_handlers import handle_fleet_consensus
+    return _sign_payload(handle_fleet_consensus(dict(request.query_params)))
+
+
+@app.get("/v2/signals/fleet-consensus/preview", tags=["Flagship Signals"])
+def flagship_fleet_consensus_preview():
+    """Free preview — the headline consensus + which agents, without the full per-agent read."""
+    try:
+        from octo_fleet_consensus import build_fleet_consensus
+        fc = build_fleet_consensus()
+        headline = {"consensus": fc.get("consensus"), "agreement": fc.get("agreement"),
+                    "avg_conviction_5": fc.get("avg_conviction_5"),
+                    "fresh_agents": fc.get("fresh_agents"), "dissent": fc.get("dissent"),
+                    "as_of": fc.get("as_of")}
+    except Exception as e:
+        headline = {"error": str(e)}
+    return {"agent": "Octodamus", "product": "Fleet Consensus", "price_usdc": 3.00,
+            "headline": headline,
+            "buy": "GET https://api.octodamus.com/v2/signals/fleet-consensus (x402 $3.00)",
+            "what_it_does": "The whole fleet's daily cross-validated regime read: consensus, agreement, "
+                            "avg conviction, per-agent verdicts, DISSENT shown (not hidden), and the "
+                            "fleet's proven-edge signals (43/43, 36/36) attached. Un-copyable panel."}
 
 
 # -- X_Sentiment_Agent — Crowd Sentiment Intelligence endpoints --------------

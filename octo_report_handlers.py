@@ -1589,6 +1589,16 @@ def handle_confluence_signal(req: dict) -> dict:
     return out
 
 
+def handle_fleet_consensus(req: dict) -> dict:
+    """FLAGSHIP — Octodamus Fleet Consensus. The whole fleet's daily cross-validated regime
+    read in one call: consensus + agreement + avg conviction + dissent + proven edges. No
+    data vendor has 7 specialized agents cross-checking each other daily."""
+    from octo_fleet_consensus import build_fleet_consensus
+    out = build_fleet_consensus()
+    out["type"] = "fleet_consensus"
+    return out
+
+
 def handle_tokenized_stock_signal(req: dict) -> dict:
     """
     Oracle analysis for a stock ticker in the context of tokenized equity on Base.
@@ -1693,6 +1703,8 @@ def get_handler(report_type: str):
         return handle_polymarket_alpha
     if any(k in t for k in ["conviction", "conviction_score"]):
         return handle_conviction_score
+    if any(k in t for k in ["fleet_consensus", "fleet", "consensus_panel", "fleet_read"]):
+        return handle_fleet_consensus
     if any(k in t for k in ["exit_completion", "exit_meter", "exit_signal", "distribution_complete"]):
         return handle_exit_completion_signal
     if any(k in t for k in ["confluence", "silence_weakness", "silence_plus_weakness"]):

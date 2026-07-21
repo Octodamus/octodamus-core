@@ -17,8 +17,15 @@ Real profit needs external buyers + differentiation. Built two flagships led by 
   ($5) + free /preview endpoints showing the track record. Verified live: preview returns 43/43, paid = 402.
 - Self-update tools: record_signal_outcome added to Order_ChainFlow + StockOracle so the record stays honest
   as they grade sessions (prevents "43/43" rotting into a lie). Verified round-trip.
-- STILL OPEN (offered, not built): Fleet Consensus product, auto-publish pipeline (proposal->endpoint),
-  human distribution funnel. The real constraint remains EXTERNAL DEMAND, not supply.
+- FLEET CONSENSUS DONE (2026-07-19): octo_fleet_consensus.py — the un-copyable 7-agent panel product.
+  Reads the team channel, computes consensus (fresh-only tally), agreement %, avg conviction (parsed
+  from excerpts), DISSENT (who diverges), attaches the proven edges (43/43, 36/36), applies the same
+  20h freshness filter (stale X_Sentiment excluded). Live on all 3 surfaces: ACP "Fleet Consensus
+  (FLAGSHIP)" $3 under Octodamus; x402 /v2/signals/fleet-consensus $3 + free /preview (headline only);
+  handle_fleet_consensus in get_handler. Verified live: NEUTRAL, 100% agreement, conviction 2.0/5,
+  preview=headline, paid=402.
+- STILL OPEN (offered, not built): auto-publish pipeline (proposal->endpoint), human distribution funnel.
+  The real constraint remains EXTERNAL DEMAND, not supply.
 
 ## NYSE Peer-Consensus Fabrication Fix (2026-07-19)
 NYSE sub-agent briefs were fabricating peer consensus -- MacroMind claimed "3 of 5 RISK-ON" and
