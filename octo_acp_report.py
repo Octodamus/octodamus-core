@@ -26,16 +26,42 @@ from octo_health import send_email_alert
 EVENTS_FILE = Path(r"C:\Users\walli\octodamus\data\acp_events.jsonl")
 USDC_PER_JOB = 1.0  # default; funded event carries actual amount
 
+# Known agent wallet addresses (lowercase) -> display name
+KNOWN_AGENTS: dict[str, str] = {
+    "0xaa903a56ee1554db6973ddeff466f2cd52081fba": "Franklin (Agent_Ben)",
+    "0x755d7d2ff34736b46ed056c9e3775ead73524e1e": "Primary External Client",
+    "0xa0f940469eda402de08a8ea1b4a730e43e317035": "NYSE_MacroMind",
+    "0x46037f1a6d10308c9892f297a0d419aaa25131a4": "NYSE_StockOracle",
+    "0x40e77ae8cc09ff4456eda6df661e2c72c40e6672": "NYSE_Tech",
+    "0x89a430d9fa88eedd96565314438eef8258f0a58c": "OctoBoto",
+    "0xa78cfd4b00b96ba6090013f20095e7ac3b87e1b9": "Order_ChainFlow",
+    "0xc1f363fb216873dc2eb5f5a4a81352a059a61b46": "TokenBot_NYSE",
+    "0x3917798a66cf1e1ad453f8c7ffcd780a1b40a0b2": "X_Sentiment",
+}
+
 # report_type -> human-readable offering name (matches octo_report_handlers get_handler keys)
 REPORT_TYPE_NAMES = {
-    "market_signal":              "Market Signal",
-    "grok_sentiment_brief":       "Grok Sentiment Brief",
-    "fear_crowd_divergence":      "Fear vs Crowd Divergence",
-    "btc_bull_trap_monitor":      "BTC Bull Trap Monitor",
-    "overnight_brief":            "Overnight Asia Brief",
-    "agent_market_intel_bundle":  "Agent Market Intel Bundle",
-    "smithery_onboarding_brief":  "Smithery Onboarding Brief",
-    "tokenized_stock_signal":     "Tokenized Stock Signal",
+    "market_signal":                  "Market Signal",
+    "grok_sentiment_brief":           "Grok Sentiment Brief",
+    "fear_crowd_divergence":          "Fear vs Crowd Divergence",
+    "btc_bull_trap_monitor":          "BTC Bull Trap Monitor",
+    "btc_strike_proximity_alert":     "BTC Strike Proximity Alert",
+    "carry_unwind_risk_monitor":      "Carry Unwind Risk Monitor",
+    "congressional_silence_signal":   "Congressional Silence Signal",
+    "overnight_brief":                "Overnight Asia Brief",
+    "agent_market_intel_bundle":      "Agent Market Intel Bundle",
+    "smithery_onboarding_brief":      "Smithery Onboarding Brief",
+    "tokenized_stock_signal":         "Tokenized Stock Signal",
+    "cross_asset_divergence":         "Cross-Asset Divergence Alert",
+    "macro_event_edge":               "Macro Event Edge Report",
+    "btc_regime_pulse":               "BTC Regime Pulse",
+    "perp_funding_rate_signal":       "Perp Funding Rate Signal",
+    "nyse_macromind_brief":           "NYSE MacroMind Brief",
+    "nyse_stockoracle_brief":         "NYSE StockOracle Brief",
+    "nyse_tech_brief":                "NYSE Tech Agent Brief",
+    "order_chainflow_brief":          "Order ChainFlow Brief",
+    "x_sentiment_brief":              "X Sentiment Brief",
+    "bounty_hunter_recon":            "Bounty Hunter Recon",
 }
 
 
@@ -117,13 +143,33 @@ def parse_events() -> dict:
 
 
 def _worker_running() -> bool:
-    """Return True if the Octodamus-ACP-Worker task is running."""
+    """Return True if the ACP Worker process is alive.
+
+    Primary signal is heartbeat freshness: the worker logs a heartbeat every 30min
+    (see _heartbeat in octo_acp_worker.py), so a log touched within the last 45min
+    proves the main loop is running -- this also catches a hung process, which a bare
+    PID check would not. The PID/PowerShell check is only a fallback when the log is
+    stale/missing, so a transient PowerShell timeout can never produce a phantom DOWN.
+    """
+    from pathlib import Path as _Path
+    import subprocess as _sp
+    import time as _time
+    base = _Path(__file__).parent
+    log_file = base / "logs" / "octo_acp_worker.log"
     try:
-        result = subprocess.run(
-            ["schtasks", "/query", "/tn", "Octodamus-ACP-Worker", "/fo", "LIST"],
-            capture_output=True, text=True, encoding="utf-8", timeout=10
+        # Heartbeat is every 30min; allow one missed cycle before falling through.
+        if _time.time() - log_file.stat().st_mtime < 45 * 60:
+            return True
+    except OSError:
+        pass
+    pid_file = base / "data" / "acp_worker.pid"
+    try:
+        pid = int(pid_file.read_text().strip())
+        r = _sp.run(
+            ["powershell", "-Command", f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue) -ne $null"],
+            capture_output=True, text=True, timeout=8,
         )
-        return "Running" in result.stdout
+        return r.stdout.strip().lower() == "true"
     except Exception:
         return False
 
@@ -185,12 +231,11 @@ def build_report(context: str = "manual") -> str:
     for j in all_completed:
         ticker_counts[j["ticker"] or "unclassified"] += 1
 
-    # Client breakdown
+    # Client breakdown (keyed by full lowercase address for name resolution)
     client_counts: dict[str, int] = defaultdict(int)
     for j in all_funded:
         if j["client"]:
-            addr = j["client"][:10] + "..." + j["client"][-4:]
-            client_counts[addr] += 1
+            client_counts[j["client"].lower()] += 1
 
     # Current pipeline
     currently_funded  = [j for j in jobs.values() if j["status"] == "funded"]
@@ -198,7 +243,12 @@ def build_report(context: str = "manual") -> str:
 
     # Build email
     ts_str      = now_local.strftime("%Y-%m-%d %H:%M PST")
-    label       = "MORNING" if context == "morning" else "EVENING"
+    if context == "morning":
+        label = "MORNING"
+    elif context == "evening":
+        label = "EVENING"
+    else:
+        label = "MORNING" if now_local.hour < 12 else "EVENING"
     worker_up   = _worker_running()
     worker_line = "  ACP Worker:        RUNNING" if worker_up else "!! ACP Worker:       DOWN -- check Octodamus-ACP-Worker task"
 
@@ -239,8 +289,10 @@ def build_report(context: str = "manual") -> str:
         f"",
         f"--- All-Time Totals ---",
         f"  Total agent visits:    {total_visits}",
-        f"  Total funded:          {total_funded}",
-        f"  Total completed:       {total_completed}  ({total_completed/total_funded*100:.0f}% of funded)" if total_funded else f"  Total completed:       0",
+        f"  Total funded:          {total_funded}" + (f"  ({total_funded/total_visits*100:.0f}% visit->fund)" if total_visits else ""),
+        (f"  Total completed:       {total_completed}  ({total_completed/total_funded*100:.0f}% of funded -- healthy)" if total_funded and total_completed/total_funded >= 0.5 else
+         f"  Total completed:       {total_completed}  ({total_completed/total_funded*100:.0f}% of funded)" if total_funded else
+         f"  Total completed:       0"),
         f"  Total USDC earned:     ${total_revenue:.2f}",
         f"  Funded not completed:  {funded_gap} ({leakage_pct:.0f}% all-time -- {funded_gap} are pre-cache expired)" if funded_gap > 0 else f"  Funded not completed:  0",
         f"  Current-era leakage:   {era_gap} / {len(era_funded)} funded ({era_leakage:.0f}%)" + (" -- HEALTHY" if era_leakage == 0 else ""),
@@ -249,9 +301,13 @@ def build_report(context: str = "manual") -> str:
 
     if ticker_counts:
         lines.append("--- Completed Jobs by Ticker (all-time) ---")
-        for ticker, count in sorted(ticker_counts.items(), key=lambda x: -x[1]):
+        named   = {k: v for k, v in ticker_counts.items() if k != "unclassified"}
+        unnamed = {k: v for k, v in ticker_counts.items() if k == "unclassified"}
+        for ticker, count in sorted(named.items(), key=lambda x: -x[1]):
             bar = "#" * count
             lines.append(f"  {ticker:<8} {count:>3}  {bar}")
+        for ticker, count in unnamed.items():
+            lines.append(f"  {ticker:<8} {count:>3}")
         lines.append("")
 
     # Offering breakdown (all-time completed)
@@ -262,16 +318,21 @@ def build_report(context: str = "manual") -> str:
         offering_counts[name] += 1
     if offering_counts:
         unclassified_n = offering_counts.get("unclassified", 0)
-        note = f"  (note: {unclassified_n} unclassified = reportType not in pre-v2 events)" if unclassified_n else ""
-        lines.append(f"--- Completed Jobs by Offering (all-time) ---{note}")
+        lines.append("--- Completed Jobs by Offering (all-time) ---")
+        if unclassified_n:
+            lines.append(f"  (note: {unclassified_n} unclassified = reportType absent in pre-v2 events)")
         for name, count in sorted(offering_counts.items(), key=lambda x: -x[1]):
             lines.append(f"  {count:>3}x  {name}")
         lines.append("")
 
     if client_counts:
         lines.append("--- Agents by Funded Jobs (all-time) ---")
-        for addr, count in sorted(client_counts.items(), key=lambda x: -x[1]):
-            lines.append(f"  {addr}  {count} job(s)")
+        for raw_addr, count in sorted(client_counts.items(), key=lambda x: -x[1]):
+            name  = KNOWN_AGENTS.get(raw_addr)
+            short = raw_addr[:10] + "..." + raw_addr[-4:]
+            pct   = f"{count / total_funded * 100:.0f}%" if total_funded else ""
+            label = f"{name} ({short})" if name else f"External Agent ({short})"
+            lines.append(f"  {label}  {count} job(s)  {pct}")
         lines.append("")
 
     # Only show funded jobs <4h old (older ones expired on-chain already)
@@ -301,10 +362,13 @@ def build_report(context: str = "manual") -> str:
             lines.append(f"  Job #{j['id']} ({j['ticker'] or '--'})  {mins:.0f}min ago{flag}")
         lines.append("")
 
+    if not active_funded and not recent_open:
+        lines.append("  Pipeline: CLEAR -- no jobs pending payment or submission")
+        lines.append("")
+
     lines += [
         f"{'=' * 48}",
-        f"Dashboard: http://localhost:8901",
-        f"Events:    C:\\Users\\walli\\octodamus\\data\\acp_events.jsonl",
+        f"Events: C:\\Users\\walli\\octodamus\\data\\acp_events.jsonl",
     ]
 
     return "\n".join(lines)
