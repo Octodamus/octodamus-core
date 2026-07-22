@@ -409,8 +409,16 @@ def _fetch_price(asset: str) -> Optional[float]:
             price = t.fast_info.get("lastPrice") or t.info.get("regularMarketPrice")
             if price:
                 return float(price)
-        # Stocks via yfinance (bare ticker)
+        # Stocks: Robinhood Chain tokenized feed first (live 24/7, halt-aware),
+        # yfinance fallback for tickers not tokenized on Robinhood Chain.
         if asset not in CRYPTO:
+            try:
+                from octo_robinhood import get_mid
+                rh = get_mid(asset)
+                if rh and rh > 0:
+                    return rh
+            except Exception:
+                pass
             import yfinance as yf
             t = yf.Ticker(asset)
             price = t.fast_info.get("lastPrice") or t.info.get("regularMarketPrice")
@@ -490,11 +498,18 @@ def autoresolve() -> list:
             continue  # Polymarket calls resolve via Polymarket, not price feeds
         if not _is_expired(c):
             continue
-        # Stock tickers: only resolve during US market hours to avoid stale yfinance prices
+        # Stock tickers off-hours: resolve against Robinhood Chain's live 24/7 tokenized
+        # price when available (halt-aware); otherwise defer to avoid stale yfinance closes.
         asset = c["asset"].upper()
         if asset not in _CRYPTO_ASSETS and not _is_us_market_open():
-            print(f"[OctoCalls] {asset} is a stock — deferring resolve until US market hours (Mon-Fri 13:30-20:00 UTC)")
-            continue
+            try:
+                from octo_robinhood import get_mid as _rh_mid
+                _has_live = _rh_mid(asset) is not None
+            except Exception:
+                _has_live = False
+            if not _has_live:
+                print(f"[OctoCalls] {asset} is a stock with no live Robinhood price -- deferring resolve until US market hours (Mon-Fri 13:30-20:00 UTC)")
+                continue
         price = _fetch_price(c["asset"])
         if price is None:
             print(f"[OctoCalls] Could not fetch price for {c['asset']} — skipping #{c['id']}")

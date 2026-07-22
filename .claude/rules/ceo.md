@@ -99,9 +99,12 @@ Bottom: $7B annualized settlement run rate, **+50% QoQ**.
 3. **Tempo inclusion signals real-time liquidity routing.** Agent commerce can't pre-fund
    every chain. Tempo solves this. Its presence on Visa's chart is not accidental.
 
-4. **Robinhood + tokenized NYSE.** Brokers are filing to list tokenized stocks on Base for
-   24/7 agent-tradable equities. The new cohort of ACP clients won't just be crypto agents --
-   they'll be agents trading AAPL-on-Base, SPY-on-Base, MSFT-on-Base.
+4. **Robinhood + tokenized NYSE.** Brokers are listing tokenized stocks for 24/7 agent-tradable
+   equities -- but the venue is fragmenting, NOT converging on Base. Robinhood went live on its
+   OWN L2 (**Robinhood Chain, chainId 4663**) with 96+ active tickers and a public read-only
+   stock-token API (verified July 2026). Securitize/NYSE targets Ethereum/Arbitrum; Dinari is on
+   Base. The new ACP cohort trades AAPL/SPY/MSFT across all three. Octodamus consumes Robinhood
+   Chain's feed via `octo_robinhood.py` (24/7 price + halt + corporate actions).
 
 5. **Octodamus is already positioned.** x402-native, live on ACP, Base wallet active,
    tokenized_stock_signal offering built. The oracle layer for agentic finance exists now.
@@ -118,8 +121,10 @@ Bottom: $7B annualized settlement run rate, **+50% QoQ**.
    Key search terms: "ACP agent", "x402 payment", "Base agent", "tokenized equity agent".
 
 3. **Expand ACP offerings toward tokenized equities** -- tokenized_stock_signal is live.
-   When Robinhood/NYSE tokenized stocks go live on Base: add those tickers to the signal
-   stack. The agents trading them will need oracle intel. Octodamus is ready.
+   Robinhood Chain tokenized stocks are ALREADY live (96+ tickers incl. AAPL/NVDA/TSLA/SPY/QQQ);
+   octo_robinhood.py already reads them. Be venue-agnostic: cover the ticker regardless of chain
+   (Robinhood Chain / Base-Dinari / Ethereum-Arbitrum). The cross-venue price/signal reference is
+   the moat -- no single chain is "the wave." The agents trading them will need oracle intel.
 
 4. **Orbis listing update** -- Update agentarena.site profile to "Agentic Finance Intelligence
    Oracle" framing. Payload updated in register_erc8004.py. Costs $0.05 USDC on Base.
