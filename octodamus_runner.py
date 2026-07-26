@@ -148,6 +148,7 @@ from octo_personality import (
     build_x_system_prompt as _build_x_sys,
     get_voice_instruction,
     parse_thread_output,
+    RESERVED_CALL_RULE,
 )
 from octo_congress import run_congress_scan, run_full_congress_scan, format_congress_for_prompt, filter_unposted_trades, mark_trades_posted
 from octo_govcontracts import run_govcontracts_scan, format_govcontracts_for_prompt, get_top_contract_for_post
@@ -2251,6 +2252,7 @@ def mode_wisdom() -> None:
             "One post, under 240 chars. Do NOT pad to fill the limit — stop when the thought is complete.\n"
             "Anchor to a specific number, level, or recent event — not a vague assertion.\n"
             "Your answer must imply what comes NEXT — not just what is happening now.\n"
+            f"{RESERVED_CALL_RULE}"
             "Do NOT start with a label, header, or format name. Output only the post text."
         )
         post = _haiku_generate(OCTO_SYSTEM, user_msg, max_tokens=250)
@@ -2668,8 +2670,7 @@ You track 10 major technology predictions for 2026 from leading futurists.
 Your job: find ONE prediction that has the most interesting real-world signal RIGHT NOW.
 Write one oracle post about it — what's actually happening, what does it signal?
 Be specific. Use data if you have it. Connect it to the bigger picture.
-Do NOT write Oracle call: — this is analysis, not a directional trade call.
-Under 480 chars. No hashtags."""
+""" + RESERVED_CALL_RULE + """Under 480 chars. No hashtags."""
 
         prompt = (
             f"{moonshot_ctx}\n\n"

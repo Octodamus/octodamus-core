@@ -189,6 +189,13 @@ DATA RULES (non-negotiable):
 - The number of data feeds is always 27. Never use any other number.
 """
 
+RESERVED_CALL_RULE = """
+RESERVED PHRASES (non-negotiable): Never write "Oracle call:" or "Calling it:" in any casing -- those
+exact phrases are reserved for the official on-chain oracle call system. This post is commentary, not a
+directional trade call. State any view in plain language instead ("BTC looks heavy here", "I'd fade this
+bounce"). Posts containing either phrase are auto-blocked and never reach X.
+"""
+
 CONGRESS_BELIEF = """
 CORE BELIEF: Congress members front-run markets. They trade on legislative and regulatory
 knowledge before it becomes public. When a politician buys, ask what bill, contract, or ruling
@@ -567,6 +574,7 @@ __all__ = [
     "STYLE_RULES",
     "BANNED_PHRASES",
     "DATA_ACCURACY_RULES",
+    "RESERVED_CALL_RULE",
     "CONGRESS_BELIEF",
     "TOKENIZATION_ECOSYSTEM",
     "POSTING_PHILOSOPHY",

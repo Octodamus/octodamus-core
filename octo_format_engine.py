@@ -31,7 +31,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
-from octo_personality import OCTO_CORE, STYLE_RULES, BANNED_PHRASES, DATA_ACCURACY_RULES
+from octo_personality import OCTO_CORE, STYLE_RULES, BANNED_PHRASES, DATA_ACCURACY_RULES, RESERVED_CALL_RULE
 
 try:
     from openai import OpenAI as _OpenAI
@@ -272,6 +272,7 @@ def _build_format_prompt(fmt: str, live_data: dict, context: str = "") -> str:
     # Base identity block used in all formats
     identity = f"""{OCTO_CORE}
 {DATA_ACCURACY_RULES}
+{RESERVED_CALL_RULE}
 LIVE DATA: {market_line}
 {context}
 """
