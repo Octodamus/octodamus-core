@@ -9,18 +9,34 @@ v2 fixes:
 - Added btc_dominance at top level for easy access
 """
 
+import os
 import time
 import requests
 from datetime import datetime
 
 GECKO_BASE = "https://api.coingecko.com/api/v3"
-HEADERS    = {"User-Agent": "octodamus-oracle/1.0 (@octodamusai)"}
 _DELAY     = 1.2
+
+
+def _headers() -> dict:
+    """Request headers, including a CoinGecko Demo API key when one is configured.
+
+    The keyless free tier rate-limits hard (HTTP 429) and the IP is shared across ~20
+    Octodamus modules. A free Demo key (COINGECKO_API_KEY in .octo_secrets, loaded to env
+    by bitwarden.load_all_secrets) lifts the limit to ~30 calls/min and largely ends 429s.
+    Falls back to keyless behaviour when no key is set.
+    """
+    h = {"User-Agent": "octodamus-oracle/1.0 (@octodamusai)"}
+    key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        h["x-cg-demo-api-key"] = key
+    return h
+
 
 # CoinGecko free tier rate-limits hard (HTTP 429). The API server hits these fetchers on
 # many endpoints, so cache recent results and serve the last good value on failure.
 _CACHE: dict = {}
-_CACHE_TTL   = 90  # seconds
+_CACHE_TTL   = 120  # seconds
 
 
 def _ttl_cache(key: str, ttl: int = _CACHE_TTL):
@@ -49,7 +65,7 @@ TRACK_IDS = [
 def _get_global() -> dict:
     """Fetch global crypto market data. Always returns dict."""
     try:
-        r = requests.get(f"{GECKO_BASE}/global", headers=HEADERS, timeout=12)
+        r = requests.get(f"{GECKO_BASE}/global", headers=_headers(), timeout=12)
         r.raise_for_status()
         data = r.json().get("data") or {}
         btc_dom = round(float((data.get("market_cap_percentage") or {}).get("btc", 0) or 0), 1)
@@ -71,7 +87,7 @@ def _get_global() -> dict:
 def _get_trending() -> list:
     """Fetch trending coins. Always returns list."""
     try:
-        r = requests.get(f"{GECKO_BASE}/search/trending", headers=HEADERS, timeout=12)
+        r = requests.get(f"{GECKO_BASE}/search/trending", headers=_headers(), timeout=12)
         r.raise_for_status()
         coins = r.json().get("coins") or []
         return [
@@ -103,7 +119,7 @@ def _get_prices(ids: list) -> list:
                 "sparkline": "false",
                 "price_change_percentage": "24h,7d",
             },
-            headers=HEADERS,
+            headers=_headers(),
             timeout=15,
         )
         r.raise_for_status()
