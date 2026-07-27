@@ -553,12 +553,19 @@ _BAZAAR_EXT = {
     }
 }
 
+# RFC 7235 challenge for broad client compatibility. The canonical trigger is the
+# base64 payment-required header (x402 SDK v2), but some x402 clients gate on
+# WWW-Authenticate; emit it as an additive secondary signal on every 402.
+_WWW_AUTH = 'x402 realm="Octodamus"'
+
+
 def _x402_headers(amount_usdc: float = 29.0) -> dict:
     """Build 402 response headers via Coinbase x402 SDK with Bazaar discovery extension.
     The Bazaar extension makes Agentic.Market auto-index this endpoint."""
     pr = _x402_server.create_payment_required_response(_X402_REQS, extensions=_BAZAAR_EXT)
     pr_b64 = _b64.b64encode(pr.model_dump_json(by_alias=True).encode()).decode()
     return {
+        "WWW-Authenticate":   _WWW_AUTH,
         "payment-required":   pr_b64,
         "X-Payment-Required": json.dumps({
             "version": "x402/1",
@@ -680,6 +687,7 @@ def _x402_headers_legacy(amount_usdc: float = 29.0) -> dict:
         json.dumps(v2_payload, separators=(",", ":")).encode()
     ).decode()
     return {
+        "WWW-Authenticate":   _WWW_AUTH,
         "X-Payment-Required": json.dumps(_x402_header(amount_usdc)),
         "payment-required":   v2_b64,
     }
@@ -785,7 +793,7 @@ def _x402_headers_disc(path: str, amount_usdc: float = 0.02) -> dict:
         "accepts": [accepts_entry],
     }
     v2_b64 = base64.b64encode(json.dumps(v2_payload, separators=(",", ":")).encode()).decode()
-    return {"X-Payment-Required": json.dumps(_x402_header(amount_usdc)), "payment-required": v2_b64}
+    return {"WWW-Authenticate": _WWW_AUTH, "X-Payment-Required": json.dumps(_x402_header(amount_usdc)), "payment-required": v2_b64}
 
 
 async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADER)):
@@ -2204,7 +2212,8 @@ def well_known_x402():
     Describes all paywalled endpoints, accepted payment schemes, and pricing.
     """
     return {
-        "version": "x402/1",
+        "version": "x402/2",
+        "x402Version": 2,
         "provider": {
             "name":        "Octodamus Market Intelligence",
             "description": "AI oracle for crypto and tokenized NYSE markets. BUY/SELL/HOLD signals, Polymarket edge detection, congressional trading intelligence, cross-asset macro regime. 27 live feeds. Ed25519 signed. Pay per call on Base or free key (500 req/day).",
@@ -2374,6 +2383,27 @@ def well_known_x402():
             "notes": "Octodamus is compatible with Amazon Bedrock AgentCore Payments (x402 + Coinbase CDP). Agents built on AgentCore can call any endpoint here using the standard x402 EIP-3009 payment header. No pre-registration required. discoverable at agentic.market.",
         },
     }
+
+
+@app.get("/.well-known/security.txt", include_in_schema=False)
+@app.get("/security.txt", include_in_schema=False)
+def well_known_security_txt():
+    """RFC 9116 security policy -- lets paying agents assess the trust boundary before transacting."""
+    body = (
+        "# Octodamus x402 Market Intelligence -- security policy (RFC 9116)\n"
+        "# Trust boundary: read-only market-intelligence API. Paid endpoints settle USDC on Base\n"
+        "# (eip155:8453) via x402 / EIP-3009. No caller funds are custodied and no private keys are\n"
+        "# accepted. Outbound data fetches target a fixed allowlist of providers only -- callers\n"
+        "# cannot supply URLs, so no SSRF surface is exposed. Responses are Ed25519-signed; verify\n"
+        "# against the public key in /.well-known/x402.json.\n"
+        "Contact: mailto:octodamusai@gmail.com\n"
+        "Contact: https://x.com/octodamusai\n"
+        "Expires: 2027-07-25T00:00:00.000Z\n"
+        "Preferred-Languages: en\n"
+        "Canonical: https://api.octodamus.com/.well-known/security.txt\n"
+        "Policy: https://api.octodamus.com/.well-known/x402.json\n"
+    )
+    return _StarResponse(content=body, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/.well-known/bazaar.json", include_in_schema=False)
@@ -4229,6 +4259,7 @@ def _x402_headers_for(reqs: list) -> dict:
     pr = _x402_server.create_payment_required_response(reqs, extensions=_BAZAAR_EXT)
     pr_b64 = _b64.b64encode(pr.model_dump_json(by_alias=True).encode()).decode()
     return {
+        "WWW-Authenticate":   _WWW_AUTH,
         "payment-required":   pr_b64,
         "X-Payment-Required": json.dumps({"version": "x402/1", "accepts": [r.model_dump(by_alias=True) for r in reqs]}),
     }
