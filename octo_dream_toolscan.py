@@ -50,6 +50,11 @@ _BENIGN_RE = re.compile(
     # Expected-absent optional config + external 404 probes
     r"Optional not set|Optional missing|BW CLI error|Not found\.|"
     r"HTTP/1\.1 404|404 Not Found|"
+    # Transient Telegram upstream (getUpdates 502) — python-telegram-bot auto-retries
+    r"502 Bad Gateway|telegram\.error\.NetworkError|Bad Gateway|raise exception|"
+    # Handled external-service states: Runway credits exhausted (returns None, non-fatal),
+    # OXR->frankfurter free fallback timeout, and x402 probes signing a placeholder recipient
+    r"enough credits to run this task|Frankfurter fallback failed|recipient mismatch|"
     # Client disconnected mid-response (no exception follows) — not a server bug
     r"ASGI callable returned without completing response)",
     re.IGNORECASE,

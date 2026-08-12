@@ -11,8 +11,10 @@ v2 fixes:
 
 import os
 import time
+import json
 import requests
 from datetime import datetime
+from pathlib import Path
 
 GECKO_BASE = "https://api.coingecko.com/api/v3"
 _DELAY     = 1.2
@@ -33,10 +35,32 @@ def _headers() -> dict:
     return h
 
 
-# CoinGecko free tier rate-limits hard (HTTP 429). The API server hits these fetchers on
-# many endpoints, so cache recent results and serve the last good value on failure.
-_CACHE: dict = {}
-_CACHE_TTL   = 120  # seconds
+# CoinGecko free tier rate-limits hard (HTTP 429). The API server, runner, and Telegram bot
+# each hit these fetchers from separate processes that share one outbound IP, so an in-process
+# cache alone can't stop the 429 spam. Back the cache with a small disk file so a fresh process
+# starts warm and serves the last good value on failure instead of re-hammering the free tier.
+_CACHE_TTL   = 300  # seconds — 5-min market granularity is fine for oracle prompts
+_CACHE_FILE  = Path(__file__).parent / "data" / "gecko_cache.json"
+
+
+def _read_disk_cache() -> dict:
+    try:
+        return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_disk_cache(cache: dict) -> None:
+    try:
+        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        tmp.replace(_CACHE_FILE)          # atomic on Windows + POSIX
+    except Exception:
+        pass
+
+
+_CACHE: dict = _read_disk_cache()          # {ck: [ts, val]} — shared across processes via disk
 
 
 def _ttl_cache(key: str, ttl: int = _CACHE_TTL):
@@ -49,8 +73,12 @@ def _ttl_cache(key: str, ttl: int = _CACHE_TTL):
             val = fn(*args, **kwargs)
             if val:                       # only cache real data
                 _CACHE[ck] = (time.time(), val)
+                _write_disk_cache(_CACHE)
                 return val
-            return hit[1] if hit else val  # serve stale on 429/empty instead of nothing
+            if hit:
+                return hit[1]             # serve stale on 429/empty instead of nothing
+            fresh = _read_disk_cache().get(ck)  # another process may have refreshed since import
+            return fresh[1] if fresh else val
         return wrap
     return deco
 
@@ -142,6 +170,53 @@ def _get_prices(ids: list) -> list:
         return []
 
 
+# ID -> symbol for the degraded fallback below (/simple/price omits symbols).
+_ID_SYMBOL = {
+    "bitcoin": "BTC", "ethereum": "ETH", "solana": "SOL", "binancecoin": "BNB",
+    "ripple": "XRP", "cardano": "ADA", "avalanche-2": "AVAX", "polkadot": "DOT",
+    "chainlink": "LINK", "uniswap": "UNI", "dogecoin": "DOGE", "shiba-inu": "SHIB",
+    "pepe": "PEPE", "sui": "SUI", "aptos": "APT",
+}
+
+
+def _get_prices_simple(ids: list) -> list:
+    """Bare spot-price fallback for a cold 429: /coins/markets failed and no cache exists.
+
+    Only `price` is populated — change %, market cap, and rank stay null. /simple/price is a
+    lighter endpoint but shares the same per-IP limit, so this is a best-effort degrade, not
+    a fix. Fetched outside the ttl cache so partial rows never overwrite full cached data.
+    """
+    try:
+        r = requests.get(
+            f"{GECKO_BASE}/simple/price",
+            params={"ids": ",".join(ids), "vs_currencies": "usd"},
+            headers=_headers(),
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+        results = []
+        for cid in ids:
+            row = data.get(cid)
+            if not row:
+                continue
+            results.append({
+                "id":         cid,
+                "symbol":     _ID_SYMBOL.get(cid, cid.upper()),
+                "name":       cid,
+                "price":      row.get("usd"),
+                "market_cap": None,
+                "volume_24h": None,
+                "chg_24h":    None,
+                "chg_7d":     None,
+                "rank":       None,
+            })
+        return results
+    except Exception as e:
+        print(f"[OctoGecko] Simple-price fallback failed: {e}")
+        return []
+
+
 def run_gecko_scan() -> dict:
     """
     Full CoinGecko scan. Always returns a complete dict — never None.
@@ -164,6 +239,10 @@ def run_gecko_scan() -> dict:
     time.sleep(_DELAY)
 
     prices = _get_prices(TRACK_IDS)
+    if not prices:
+        # Cold 429: /coins/markets failed and the ttl cache had nothing to serve.
+        # Degrade to bare spot prices so `price` is at least populated this scan.
+        prices = _get_prices_simple(TRACK_IDS)
 
     gainers = sorted(
         [p for p in prices if p.get("chg_24h") is not None],

@@ -820,7 +820,16 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
             except Exception:
                 raw = x_payment.encode() if isinstance(x_payment, str) else x_payment
 
-            payload = _parse_x402_payload(raw)
+            # Probes send empty/garbage payment headers — a JSONDecodeError here was
+            # bubbling to the outer except and logging as an error. Return a clean 402.
+            try:
+                payload = _parse_x402_payload(raw)
+            except Exception:
+                raise HTTPException(
+                    status_code=402,
+                    headers=_x402_headers(),
+                    detail={"error": "payment_invalid", "message": "Could not parse payment payload"},
+                )
 
             # Try each requirement until one verifies
             verified_req = None

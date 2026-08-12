@@ -6,7 +6,7 @@ Open Exchange Rates free tier — 1000 req/month, base USD.
 Free API key at: openexchangerates.org/signup/free
 
 Bitwarden key: AGENT - Octodamus - Open Exchange Rates
-Env var:       OPENEXCHANGERATES_API_KEY
+Env var:       OPEN_EXCHANGE_RATES_API_KEY
 
 Tracks:
   - Dollar Index proxy (DXY via EUR, GBP, JPY, CNY weights)
@@ -43,6 +43,25 @@ TRACK_CURRENCIES = {
     "em":     ["MXN", "BRL", "TRY", "INR", "KRW", "SGD"],
     "crypto_proxy": ["CNY", "RUB"],  # China/Russia exposure
 }
+
+
+def _fetch_rates_free() -> dict | None:
+    """Fetch rates from frankfurter.app (ECB data, no API key required)."""
+    symbols = ",".join(set(
+        list(DXY_WEIGHTS.keys()) + TRACK_CURRENCIES["majors"]
+    ))
+    try:
+        r = requests.get(
+            "https://api.frankfurter.app/latest",
+            params={"from": "USD", "to": symbols},
+            headers=HEADERS,
+            timeout=12,
+        )
+        r.raise_for_status()
+        return r.json().get("rates", {})
+    except Exception as e:
+        print(f"[OctoFX] Frankfurter fallback failed: {e}")
+        return None
 
 
 def _fetch_rates(api_key: str) -> dict | None:
@@ -124,13 +143,17 @@ def _interpret_fx(rates: dict, dxy: float | None) -> dict:
 
 def run_fx_scan(api_key: str | None = None) -> dict:
     if api_key is None:
-        api_key = os.environ.get("OPENEXCHANGERATES_API_KEY")
-    if not api_key:
-        print("[OctoFX] No OPENEXCHANGERATES_API_KEY — FX scan skipped.")
-        return {"error": "no_api_key", "rates": {}}
+        api_key = os.environ.get("OPEN_EXCHANGE_RATES_API_KEY")
 
-    print("[OctoFX] Fetching currency rates...")
-    rates = _fetch_rates(api_key)
+    rates = None
+    if api_key:
+        print("[OctoFX] Fetching currency rates (OXR)...")
+        rates = _fetch_rates(api_key)
+
+    if not rates:
+        print("[OctoFX] Using frankfurter.app (ECB rates, no key required)...")
+        rates = _fetch_rates_free()
+
     if not rates:
         return {"error": "fetch_failed", "rates": {}}
 

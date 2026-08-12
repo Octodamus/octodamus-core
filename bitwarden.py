@@ -93,6 +93,10 @@ OCTODAMUS_SECRETS = {
 }
 
 OCTODAMUS_OPTIONAL_SECRETS = {
+    # Free CoinGecko Demo key (x-cg-demo-api-key). Without it octo_gecko runs the keyless
+    # free tier, which 429s hard on the shared IP across ~15 modules. Create at
+    # coingecko.com/en/developers/dashboard, store password field in this Bitwarden item.
+    "AGENT - Octodamus - CoinGecko API":            "COINGECKO_API_KEY",
     "AGENT - Octodamus - Finance - Bankr":          "BANKR_API_KEY",
     "AGENT - Octodamus - Finance - Bankr - Wallet": "BANKR_API_KEY",  # wins if both exist — user keeps this one updated
     "AGENT - Octodamus - Payments - Whop - API Key":     "WHOP_API_KEY",
