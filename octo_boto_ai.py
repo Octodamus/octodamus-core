@@ -534,10 +534,14 @@ Confidence guide:
     try:
         client = anthropic.Anthropic(api_key=api_key)
 
+        # Prompt caching: the full system prompt (framework + brain + calibration) is byte-stable
+        # across every market in a scan, so a cache_control breakpoint lets markets 2..N read the
+        # ~3.3k-token prefix from cache (~0.1x) instead of paying full input price each time.
+        _boto_system = SYSTEM_PROMPT + get_brain_context() + get_calibration_context()
         kwargs = {
             "model":      MODEL,
             "max_tokens": MAX_TOKENS,
-            "system":     SYSTEM_PROMPT + get_brain_context() + get_calibration_context(),
+            "system":     [{"type": "text", "text": _boto_system, "cache_control": {"type": "ephemeral"}}],
             "messages":   [{"role": "user", "content": prompt}],
         }
         if use_search:
