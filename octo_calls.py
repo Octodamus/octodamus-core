@@ -20,6 +20,23 @@ from typing import Optional
 
 CALLS_FILE = Path(__file__).parent / "data" / "octo_calls.json"
 
+# CoinGecko id map + demo-key headers, shared by price fetch and target-hit detection.
+# Without the demo key these calls run the keyless free tier, which 429s on the shared IP and
+# silently starves autoresolve (returns None -> calls never resolve). See octo_gecko._headers().
+_CG_IDS = {
+    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binancecoin",
+    "XRP": "ripple", "DOGE": "dogecoin", "AVAX": "avalanche-2", "LINK": "chainlink",
+    "UNI": "uniswap",
+}
+
+
+def _cg_headers() -> dict:
+    h = {"User-Agent": "octodamus-oracle/1.0 (@octodamusai)"}
+    key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        h["x-cg-demo-api-key"] = key
+    return h
+
 
 # ── Market snapshot (captured at call time AND resolution time) ───────────────
 
@@ -385,23 +402,31 @@ def resolve_call(call_id: int, exit_price: float) -> Optional[dict]:
 def _fetch_price(asset: str) -> Optional[float]:
     """Fetch current price for an asset."""
     try:
-        import requests
+        import requests, time as _t
         asset = asset.upper()
-        CRYPTO = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
-        cg_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
-                  "BNB": "binancecoin", "XRP": "ripple", "DOGE": "dogecoin",
-                  "AVAX": "avalanche-2", "LINK": "chainlink", "UNI": "uniswap"}
-        # Crypto: CoinGecko first
-        if asset in cg_map:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": cg_map[asset], "vs_currencies": "usd"},
-                timeout=8
-            )
-            if r.status_code == 200:
-                price = r.json().get(cg_map[asset], {}).get("usd")
-                if price and float(price) > 1:   # sanity: ETH/BTC should never be <$1
-                    return float(price)
+        CRYPTO = _CRYPTO_ASSETS
+        # Crypto: CoinGecko first (demo key + brief retry so a transient 429/timeout on the
+        # shared IP doesn't return None and leave the call unresolved -- the root cause of the
+        # Aug-18 calls sitting open for 11 days).
+        if asset in _CG_IDS:
+            for attempt in range(3):
+                try:
+                    r = requests.get(
+                        "https://api.coingecko.com/api/v3/simple/price",
+                        params={"ids": _CG_IDS[asset], "vs_currencies": "usd"},
+                        headers=_cg_headers(), timeout=10,
+                    )
+                    if r.status_code == 200:
+                        price = r.json().get(_CG_IDS[asset], {}).get("usd")
+                        if price and float(price) > 1:   # sanity: ETH/BTC should never be <$1
+                            return float(price)
+                    elif r.status_code == 429 and attempt < 2:
+                        _t.sleep(2 * (attempt + 1)); continue
+                    break
+                except requests.exceptions.RequestException:
+                    if attempt < 2:
+                        _t.sleep(2 * (attempt + 1)); continue
+                    break
         # Crypto fallback: yfinance with -USD suffix
         if asset in CRYPTO:
             import yfinance as yf
@@ -429,49 +454,81 @@ def _fetch_price(asset: str) -> Optional[float]:
     return None
 
 
-def _is_expired(call: dict) -> bool:
-    """Check if a call has exceeded its timeframe."""
+def _expiry_dt(call: dict) -> Optional[datetime]:
+    """The datetime at which a call's timeframe closes, or None if made_at is unparseable.
+    Single source of truth for both expiry checks and the target-hit window bound."""
     made = call.get("made_at", "")
     tf = call.get("timeframe", "24h").lower().strip()
-
     try:
         made_dt = datetime.strptime(made, "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
     except Exception:
-        return False
-
-    now = datetime.now(timezone.utc)
+        return None
 
     if "h" in tf and "d" not in tf:
         hours = int(re.search(r"(\d+)", tf).group(1)) if re.search(r"(\d+)", tf) else 24
-        return now > made_dt + timedelta(hours=hours)
+        return made_dt + timedelta(hours=hours)
     elif tf.endswith("d") and re.match(r"^\d+d$", tf):
-        # e.g. "5d" → 5 calendar days from made_at
         days = int(re.search(r"(\d+)", tf).group(1))
-        return now > made_dt + timedelta(days=days)
-    elif "friday" in tf:
-        # Expired if it's Saturday or later
-        days_until_sat = (5 - made_dt.weekday()) % 7
-        if days_until_sat == 0:
-            days_until_sat = 7
-        expiry = made_dt.replace(hour=21, minute=0) + timedelta(days=days_until_sat)
-        return now > expiry
-    elif "end of week" in tf or "eow" in tf:
-        days_until_sat = (5 - made_dt.weekday()) % 7
-        if days_until_sat == 0:
-            days_until_sat = 7
-        expiry = made_dt.replace(hour=21, minute=0) + timedelta(days=days_until_sat)
-        return now > expiry
+        return made_dt + timedelta(days=days)
+    elif "friday" in tf or "end of week" in tf or "eow" in tf:
+        days_until_sat = (5 - made_dt.weekday()) % 7 or 7
+        return made_dt.replace(hour=21, minute=0) + timedelta(days=days_until_sat)
     elif "wednesday" in tf or "thursday" in tf or "tuesday" in tf or "monday" in tf:
         day_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3}
         target_day = day_map.get(tf.split()[0], made_dt.weekday())
-        days_until = (target_day - made_dt.weekday()) % 7
-        if days_until == 0:
-            days_until = 7
-        expiry = made_dt.replace(hour=21, minute=0) + timedelta(days=days_until)
-        return now > expiry
+        days_until = (target_day - made_dt.weekday()) % 7 or 7
+        return made_dt.replace(hour=21, minute=0) + timedelta(days=days_until)
     else:
         # Default: 48h expiry
-        return now > made_dt + timedelta(hours=48)
+        return made_dt + timedelta(hours=48)
+
+
+def _is_expired(call: dict) -> bool:
+    """Check if a call has exceeded its timeframe."""
+    exp = _expiry_dt(call)
+    return exp is not None and datetime.now(timezone.utc) > exp
+
+
+def _target_hit_during_window(call: dict) -> Optional[float]:
+    """If a crypto call's target was TOUCHED at any point during [made_at, expiry], return the
+    target price; else None. This fixes the point-in-time blind spot: a call that spiked to its
+    target intraday then retraced is a WIN, but autoresolve's single current-price check misses it.
+
+    Crypto only (CoinGecko historical range). Returns None for stocks, missing target, unparseable
+    dates, or any fetch failure -- callers then fall back to the current-price settle path.
+    """
+    asset = call.get("asset", "").upper()
+    tgt = call.get("target_price")
+    direction = call.get("direction", "").upper()
+    if asset not in _CG_IDS or not tgt or direction not in ("UP", "DOWN"):
+        return None
+    try:
+        made_dt = datetime.strptime(call.get("made_at", ""), "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    end_dt = _expiry_dt(call)
+    if not end_dt:
+        return None
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{_CG_IDS[asset]}/market_chart/range",
+            params={"vs_currency": "usd", "from": int(made_dt.timestamp()), "to": int(end_dt.timestamp())},
+            headers=_cg_headers(), timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        prices = [p[1] for p in (r.json().get("prices") or []) if p and p[1]]
+        if not prices:
+            return None
+    except Exception:
+        return None
+    tgt = float(tgt)
+    if direction == "UP" and max(prices) >= tgt:
+        return tgt
+    if direction == "DOWN" and min(prices) <= tgt:
+        return tgt
+    return None
 
 
 _CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
@@ -498,22 +555,30 @@ def autoresolve() -> list:
             continue  # Polymarket calls resolve via Polymarket, not price feeds
         if not _is_expired(c):
             continue
-        # Stock tickers off-hours: resolve against Robinhood Chain's live 24/7 tokenized
-        # price when available (halt-aware); otherwise defer to avoid stale yfinance closes.
         asset = c["asset"].upper()
-        if asset not in _CRYPTO_ASSETS and not _is_us_market_open():
-            try:
-                from octo_robinhood import get_mid as _rh_mid
-                _has_live = _rh_mid(asset) is not None
-            except Exception:
-                _has_live = False
-            if not _has_live:
-                print(f"[OctoCalls] {asset} is a stock with no live Robinhood price -- deferring resolve until US market hours (Mon-Fri 13:30-20:00 UTC)")
-                continue
-        price = _fetch_price(c["asset"])
+        # Target-hit takes precedence: a crypto call whose target was touched anywhere in its
+        # window is a WIN, even if price later retraced below the target by the time we check.
+        # resolve at the target price (which is by construction a >=1% move, so resolve_call
+        # marks it WIN). None -> target not hit / not crypto / no historical data -> settle below.
+        price = _target_hit_during_window(c)
         if price is None:
-            print(f"[OctoCalls] Could not fetch price for {c['asset']} — skipping #{c['id']}")
-            continue
+            # Stock tickers off-hours: resolve against Robinhood Chain's live 24/7 tokenized
+            # price when available (halt-aware); otherwise defer to avoid stale yfinance closes.
+            if asset not in _CRYPTO_ASSETS and not _is_us_market_open():
+                try:
+                    from octo_robinhood import get_mid as _rh_mid
+                    _has_live = _rh_mid(asset) is not None
+                except Exception:
+                    _has_live = False
+                if not _has_live:
+                    print(f"[OctoCalls] {asset} is a stock with no live Robinhood price -- deferring resolve until US market hours (Mon-Fri 13:30-20:00 UTC)")
+                    continue
+            price = _fetch_price(c["asset"])
+            if price is None:
+                print(f"[OctoCalls] Could not fetch price for {c['asset']} — skipping #{c['id']}")
+                continue
+        else:
+            print(f"[OctoCalls] #{c['id']} {asset} {c['direction']} target touched in-window -- resolving WIN at target ${price:,.2f}")
         result = resolve_call(c["id"], price)
         if result:
             # Generate post-mortem and save it back into the call record
