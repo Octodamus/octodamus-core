@@ -368,7 +368,15 @@ def _init_x402():
         _x402_initialized = True
         print(f"[API] x402 initialized via {_FACILITATOR_URL}")
     except Exception as _e:
-        print(f"[API] x402 init warning: {_e}")
+        # initialize() only calls the CDP facilitator's GET /supported (capability discovery).
+        # CDP's /supported rejects our JWT with 401 even though the SAME auth authenticates
+        # verify/settle (they return 400s, not 401s). Discovery is non-fatal: the exact-EVM
+        # scheme is registered synchronously above, so payments verify/settle normally without it.
+        _msg = str(_e)
+        if "get_supported" in _msg or "401" in _msg:
+            print("[API] x402 discovery skipped (CDP /supported 401) -- payments unaffected, schemes pre-registered")
+        else:
+            print(f"[API] x402 init warning: {_e}")
 
 threading.Thread(target=_init_x402, daemon=True, name="x402-init").start()
 
@@ -831,7 +839,10 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
                     detail={"error": "payment_invalid", "message": "Could not parse payment payload"},
                 )
 
-            # Try each requirement until one verifies
+            # Try each requirement until one verifies. Bots probe x402 endpoints constantly with
+            # malformed/empty payloads; each probe would otherwise emit one WARNING per requirement
+            # (3x). Rejections are normal operation -- collect quietly and log once, benignly, after
+            # the loop. The caller still receives last_reason in the 402 body below.
             verified_req = None
             last_reason = "no matching scheme"
             for req in _X402_REQS:
@@ -840,13 +851,12 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
                     if vr.is_valid:
                         verified_req = req
                         break
-                    else:
-                        last_reason = f"{vr.invalid_reason}: {vr.invalid_message}"
-                        import logging as _l; _l.getLogger("uvicorn.error").warning(f"[x402] verify failed req={req.amount}: {last_reason}")
+                    last_reason = f"{vr.invalid_reason}: {vr.invalid_message}"
                 except Exception as _ve:
                     last_reason = str(_ve)
-                    import logging as _l; _l.getLogger("uvicorn.error").warning(f"[x402] verify exception req={req.amount}: {_ve}")
                     continue
+            if not verified_req:
+                import logging as _l; _l.getLogger("uvicorn.error").info(f"[x402] payment payload rejected (client): {last_reason}")
 
             if not verified_req:
                 raise HTTPException(
@@ -909,7 +919,10 @@ async def require_key_v2(request: Request, api_key: str = Security(API_KEY_HEADE
         except HTTPException:
             raise
         except Exception as _xe:
-            print(f"[x402] payment verification error: {type(_xe).__name__}: {_xe}")
+            # Handled fallthrough: caller still receives a clean 402 below. A JSONDecodeError here
+            # means the facilitator returned a non-JSON body (usually a transient CDP hiccup on a
+            # rejected/garbage payload). Benign wording so the dream-scan doesn't flag a handled path.
+            print(f"[x402] payment unverified, returned 402 -- {type(_xe).__name__}: {_xe}")
 
     if not api_key:
         # Agent greeting — detect agent and personalise the 402

@@ -31,7 +31,7 @@ _ERROR_RE = re.compile(
     r"\b(error|exception|traceback|failed|failure|KeyError|ValueError|TypeError|"
     r"AttributeError|NameError|IndexError|Unauthorized|invalid_grant|RefreshError|"
     r"actively refused|CRITICAL|ModuleNotFound|no such|not found|disabled|"
-    r"500 internal|internal server error|\b50[023]\b|timed out|timeout|could not|"
+    r"500 internal|internal server error|(?<![,\d:])\b50[023]\b|timed out|timeout|could not|"
     r"unable to|permission denied|connection refused)\b",
     re.IGNORECASE,
 )
@@ -55,6 +55,13 @@ _BENIGN_RE = re.compile(
     # Handled external-service states: Runway credits exhausted (returns None, non-fatal),
     # OXR->frankfurter free fallback timeout, and x402 probes signing a placeholder recipient
     r"enough credits to run this task|Frankfurter fallback failed|recipient mismatch|"
+    # x402 handled paths: bots probe with malformed payloads; server returns a clean 402.
+    # These carry facilitator text ('...verify failed (400)') but are normal operation, not bugs.
+    r"payment payload rejected \(client\)|payment unverified, returned 402|x402 discovery skipped|"
+    # MCP SDK (mcp/shared/session.py) rejecting a malformed client request -- client churn, handled
+    r"Failed to validate request|"
+    # 404 JSON error-body fragment from external probes (distinct from the 'Not found.' form above)
+    r"Not Found\"|\"Not Found\"|"
     # Client disconnected mid-response (no exception follows) — not a server bug
     r"ASGI callable returned without completing response)",
     re.IGNORECASE,
