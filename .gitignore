@@ -47,3 +47,6 @@ wire_*.py
 debug_fstring.py
 BRAIN.md
 octodamus_mission_control.html
+
+# Local MCP client config -- contains API keys, never commit
+.mcp.json
