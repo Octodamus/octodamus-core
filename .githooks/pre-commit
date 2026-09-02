@@ -1,0 +1,49 @@
+#!/bin/sh
+# Octodamus secret-scan pre-commit hook.
+# Blocks commits that add high-signal secrets (API keys, tokens, private keys).
+# Dependency-free (grep only). Override once with:  SKIP_SECRET_SCAN=1 git commit ...
+#
+# Enable (one time):  git config core.hooksPath .githooks
+
+if [ "$SKIP_SECRET_SCAN" = "1" ]; then
+    exit 0
+fi
+
+# Staged additions/modifications only (not deletions).
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+# High-signal secret patterns. Bare 0x-hex is intentionally NOT matched (event-topic
+# hashes / addresses are not secrets and would false-positive).
+pattern='sk-ant-[A-Za-z0-9]|sk-or-v1-|xai-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|[0-9]{9,10}:[A-Za-z0-9_-]{35}|sk_live_[A-Za-z0-9]{20}|rk_live_[A-Za-z0-9]{20}|whsec_[A-Za-z0-9]{20}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+hits=""
+for f in $files; do
+    # skip binary + this hook + docs of patterns
+    case "$f" in
+        .githooks/*) continue ;;
+    esac
+    match=$(git show ":$f" 2>/dev/null | grep -nEi "$pattern" \
+            | grep -viE "os\.environ|getenv|process\.env|secrets\.get|your_|_here|example|placeholder|xxxx|REDACTED|<[A-Za-z]" )
+    if [ -n "$match" ]; then
+        hits="$hits\n[$f]\n$match"
+    fi
+done
+
+# Also block known secret-bearing filenames being added.
+for f in $files; do
+    case "$f" in
+        .octo_secrets|.env|*.pem|*.key|octo_quiver_key.txt|*_secret*|*wallet*.json)
+            hits="$hits\n[$f] secret-bearing filename should not be committed" ;;
+    esac
+done
+
+if [ -n "$hits" ]; then
+    printf '\n\033[31mBLOCKED: possible secret(s) in staged changes:\033[0m'
+    printf "$hits\n"
+    printf '\nIf this is a false positive, commit once with:  SKIP_SECRET_SCAN=1 git commit ...\n'
+    printf 'Never commit real keys -- put them in .octo_secrets/Bitwarden and read from env.\n\n'
+    exit 1
+fi
+
+exit 0
