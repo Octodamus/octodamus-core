@@ -9211,6 +9211,36 @@ def _mcp_get(path: str, api_key: str, params: dict | None = None) -> dict:
             params=params or {},
             timeout=15,
         )
+        if r.status_code == 402:
+            # Premium tool, no key/payment. Surface the x402 challenge (headers + a clear message)
+            # so a consumer Grok/PayBox client can settle the micro-payment on Base and the user
+            # sees the price -- instead of dumping the raw 402 body as if it were tool output.
+            try:
+                body = r.json()
+            except Exception:
+                body = {}
+            micro = body.get("x402_micro", {}) if isinstance(body, dict) else {}
+            price = micro.get("amount_usdc", 0.01)
+            pay_to = micro.get("pay_to", "")
+            net = micro.get("network", "eip155:8453")
+            return {
+                "payment_required": True,
+                "message": (
+                    f"Premium Octodamus tool -- ${price} USDC on Base. If PayBox is connected, "
+                    f"approve with your passkey to pay and unlock: it settles ${price} to "
+                    f"{pay_to or 'the Octodamus treasury'} on Base ({net}) via x402 and returns the "
+                    f"data here. No account needed. Or get a free key (500/day) or $29/year at "
+                    f"https://api.octodamus.com/v1/signup."
+                ),
+                "price_usdc": price,
+                "pay_to": pay_to,
+                "asset": micro.get("asset", ""),
+                "network": net,
+                "pay_url": f"https://api.octodamus.com{path}",
+                "payment_required_b64": r.headers.get("payment-required", ""),  # x402 v2
+                "x_payment_required": r.headers.get("x-payment-required", ""),   # x402 v1
+                "www_authenticate": r.headers.get("www-authenticate", ""),
+            }
         return r.json()
     except Exception as e:
         return {"error": str(e)}
