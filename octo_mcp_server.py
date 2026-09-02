@@ -118,6 +118,39 @@ def _api_key() -> str:
     return os.environ.get("OCTODAMUS_API_KEY", "")
 
 
+def _x402_challenge(e, url: str) -> dict:
+    """Surface an upstream x402 402 as a structured, PayBox-actionable payment challenge
+    instead of swallowing it into a generic error. The premium endpoint already returns a
+    full x402 v2 challenge (payment-required header + body); propagating it lets a Grok/PayBox
+    client settle the micro-payment on Base and retry, and lets the user see the price."""
+    try:
+        body = json.loads(e.read().decode("utf-8"))
+    except Exception:
+        body = {}
+    micro = body.get("x402_micro", {}) if isinstance(body, dict) else {}
+    try:
+        hdr = e.headers
+    except Exception:
+        hdr = None
+    def _h(name):
+        try:
+            return hdr.get(name, "") if hdr else ""
+        except Exception:
+            return ""
+    return {
+        "payment_required": True,
+        "price_usdc": micro.get("amount_usdc", 0.01),
+        "pay_to": micro.get("pay_to", ""),
+        "asset": micro.get("asset", ""),
+        "network": micro.get("network", "eip155:8453"),
+        "pay_url": url,
+        "payment_required_b64": _h("payment-required"),  # x402 v2 base64 PaymentRequirements
+        "x_payment_required": _h("x-payment-required"),   # x402 v1 JSON
+        "www_authenticate": _h("www-authenticate"),
+        "free_key": "https://api.octodamus.com/v1/signup",
+    }
+
+
 def _get(path: str, params: dict = None) -> dict:
     try:
         p = dict(params or {})
@@ -131,6 +164,8 @@ def _get(path: str, params: dict = None) -> dict:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
+        if e.code == 402:
+            return _x402_challenge(e, url)
         return {"error": f"HTTP {e.code}"}
     except Exception as e:
         return {"error": str(e)}
@@ -153,12 +188,26 @@ def _post(path: str, body: dict = None, params: dict = None) -> dict:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
+        if e.code == 402:
+            return _x402_challenge(e, url)
         return {"error": f"HTTP {e.code}"}
     except Exception as e:
         return {"error": str(e)}
 
 
 def _extract_text(d: dict, *preferred_fields) -> str:
+    if isinstance(d, dict) and d.get("payment_required"):
+        price = d.get("price_usdc", 0.01)
+        pay_to = d.get("pay_to") or "the Octodamus treasury"
+        net = d.get("network", "eip155:8453")
+        return (
+            f"This is a premium Octodamus tool -- ${price} USDC on Base. "
+            f"If PayBox is connected, approve with your passkey to pay and unlock: it settles "
+            f"${price} to {pay_to} on Base ({net}) via x402 and returns the data in this chat. "
+            f"No account needed. Prefer a flat rate? Free key (500/day) or $29/year at "
+            f"{d.get('free_key','https://api.octodamus.com/v1/signup')}. "
+            f"Pay endpoint: {d.get('pay_url','')}"
+        )
     for f in preferred_fields:
         val = d.get(f)
         if isinstance(val, str) and val.strip():
