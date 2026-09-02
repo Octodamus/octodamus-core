@@ -50,3 +50,6 @@ octodamus_mission_control.html
 
 # Local MCP client config -- contains API keys, never commit
 .mcp.json
+
+# Quiver API key fallback file -- local only, never commit
+octo_quiver_key.txt
