@@ -173,63 +173,43 @@ def run_stock_extreme(assets: list = None, dry: bool = False) -> list:
             fired.append(result)
             continue
 
-        # Record on-chain
-        try:
-            from octo_calls import _load, _save
-            calls = _load()
-            now   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            call  = {
-                "id":                      max((c.get("id", 0) for c in calls), default=0) + 1,
-                "call_type":               "stock_extreme",
-                "asset":                   ticker,
-                "direction":               result["direction"],
-                "entry_price":             result["price"],
-                "target_price":            result["target_price"],
-                "timeframe":               result["timeframe"],
-                "note":                    result["note"],
-                "made_at":                 now,
-                "resolved":                False,
-                "outcome":                 None,
-                "won":                     None,
-                "exit_price":              None,
-                "resolved_at":             None,
-                "resolution_price_source": "Robinhood Chain",
-                "signals":                 result["signals"],
-                "market_snapshot":         {"price": result["price"],
-                                            "long_pct": result["long_pct"],
-                                            "oi_chg_24h_pct": result["oi_chg_24h"]},
-                "post_mortem":             None,
-            }
-            calls.append(call)
-            _save(calls)
-            print(f"[StockExtreme] Call #{call['id']} recorded")
+        # Record + publish on-chain FIRST, then post -- guaranteed by commit_call_onchain:
+        # a call is posted only if it anchored on-chain; a failed publish rolls back and alerts.
+        now  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        call = {
+            "call_type":               "stock_extreme",
+            "asset":                   ticker,
+            "direction":               result["direction"],
+            "entry_price":             result["price"],
+            "target_price":            result["target_price"],
+            "timeframe":               result["timeframe"],
+            "note":                    result["note"],
+            "made_at":                 now,
+            "resolved":                False,
+            "outcome":                 None,
+            "won":                     None,
+            "exit_price":              None,
+            "resolved_at":             None,
+            "resolution_price_source": "Robinhood Chain",
+            "signals":                 result["signals"],
+            "market_snapshot":         {"price": result["price"],
+                                        "long_pct": result["long_pct"],
+                                        "oi_chg_24h_pct": result["oi_chg_24h"]},
+            "post_mortem":             None,
+        }
 
-            try:
-                from octo_oracle_registry import publish_prediction
-                tx = publish_prediction(call)
-                if tx:
-                    all_calls = _load()
-                    for c in all_calls:
-                        if c["id"] == call["id"]:
-                            c["tx_hash"] = tx
-                            break
-                    _save(all_calls)
-                    print(f"[StockExtreme] On-chain: {tx[:16]}...")
-            except Exception as _oc:
-                print(f"[StockExtreme] On-chain skipped: {_oc}")
-        except Exception as e:
-            print(f"[StockExtreme] Record failed: {e}")
-            continue
-
-        # Post
-        try:
+        def _post():
             from octo_x_poster import queue_post, process_queue
             queue_post(_post_text(result), post_type="stock_extreme", priority=2)
             process_queue(max_posts=1, force=True)
-        except Exception as e:
-            print(f"[StockExtreme] Post failed: {e}")
 
-        fired.append(result)
+        from octo_calls import commit_call_onchain
+        tx = commit_call_onchain(call, _post)
+        if tx:
+            print(f"[StockExtreme] Call #{call['id']} on-chain {tx[:10]}... + posted")
+            fired.append(result)
+        else:
+            print(f"[StockExtreme] {ticker}: on-chain publish failed -- NOT posted (alerted)")
 
     return fired
 

@@ -299,65 +299,42 @@ def run_range_scout(assets: list = None, dry: bool = False) -> list:
             fired.append(result)
             continue
 
-        # Record call
-        try:
-            from octo_calls import record_call, _load, _save
-            calls = _load()
-            from datetime import datetime as _dt, timezone as _tz
-            call = {
-                "id":                     max((c.get("id", 0) for c in calls), default=0) + 1,
-                "call_type":              "range_scout",
-                "asset":                  asset,
-                "direction":              result["direction"],
-                "entry_price":            price,
-                "target_price":           result["target_price"],
-                "timeframe":              result["timeframe"],
-                "note":                   result["note"],
-                "made_at":                _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                "resolved":               False,
-                "outcome":                None,
-                "won":                    None,
-                "exit_price":             None,
-                "resolved_at":            None,
-                "resolution_price_source": "CoinGecko spot",
-                "signals":                result["signals"],
-                "edge_score":             result["edge_score"],
-                "time_quality":           "",
-                "market_snapshot":        {"price": price, "chg_24h": chg_24h, "fng": fng},
-                "post_mortem":            None,
-            }
-            calls.append(call)
-            _save(calls)
-            print(f"[RangeScout] Call #{call['id']} recorded")
-            # Publish on-chain — required for track record
-            try:
-                from octo_oracle_registry import publish_prediction
-                tx = publish_prediction(call)
-                if tx:
-                    all_calls = _load()
-                    for c in all_calls:
-                        if c["id"] == call["id"]:
-                            c["tx_hash"] = tx
-                            break
-                    _save(all_calls)
-                    print(f"[RangeScout] Call #{call['id']} published on-chain: {tx[:16]}...")
-                else:
-                    print(f"[RangeScout] WARNING: on-chain publish returned no tx — call will not count toward record")
-            except Exception as _oc_err:
-                print(f"[RangeScout] WARNING: on-chain publish failed: {_oc_err}")
-        except Exception as e:
-            print(f"[RangeScout] Record failed: {e}")
+        # Record + publish on-chain FIRST, then post -- guaranteed by commit_call_onchain:
+        # posted only if anchored on-chain; a failed publish rolls back and alerts.
+        from datetime import datetime as _dt, timezone as _tz
+        call = {
+            "call_type":              "range_scout",
+            "asset":                  asset,
+            "direction":              result["direction"],
+            "entry_price":            price,
+            "target_price":           result["target_price"],
+            "timeframe":              result["timeframe"],
+            "note":                   result["note"],
+            "made_at":                _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "resolved":               False,
+            "outcome":                None,
+            "won":                    None,
+            "exit_price":             None,
+            "resolved_at":            None,
+            "resolution_price_source": "CoinGecko spot",
+            "signals":                result["signals"],
+            "edge_score":             result["edge_score"],
+            "time_quality":           "",
+            "market_snapshot":        {"price": price, "chg_24h": chg_24h, "fng": fng},
+            "post_mortem":            None,
+        }
 
-        # Post to X
-        try:
-            post_text = _post_range_call(result)
+        def _post():
             from octo_x_poster import post_tweet
-            tweet_id = post_tweet(post_text)
-            print(f"[RangeScout] Posted: {tweet_id} | {post_text[:80]}...")
-        except Exception as e:
-            print(f"[RangeScout] Post failed: {e}")
+            post_tweet(_post_range_call(result))
 
-        fired.append(result)
+        from octo_calls import commit_call_onchain
+        tx = commit_call_onchain(call, _post)
+        if tx:
+            print(f"[RangeScout] Call #{call['id']} on-chain {tx[:10]}... + posted")
+            fired.append(result)
+        else:
+            print(f"[RangeScout] {asset}: on-chain publish failed -- NOT posted (alerted)")
         time.sleep(2)
 
     print(f"[RangeScout] Done — {len(fired)} calls fired\n")

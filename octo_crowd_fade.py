@@ -383,59 +383,42 @@ def run_crowd_fade(assets: list = None, dry: bool = False) -> list:
             fired.append(result)
             continue
 
-        # Record
-        try:
-            calls = _load_calls()
-            now   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            call  = {
-                "id":                      max((c.get("id", 0) for c in calls), default=0) + 1,
-                "call_type":               "crowd_fade",
-                "asset":                   asset,
-                "direction":               result["direction"],
-                "entry_price":             result["price"],
-                "target_price":            result["target_price"],
-                "timeframe":               result["timeframe"],
-                "note":                    result["note"],
-                "made_at":                 now,
-                "resolved":                False,
-                "outcome":                 None,
-                "won":                     None,
-                "exit_price":              None,
-                "resolved_at":             None,
-                "resolution_price_source": "CoinGecko spot",
-                "signals":                 result["signals"],
-                "edge_score":              result["edge_score"],
-                "time_quality":            "",
-                "market_snapshot":         {"price": result["price"], "fng": result["fng"]},
-                "post_mortem":             None,
-            }
-            calls.append(call)
-            _save_calls(calls)
-            print(f"[CrowdFade] Call #{call['id']} recorded")
+        # Record + publish on-chain FIRST, then QUEUE the post -- guaranteed by commit_call_onchain:
+        # only queued (and thus posted below) if anchored on-chain; a failed publish rolls back + alerts.
+        # process_queue runs after the loop to batch the X posts (rate-limit friendly).
+        now  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        call = {
+            "call_type":               "crowd_fade",
+            "asset":                   asset,
+            "direction":               result["direction"],
+            "entry_price":             result["price"],
+            "target_price":            result["target_price"],
+            "timeframe":               result["timeframe"],
+            "note":                    result["note"],
+            "made_at":                 now,
+            "resolved":                False,
+            "outcome":                 None,
+            "won":                     None,
+            "exit_price":              None,
+            "resolved_at":             None,
+            "resolution_price_source": "CoinGecko spot",
+            "signals":                 result["signals"],
+            "edge_score":              result["edge_score"],
+            "time_quality":            "",
+            "market_snapshot":         {"price": result["price"], "fng": result["fng"]},
+            "post_mortem":             None,
+        }
 
-            try:
-                from octo_oracle_registry import publish_prediction
-                tx = publish_prediction(call)
-                if tx:
-                    all_calls = _load_calls()
-                    for c in all_calls:
-                        if c["id"] == call["id"]:
-                            c["tx_hash"] = tx
-                            break
-                    _save_calls(all_calls)
-                    print(f"[CrowdFade] On-chain: {tx[:16]}...")
-            except Exception as _oc:
-                print(f"[CrowdFade] On-chain skipped: {_oc}")
-        except Exception as e:
-            print(f"[CrowdFade] Record failed: {e}")
-
-        # Post — queue first, post after all assets scanned to avoid X rate limit
-        try:
+        def _queue():
             queue_post(_post_text(result), post_type="crowd_fade", priority=2)
-        except Exception as e:
-            print(f"[CrowdFade] Queue failed: {e}")
 
-        fired.append(result)
+        from octo_calls import commit_call_onchain
+        tx = commit_call_onchain(call, _queue)
+        if tx:
+            print(f"[CrowdFade] Call #{call['id']} on-chain {tx[:10]}... + queued")
+            fired.append(result)
+        else:
+            print(f"[CrowdFade] {asset}: on-chain publish failed -- NOT queued/posted (alerted)")
         time.sleep(2)
 
     # Flush all queued crowd_fade posts with 30s gap between them

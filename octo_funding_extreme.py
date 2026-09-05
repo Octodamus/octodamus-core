@@ -262,61 +262,42 @@ def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
             fired.append(result)
             continue
 
-        # Record
-        try:
-            calls = _load_calls()
-            now   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            call  = {
-                "id":                      max((c.get("id", 0) for c in calls), default=0) + 1,
-                "call_type":               "funding_extreme",
-                "asset":                   asset,
-                "direction":               result["direction"],
-                "entry_price":             result["price"],
-                "target_price":            result["target_price"],
-                "timeframe":               result["timeframe"],
-                "note":                    result["note"],
-                "made_at":                 now,
-                "resolved":                False,
-                "outcome":                 None,
-                "won":                     None,
-                "exit_price":              None,
-                "resolved_at":             None,
-                "resolution_price_source": "CoinGecko spot",
-                "signals":                 result["signals"],
-                "edge_score":              result["edge_score"],
-                "time_quality":            "",
-                "market_snapshot":         {"price": result["price"], "fng": result["fng"]},
-                "post_mortem":             None,
-            }
-            calls.append(call)
-            _save_calls(calls)
-            print(f"[FundingExtreme] Call #{call['id']} recorded")
+        # Record + publish on-chain FIRST, then post -- guaranteed by commit_call_onchain:
+        # posted only if anchored on-chain; a failed publish rolls back and alerts.
+        now  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        call = {
+            "call_type":               "funding_extreme",
+            "asset":                   asset,
+            "direction":               result["direction"],
+            "entry_price":             result["price"],
+            "target_price":            result["target_price"],
+            "timeframe":               result["timeframe"],
+            "note":                    result["note"],
+            "made_at":                 now,
+            "resolved":                False,
+            "outcome":                 None,
+            "won":                     None,
+            "exit_price":              None,
+            "resolved_at":             None,
+            "resolution_price_source": "CoinGecko spot",
+            "signals":                 result["signals"],
+            "edge_score":              result["edge_score"],
+            "time_quality":            "",
+            "market_snapshot":         {"price": result["price"], "fng": result["fng"]},
+            "post_mortem":             None,
+        }
 
-            try:
-                from octo_oracle_registry import publish_prediction
-                tx = publish_prediction(call)
-                if tx:
-                    all_calls = _load_calls()
-                    for c in all_calls:
-                        if c["id"] == call["id"]:
-                            c["tx_hash"] = tx
-                            break
-                    _save_calls(all_calls)
-                    print(f"[FundingExtreme] On-chain: {tx[:16]}...")
-            except Exception as _oc:
-                print(f"[FundingExtreme] On-chain skipped: {_oc}")
-        except Exception as e:
-            print(f"[FundingExtreme] Record failed: {e}")
-
-        # Post
-        try:
+        def _post():
             queue_post(_post_text(result), post_type="funding_extreme", priority=2)
             process_queue(max_posts=1, force=True)
-            print(f"[FundingExtreme] Posted to X")
-        except Exception as e:
-            print(f"[FundingExtreme] Post failed: {e}")
 
-        fired.append(result)
+        from octo_calls import commit_call_onchain
+        tx = commit_call_onchain(call, _post)
+        if tx:
+            print(f"[FundingExtreme] Call #{call['id']} on-chain {tx[:10]}... + posted")
+            fired.append(result)
+        else:
+            print(f"[FundingExtreme] {asset}: on-chain publish failed -- NOT posted (alerted)")
         time.sleep(2)
 
     print(f"[FundingExtreme] Done -- {len(fired)} calls fired\n")

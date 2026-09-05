@@ -779,6 +779,69 @@ def build_performance_feedback() -> str:
     return "\n".join(lines)
 
 
+def _call_alert(msg: str) -> None:
+    """Loud, best-effort alert when a call fails to anchor on-chain (or fails to post)."""
+    print(f"[Calls] ALERT: {msg}")
+    try:
+        from octo_notify import notify_system_error
+        notify_system_error("call-pipeline", msg)
+    except Exception:
+        pass
+
+
+def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
+    """Guarantee: a call is POSTED only if it is ON-CHAIN.
+
+    Records the call, publishes it to the oracle registry (one retry). On success it saves the
+    tx_hash and runs post_fn() (the X post). On on-chain failure it ROLLS BACK the JSON record
+    and alerts -- so nothing un-anchored is ever posted, and no orphan call pollutes the record.
+    Returns the tx_hash on success, or None (call was neither posted nor kept).
+    """
+    from octo_oracle_registry import publish_prediction
+    calls = _load()
+    if not call.get("id"):
+        call["id"] = max((c.get("id", 0) for c in calls), default=0) + 1
+    calls.append(call)
+    _save(calls)
+
+    tx = None
+    for attempt in range(2):
+        try:
+            tx = publish_prediction(call)
+        except Exception as e:
+            tx = None
+            print(f"[Calls] publish_prediction raised (attempt {attempt+1}): {e}")
+        if tx:
+            break
+        if attempt == 0:
+            import time as _t
+            _t.sleep(3)
+
+    label = f"{call.get('call_type','?')} {call.get('asset','?')} {call.get('direction','?')}"
+    if not tx:
+        # Roll back the un-anchored call; do NOT post.
+        _save([c for c in _load() if c.get("id") != call.get("id")])
+        _call_alert(f"{label} NOT posted -- on-chain publish failed (check registry wallet gas / Base RPC). Call rolled back.")
+        return None
+
+    # Persist tx_hash, then post ONLY after on-chain success.
+    allc = _load()
+    for c in allc:
+        if c.get("id") == call.get("id"):
+            c["tx_hash"] = tx
+            break
+    _save(allc)
+    call["tx_hash"] = tx
+
+    if post_fn:
+        try:
+            post_fn()
+        except Exception as e:
+            # On-chain is the source of truth; a failed X post is alert-worthy but the call stands.
+            _call_alert(f"{label} on-chain OK ({tx[:10]}) but X post FAILED: {e}")
+    return tx
+
+
 def get_direction_concentration() -> dict:
     """
     Return counts of open oracle calls by direction.
