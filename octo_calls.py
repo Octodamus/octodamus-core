@@ -653,6 +653,132 @@ def get_recent_win_rate(n: int = 5) -> Optional[float]:
     return wins / n
 
 
+def asset_direction_loss_streak(asset: str, direction: str) -> int:
+    """Count consecutive most-recent LOSSES for a specific (asset, direction) setup.
+    e.g. 8 = the last 8 resolved ETH DOWN calls all lost. Used to block repeating a
+    proven-losing setup and to feed the performance-feedback block."""
+    calls = _load()
+    resolved = [
+        c for c in calls
+        if c.get("call_type", "oracle") == "oracle" and c.get("resolved")
+        and c.get("outcome") in ("WIN", "LOSS")
+        and c.get("asset", "").upper() == asset.upper()
+        and c.get("direction", "").upper() == direction.upper()
+    ]
+    resolved.sort(key=lambda c: c.get("made_at", ""))
+    streak = 0
+    for c in reversed(resolved):
+        if c["outcome"] == "LOSS":
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def strategy_should_pause(call_type: str, min_resolved: int = 6,
+                          max_win_rate: float = 0.30, loss_streak_trip: int = 5,
+                          stale_days: int = 10) -> tuple[bool, str]:
+    """Auto-pause a systematic strategy that is deeply underwater ON-CHAIN so it stops repeating
+    losing calls. This is the fleet-wide learning loop: contrarian strategies (range_scout,
+    crowd_fade) fight a trend and bleed; a strategy at 1W-8L should not keep firing.
+
+    Pauses when (>= min_resolved resolved calls AND win rate <= max_win_rate) OR
+    (loss_streak_trip consecutive losses). Only blockchain-verified calls (tx_hash) count.
+
+    Escape valve: if the strategy has been dormant >= stale_days (no call at all in that window),
+    it is allowed ONE probe call to re-test the regime -- otherwise a paused strategy could never
+    recover its record. A losing probe re-trips the pause for another cooldown.
+    Returns (should_pause, reason).
+    """
+    calls = _load()
+    strat_all = [c for c in calls if c.get("call_type") == call_type]
+    resolved = [
+        c for c in strat_all if c.get("tx_hash")
+        and c.get("resolved") and c.get("outcome") in ("WIN", "LOSS")
+    ]
+    if len(resolved) < min_resolved:
+        return (False, "")
+    resolved.sort(key=lambda c: c.get("made_at", ""))
+    w = sum(1 for c in resolved if c["outcome"] == "WIN")
+    wr = w / len(resolved)
+    streak = 0
+    for c in reversed(resolved):
+        if c["outcome"] == "LOSS":
+            streak += 1
+        else:
+            break
+
+    tripped = ""
+    if wr <= max_win_rate:
+        tripped = f"{call_type} at {wr:.0%} win ({w}W-{len(resolved)-w}L on-chain) -- below {max_win_rate:.0%} floor"
+    elif streak >= loss_streak_trip:
+        tripped = f"{call_type} lost the last {streak} calls in a row on-chain"
+    if not tripped:
+        return (False, "")
+
+    # Dormant-probe escape: allow one call through after a quiet stretch to re-test the regime.
+    last = max(strat_all, key=lambda c: c.get("made_at", ""), default=None)
+    days_since = 9999
+    if last and last.get("made_at"):
+        try:
+            ldt = datetime.strptime(last["made_at"][:16], "%Y-%m-%d %H:%M")
+            days_since = (datetime.now(timezone.utc).replace(tzinfo=None) - ldt).days
+        except Exception:
+            pass
+    if days_since >= stale_days:
+        return (False, f"{call_type} underwater but dormant {days_since}d -- allowing one probe call")
+    return (True, tripped)
+
+
+def build_performance_feedback() -> str:
+    """Blunt, data-driven feedback the oracle MUST see before making a new call, so it stops
+    repeating losing setups. Surfaces overall record, directional bias, and specific underwater
+    asset+direction patterns with active loss streaks. This is the learning loop -- without it
+    the model never sees that (e.g.) ETH DOWN is 3W-12L and keeps re-issuing the losing call."""
+    calls = _load()
+    resolved = [
+        c for c in calls
+        if c.get("call_type", "oracle") == "oracle" and c.get("tx_hash")
+        and c.get("resolved") and c.get("outcome") in ("WIN", "LOSS")
+    ]
+    if len(resolved) < 5:
+        return ""
+    w = sum(1 for c in resolved if c["outcome"] == "WIN")
+    l = len(resolved) - w
+    lines = ["PERFORMANCE FEEDBACK -- learn from your own scored record before calling:"]
+    lines.append(f"  Overall: {w}W-{l}L ({w/(w+l)*100:.0f}% win). You are being graded on-chain; a call is only worth making if the data genuinely supports it.")
+
+    # Directional bias -- flag the losing side hard.
+    for d in ("UP", "DOWN"):
+        dc = [c for c in resolved if c.get("direction", "").upper() == d]
+        if len(dc) >= 4:
+            dw = sum(1 for c in dc if c["outcome"] == "WIN")
+            dl = len(dc) - dw
+            wr = dw / len(dc)
+            if wr < 0.40:
+                lines.append(f"  {d} calls are {dw}W-{dl}L ({wr*100:.0f}%) -- you are losing badly on {d} calls. Do NOT issue a {d} call unless the evidence is strong and specific; you have been fighting the trend.")
+
+    # Per asset+direction underwater setups with active loss streaks.
+    from collections import defaultdict
+    ad = defaultdict(lambda: [0, 0])
+    for c in resolved:
+        key = (c.get("asset", "").upper(), c.get("direction", "").upper())
+        ad[key][0 if c["outcome"] == "WIN" else 1] += 1
+    flagged = []
+    for (a, d), (ww, ll) in ad.items():
+        if ll >= 3 and ll > ww:
+            streak = asset_direction_loss_streak(a, d)
+            note = f"  {a} {d}: {ww}W-{ll}L"
+            if streak >= 3:
+                note += f" and the last {streak} in a row ALL LOST"
+            note += f" -- STOP repeating this. Do not call {a} {d} again unless a NEW, concrete catalyst has appeared since the last loss."
+            flagged.append((streak, ll, note))
+    for _, _, note in sorted(flagged, reverse=True):
+        lines.append(note)
+
+    return "\n".join(lines)
+
+
 def get_direction_concentration() -> dict:
     """
     Return counts of open oracle calls by direction.

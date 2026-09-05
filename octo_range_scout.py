@@ -6,7 +6,7 @@ Built for ranging markets where trending signals (RSI, 24h change, F&G) are neut
 but derivative signals (funding, taker flow, L/S ratio) still show short-term edge.
 
 Strategy:
-  - 6 mini-signals, requires 4/6 to fire (vs 9/13 for main oracle)
+  - 6 mini-signals, requires 5/6 to fire (vs 9/13 for main oracle)
   - Only activates when main oracle is NOT STRONG (prevents override)
   - Regime filter: F&G 28-72, 24h change <±5%, BB not in squeeze
   - Timeframe: 4h (standard) or 6h (if 5+/6)
@@ -145,9 +145,9 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
     # ── 6 mini-signals ────────────────────────────────────────────────────────
     bull = bear = 0
 
-    # Mini-Signal 1: RSI 1h overbought/oversold (tighter bands for intraday)
-    if rsi_1h < 40:     bull += 1; signals["s1_rsi"] = "BULL"
-    elif rsi_1h > 60:   bear += 1; signals["s1_rsi"] = "BEAR"
+    # Mini-Signal 1: RSI 1h overbought/oversold
+    if rsi_1h < 42:     bull += 1; signals["s1_rsi"] = "BULL"
+    elif rsi_1h > 58:   bear += 1; signals["s1_rsi"] = "BEAR"
     else:               signals["s1_rsi"] = "NEUTRAL"
 
     # Mini-Signal 2: TradingView 1h+4h technical vote
@@ -157,45 +157,45 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
 
     # Mini-Signal 3: Funding rate direction (mean reversion)
     # Positive funding = longs paying = short-term bearish pressure
-    if fr < -0.005 or cg_fr < -0.005:   bull += 1; signals["s3_funding"] = "BULL"
-    elif fr > 0.01 or cg_fr > 0.01:     bear += 1; signals["s3_funding"] = "BEAR"
-    else:                                signals["s3_funding"] = "NEUTRAL"
+    if fr < -0.005 or cg_fr < -0.005:    bull += 1; signals["s3_funding"] = "BULL"
+    elif fr > 0.007 or cg_fr > 0.007:    bear += 1; signals["s3_funding"] = "BEAR"
+    else:                                 signals["s3_funding"] = "NEUTRAL"
 
     # Mini-Signal 4: Taker flow (aggressive order flow)
-    if taker_buy > 57:     bull += 1; signals["s4_taker"] = "BULL"
-    elif taker_buy < 43:   bear += 1; signals["s4_taker"] = "BEAR"
+    if taker_buy > 55:     bull += 1; signals["s4_taker"] = "BULL"
+    elif taker_buy < 45:   bear += 1; signals["s4_taker"] = "BEAR"
     else:                  signals["s4_taker"] = "NEUTRAL"
 
     # Mini-Signal 5: Long/short ratio contrarian read
     # Extreme longs = crowded = mean revert down; extreme shorts = pain trade up
-    if long_pct > 62:      bear += 1; signals["s5_ls"] = "BEAR"
+    if long_pct > 60:      bear += 1; signals["s5_ls"] = "BEAR"
     elif long_pct < 42:    bull += 1; signals["s5_ls"] = "BULL"
     else:                  signals["s5_ls"] = "NEUTRAL"
 
     # Mini-Signal 6: Fear vs price context
-    # F&G < 40 with price NOT making new lows = latent buy pressure
-    # F&G > 60 with price NOT making new highs = latent sell pressure
-    if fng < 40 and chg_24h > -1.0:   bull += 1; signals["s6_fng_ctx"] = "BULL"
-    elif fng > 60 and chg_24h < 1.0:  bear += 1; signals["s6_fng_ctx"] = "BEAR"
-    else:                              signals["s6_fng_ctx"] = "NEUTRAL"
+    # F&G <= 42 with price NOT making new lows = latent buy pressure
+    # F&G >= 58 with price NOT making new highs = latent sell pressure
+    if fng <= 42 and chg_24h > -1.0:   bull += 1; signals["s6_fng_ctx"] = "BULL"
+    elif fng >= 58 and chg_24h < 1.0:  bear += 1; signals["s6_fng_ctx"] = "BEAR"
+    else:                               signals["s6_fng_ctx"] = "NEUTRAL"
 
     total   = bull + bear
     maximum = max(bull, bear)
 
-    # Require 4/6 minimum. 5/6 = 6h, 6/6 = extended 8h
-    if bull >= 4 and bull > bear:
+    # Require 5/6 minimum. 5/6 = 6h, 6/6 = extended 8h
+    if bull >= 5 and bull > bear:
         direction = "UP"
-    elif bear >= 4 and bear > bull:
+    elif bear >= 5 and bear > bull:
         direction = "DOWN"
     else:
         return {
             "asset": asset, "fire": False,
-            "reason": f"Insufficient signal: {bull}B/{bear}S of 6 (need 4+ aligned)",
+            "reason": f"Insufficient signal: {bull}B/{bear}S of 6 (need 5+ aligned)",
             "signals": signals, "bull": bull, "bear": bear,
         }
 
-    timeframe = "4h" if maximum == 4 else ("6h" if maximum == 5 else "8h")
-    target_pct = {"4h": 0.8, "6h": 1.2, "8h": 1.5}[timeframe]
+    timeframe = "6h" if maximum == 5 else "8h"
+    target_pct = {"6h": 1.5, "8h": 2.0}[timeframe]
     target_price = price * (1 + target_pct / 100) if direction == "UP" else price * (1 - target_pct / 100)
     edge_score = (bull - bear) / 6.0
 
@@ -256,6 +256,19 @@ def run_range_scout(assets: list = None, dry: bool = False) -> list:
 
     print(f"\n[RangeScout] F&G={fng} | {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
 
+    # Fleet circuit breaker: pause a strategy that's deeply underwater on-chain. range_scout is a
+    # contrarian/mean-reversion strategy that bleeds when it fights a trend -- don't keep firing a
+    # losing book. Self-heals via the dormant-probe escape in strategy_should_pause.
+    if not dry:
+        try:
+            from octo_calls import strategy_should_pause
+            _pause, _reason = strategy_should_pause("range_scout")
+            if _pause:
+                print(f"[RangeScout] CIRCUIT BREAKER: {_reason}. Skipping run.")
+                return []
+        except Exception as _e:
+            print(f"[RangeScout] breaker check failed (continuing): {_e}")
+
     for asset in assets:
         price, chg_24h = _get_price(asset)
         if price == 0:
@@ -292,7 +305,7 @@ def run_range_scout(assets: list = None, dry: bool = False) -> list:
             calls = _load()
             from datetime import datetime as _dt, timezone as _tz
             call = {
-                "id":                     len(calls) + 1,
+                "id":                     max((c.get("id", 0) for c in calls), default=0) + 1,
                 "call_type":              "range_scout",
                 "asset":                  asset,
                 "direction":              result["direction"],
@@ -316,6 +329,22 @@ def run_range_scout(assets: list = None, dry: bool = False) -> list:
             calls.append(call)
             _save(calls)
             print(f"[RangeScout] Call #{call['id']} recorded")
+            # Publish on-chain — required for track record
+            try:
+                from octo_oracle_registry import publish_prediction
+                tx = publish_prediction(call)
+                if tx:
+                    all_calls = _load()
+                    for c in all_calls:
+                        if c["id"] == call["id"]:
+                            c["tx_hash"] = tx
+                            break
+                    _save(all_calls)
+                    print(f"[RangeScout] Call #{call['id']} published on-chain: {tx[:16]}...")
+                else:
+                    print(f"[RangeScout] WARNING: on-chain publish returned no tx — call will not count toward record")
+            except Exception as _oc_err:
+                print(f"[RangeScout] WARNING: on-chain publish failed: {_oc_err}")
         except Exception as e:
             print(f"[RangeScout] Record failed: {e}")
 
