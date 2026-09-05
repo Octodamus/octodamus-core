@@ -302,6 +302,14 @@ except ImportError:
     def hype_context_str(): return ""
     def hip4_news_str(): return ""
 
+try:
+    from octo_grok_live import get_live_x_context, x_pulse
+    _GROK_LIVE_ACTIVE = True
+except ImportError:
+    _GROK_LIVE_ACTIVE = False
+    def get_live_x_context(topics=None, force=False): return ""
+    def x_pulse(query, from_days=1, handles=None, scoped=True, max_tokens=400): return {"error": "octo_grok_live unavailable"}
+
 claude = anthropic.Anthropic()
 
 # Model routing — OpenRouter (free Llama) primary, Grok fallback, Haiku last resort
@@ -1823,6 +1831,17 @@ def mode_daily() -> None:
             except Exception:
                 pass
 
+        # Live X narrative (Grok x_search, real-time) -- the dominant + emerging crowd
+        # narratives right now, so the read can hint at what's COMING, not just react.
+        # Cached 2h; one search per refresh keeps cost modest.
+        if _GROK_LIVE_ACTIVE:
+            try:
+                _live_x = get_live_x_context(["Bitcoin", "Ethereum", "crypto markets"])
+                if _live_x:
+                    fc_news_section += f"\n\n{_live_x}"
+            except Exception:
+                pass
+
         recent_posts_section = _get_recent_posts(n=20)
 
         # Asset rotation: find assets covered in the last 2 daily reads so we avoid repeating
@@ -1876,8 +1895,15 @@ def mode_daily() -> None:
         except Exception:
             pass
 
+        try:
+            from octo_calls import build_performance_feedback
+            _perf_feedback = build_performance_feedback()
+        except Exception:
+            _perf_feedback = ""
+
         _daily_user = (
                     "Generate the morning oracle market read for @octodamusai.\n"
+                    f"{(_perf_feedback + chr(10) + chr(10)) if _perf_feedback else ''}"
                     f"{recent_posts_section}"
                     f"Market data: {json.dumps(snapshots, indent=2)}"
                     f"\n\nFutures Intelligence:\n{_get_coinglass_context()}"
@@ -2696,6 +2722,56 @@ Be specific. Use data if you have it. Connect it to the bigger picture.
         discord_alert(f"moonshot mode failed: {e}")
 
 
+def mode_trendfront() -> None:
+    """Emerging-trend front-runner. Grok live-X search finds the narrative gaining
+    velocity before it peaks; Octodamus posts the early read -- the oracle seeing it
+    first. Content source is real-time X; the post is written in Octodamus voice."""
+    print("\n[Runner] Scanning live X for the emerging trend...")
+    if not _GROK_LIVE_ACTIVE:
+        print("[Runner] octo_grok_live unavailable -- skipping trendfront.")
+        return
+    try:
+        pulse = x_pulse(
+            "Search X for crypto and macro RIGHT NOW. Identify the SINGLE emerging narrative "
+            "that is gaining velocity but has NOT peaked -- what the informed accounts are "
+            "starting to discuss before the wider crowd catches on. Name it specifically, say "
+            "what is driving it, and why it matters over the next few days. 3-4 sentences. "
+            "The narrative, not the price.",
+            from_days=2, scoped=True, max_tokens=400,
+        )
+        if pulse.get("error") or not pulse.get("text"):
+            print(f"[Runner] trendfront: no live-X data ({pulse.get('error', 'empty')}) -- skipping.")
+            return
+        trend = pulse["text"]
+        print(f"[Runner] Emerging trend:\n{trend}")
+
+        system = OCTO_SYSTEM + (
+            "\n\nYou are writing an EMERGING-TREND post. You have spotted -- via real-time X -- "
+            "a narrative gaining velocity before the wider crowd. Deliver the early read: what is "
+            "forming and what it implies next. This is the oracle seeing it first."
+        )
+        user_msg = (
+            f"LIVE X SIGNAL (real-time, what informed accounts are starting to discuss):\n{trend}\n\n"
+            f"{RESERVED_CALL_RULE}"
+            "Write ONE sharp post for @octodamusai: the early read on this emerging narrative -- a "
+            "clue about what is COMING, not a recap. Anchor to the specific narrative. Under 280 "
+            "chars. No hashtags. Output only the post text."
+        )
+        response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=200,
+            system=system,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        post = response.content[0].text.strip()
+        queue_post(post, post_type="trendfront", priority=3)
+        posted = process_queue(max_posts=1, force=True)
+        print(f"[Runner] Trendfront post {'posted' if posted else 'queued'}:\n  {post}")
+    except Exception as e:
+        print(f"[Runner] mode_trendfront failed: {e}")
+        discord_alert(f"trendfront mode failed: {e}")
+
+
 def mode_liquidation_radar() -> None:
     """
     Firecrawl-powered liquidation radar post.
@@ -3279,7 +3355,7 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "monitor", "daily", "deep_dive", "wisdom",
-            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot",
+            "status", "drain", "journal", "alert", "engage", "scorecard", "soul", "congress", "govcontracts", "moonshot", "trendfront",
             "mentions", "youtube", "format", "qrt", "morning_flow",
             "strategy_monitor", "strategy_sunday", "thread", "ceo_research",
             "liquidation_radar", "range_scout", "xengage", "sentiment", "spacex",
@@ -3333,6 +3409,8 @@ if __name__ == "__main__":
         engage_run()
     elif args.mode == "moonshot":
         mode_moonshot()
+    elif args.mode == "trendfront":
+        mode_trendfront()
     elif args.mode == "morning_flow":
         mode_morning_flow()
     elif args.mode == "mentions":
