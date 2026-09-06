@@ -14,7 +14,8 @@ import httpx
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SECRETS     = json.loads(Path(".octo_secrets").read_text(encoding="utf-8"))
+ROOT        = Path(__file__).resolve().parent
+SECRETS     = json.loads((ROOT / ".octo_secrets").read_text(encoding="utf-8"))
 ORBIS_KEY   = SECRETS.get("ORBIS_API_KEY", "")
 TREASURY    = "0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db"
 USDC_ADDR   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -157,7 +158,7 @@ def check_wallet() -> dict:
 
 # ── State (track balance changes between runs) ────────────────────────────────
 
-STATE_FILE = Path("data/listing_health_state.json")
+STATE_FILE = ROOT / "data" / "listing_health_state.json"
 
 def load_state() -> dict:
     if STATE_FILE.exists():

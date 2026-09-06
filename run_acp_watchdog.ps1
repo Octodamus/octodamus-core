@@ -13,8 +13,8 @@ $running = $false
 
 if (Test-Path $PIDFILE) {
     try {
-        $pid = [int](Get-Content $PIDFILE -ErrorAction Stop).Trim()
-        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        $workerPid = [int](Get-Content $PIDFILE -ErrorAction Stop).Trim()
+        $proc = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
         if ($proc) { $running = $true }
     } catch {}
 }
