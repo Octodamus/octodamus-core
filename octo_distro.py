@@ -157,6 +157,83 @@ def oracle_scorecard() -> dict:
     }
 
 
+def strategy_scorecard(min_sample: int = 3) -> dict:
+    """
+    Per-strategy track record. Public -- no email gate.
+
+    The headline win rate is an average across strategies that are not the same
+    product. Publishing only the blended number hides both the strategy worth
+    buying and the strategy worth retiring. This splits it so the record can be
+    read honestly in either direction.
+
+    `active` is the record excluding retired strategies -- the number that
+    describes what a buyer is actually getting today.
+    """
+    try:
+        calls = json.loads(CALLS_FILE.read_text(encoding="utf-8")) if CALLS_FILE.exists() else []
+    except Exception:
+        calls = []
+
+    retired = set(_load_retired_strategies())
+
+    by = {}
+    for c in calls:
+        if not (c.get("tx_hash") and c.get("resolved")):
+            continue
+        key = c.get("call_type") or "unspecified"
+        rec = by.setdefault(key, {"wins": 0, "losses": 0, "last_call": ""})
+        if c.get("outcome") == "WIN":
+            rec["wins"] += 1
+        elif c.get("outcome") == "LOSS":
+            rec["losses"] += 1
+        made = (c.get("made_at") or "")[:10]
+        if made > rec["last_call"]:
+            rec["last_call"] = made
+
+    strategies = []
+    for name, rec in by.items():
+        n = rec["wins"] + rec["losses"]
+        strategies.append({
+            "strategy":    name,
+            "wins":        rec["wins"],
+            "losses":      rec["losses"],
+            "resolved":    n,
+            "win_rate":    round(rec["wins"] / n * 100, 1) if n else None,
+            "last_call":   rec["last_call"],
+            "retired":     name in retired,
+            "sample_note": "insufficient sample" if n < min_sample else None,
+        })
+    strategies.sort(key=lambda s: (s["win_rate"] is None, -(s["win_rate"] or 0)))
+
+    act = [s for s in strategies if not s["retired"]]
+    aw, al = sum(s["wins"] for s in act), sum(s["losses"] for s in act)
+    tw, tl = sum(s["wins"] for s in strategies), sum(s["losses"] for s in strategies)
+
+    return {
+        "tool":  "strategy_scorecard",
+        "title": "Octodamus Track Record by Strategy",
+        "all_time":   {"wins": tw, "losses": tl, "resolved": tw + tl,
+                       "win_rate": round(tw / (tw + tl) * 100, 1) if (tw + tl) else None},
+        "active_only": {"wins": aw, "losses": al, "resolved": aw + al,
+                        "win_rate": round(aw / (aw + al) * 100, 1) if (aw + al) else None},
+        "strategies":  strategies,
+        "method": ("Every on-chain call, grouped by the strategy that produced it. "
+                   "Retired strategies stay in the record -- they are marked, not deleted."),
+        "gate":  False,
+    }
+
+
+def _load_retired_strategies() -> list:
+    """Strategy names no longer publishing calls. Data file, not code."""
+    path = Path(__file__).parent / "data" / "retired_strategies.json"
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8")).get("retired", [])
+    except Exception:
+        pass
+    return []
+
+
 # ── Tool 2: Macro Pulse ───────────────────────────────────────────────────────
 
 def macro_pulse() -> dict:
@@ -200,10 +277,25 @@ def signal_composite(asset: str = "BTC") -> dict:
         fr = funding_rate_exchange(asset)
         ls = long_short_ratio(asset)
 
-        rates = [v for v in (fr.get("data") or {}).values() if isinstance(v, (int, float))]
+        # Coinglass returns lists, not {"data": ...} envelopes. funding_rate_exchange
+        # is one entry per symbol carrying a per-exchange stablecoin_margin_list;
+        # long_short_ratio is a time series whose long side is a 0-100 percent.
+        rates = []
+        for entry in fr or []:
+            if entry.get("symbol") != asset:
+                continue
+            for ex in entry.get("stablecoin_margin_list") or []:
+                v = ex.get("funding_rate")
+                if isinstance(v, (int, float)):
+                    rates.append(float(v))
+            break
         avg_rate = sum(rates) / len(rates) if rates else 0.0
-        ls_data = (ls.get("data") or [{}])
-        ls_ratio = float(ls_data[-1].get("longAccount", 0.5)) if ls_data else 0.5
+
+        ls_ratio = 0.5
+        if ls:
+            pct = (ls[-1] or {}).get("global_account_long_percent")
+            if isinstance(pct, (int, float)):
+                ls_ratio = float(pct) / 100.0
 
         bull = 0
         bear = 0

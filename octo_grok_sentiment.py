@@ -213,6 +213,7 @@ Return ONLY this JSON (no other text):
 
         result["source"] = "grok-targeted"
         result["asset"]  = asset
+        result["live"]   = True
 
         # Validate
         if result.get("signal") not in ("BULLISH", "BEARISH", "NEUTRAL"):
@@ -236,6 +237,12 @@ Return ONLY this JSON (no other text):
 
 
 def _neutral(asset: str, reason: str = "") -> dict:
+    """
+    Placeholder returned when the Grok layer is NOT live.
+
+    `live: False` is the contract other modules gate on. This value is a
+    stand-in, not a reading -- never bill for it. See is_grok_live().
+    """
     return {
         "signal":       "NEUTRAL",
         "confidence":   0.0,
@@ -246,7 +253,20 @@ def _neutral(asset: str, reason: str = "") -> dict:
         "key_themes":   [],
         "source":       "grok-targeted",
         "asset":        asset,
+        "live":         False,
+        "error":        reason,
     }
+
+
+def is_grok_live(asset: str = "BTC") -> tuple:
+    """
+    (live: bool, reason: str) -- whether the Grok layer is actually answering.
+
+    Paid, Grok-dependent endpoints must call this and refuse service rather
+    than sell a _neutral() placeholder as if it were a sentiment reading.
+    """
+    r = get_grok_sentiment(asset)
+    return bool(r.get("live")), str(r.get("error") or "")
 
 
 def get_grok_sentiment_context(assets: list = None) -> str:

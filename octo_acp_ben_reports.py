@@ -29,24 +29,46 @@ Registered in octo_report_handlers.get_handler() and octo_acp_worker._get_report
 import httpx
 
 
+def _grok_unavailable(product: str, asset: str, reason: str) -> dict:
+    """
+    Refusal payload for a paid, Grok-dependent product when the Grok layer is
+    not live.
+
+    Do NOT substitute a NEUTRAL reading here. A placeholder sold as sentiment
+    is indistinguishable from a real reading to the buyer, which is exactly the
+    thing an oracle cannot afford. Callers must treat service_available=False
+    as "do not deliver, do not bill".
+    """
+    return {
+        "type":              product,
+        "asset":             asset,
+        "service_available": False,
+        "error":             "grok_layer_unavailable",
+        "detail":            reason,
+        "billable":          False,
+        "source":            "grok-x-realtime",
+    }
+
+
 def handle_grok_sentiment_brief(req: dict) -> dict:
     """
     Grok Sentiment Brief -- $1/call.
     Real-time X/Twitter crowd sentiment for any asset.
     Powered by Grok live X data.
+
+    Refuses service (service_available=False) when the Grok layer is down --
+    this product is nothing but the Grok layer.
     """
     asset = str(req.get("ticker", req.get("asset", "BTC"))).upper()
     try:
         from octo_grok_sentiment import get_grok_sentiment
         result = get_grok_sentiment(asset, force=True)
     except Exception as e:
-        result = {
-            "signal":     "NEUTRAL",
-            "confidence": 0,
-            "summary":    str(e),
-            "crowd_pos":  "unknown",
-            "key_themes": [],
-        }
+        return _grok_unavailable("grok_sentiment_brief", asset, f"{type(e).__name__}: {e}")
+
+    if not result.get("live"):
+        return _grok_unavailable("grok_sentiment_brief", asset,
+                                 str(result.get("error") or "grok returned no live reading"))
 
     crowd_bull  = result.get("signal") == "BULLISH"
     confidence  = result.get("confidence", 0)
@@ -88,15 +110,21 @@ def handle_fear_crowd_divergence(req: dict) -> dict:
     except Exception:
         pass
 
-    # Grok X crowd sentiment
+    # Grok X crowd sentiment -- the crowd half of the divergence. Without a live
+    # reading there is no divergence to sell, only arithmetic on a placeholder.
     crowd_signal, crowd_conf = "NEUTRAL", 0.0
+    gs = {}
     try:
         from octo_grok_sentiment import get_grok_sentiment
         gs = get_grok_sentiment(asset, force=True)
         crowd_signal = gs.get("signal", "NEUTRAL")
         crowd_conf   = gs.get("confidence", 0)
-    except Exception:
-        pass
+    except Exception as e:
+        gs = {"error": f"{type(e).__name__}: {e}"}
+
+    if not gs.get("live"):
+        return _grok_unavailable("fear_crowd_divergence", asset,
+                                 str(gs.get("error") or "no live crowd reading"))
 
     crowd_bull = crowd_signal == "BULLISH"
     div_score  = abs(crowd_conf * 100 - fg_val)
@@ -163,8 +191,10 @@ def handle_btc_bull_trap_monitor(req: dict) -> dict:
     except Exception:
         pass
 
-    # Grok X crowd sentiment
+    # Grok X crowd sentiment -- a bull trap is defined by the crowd. No live
+    # crowd reading means there is no trap to detect.
     crowd_pct, crowd_signal = 50.0, "NEUTRAL"
+    gs = {}
     try:
         from octo_grok_sentiment import get_grok_sentiment
         gs = get_grok_sentiment(asset, force=True)
@@ -172,8 +202,12 @@ def handle_btc_bull_trap_monitor(req: dict) -> dict:
         crowd_pct = round(gs.get("confidence", 0.5) * 100, 1)
         if crowd_signal == "BEARISH":
             crowd_pct = round(100 - crowd_pct, 1)
-    except Exception:
-        pass
+    except Exception as e:
+        gs = {"error": f"{type(e).__name__}: {e}"}
+
+    if not gs.get("live"):
+        return _grok_unavailable("btc_bull_trap_monitor", asset,
+                                 str(gs.get("error") or "no live crowd reading"))
 
     crowd_bullish = crowd_signal == "BULLISH"
 
@@ -531,13 +565,18 @@ def handle_cross_asset_divergence_alert(req: dict) -> dict:
         pass
 
     crowd_signal, crowd_conf = "NEUTRAL", 0.0
+    gs = {}
     try:
         from octo_grok_sentiment import get_grok_sentiment
         gs = get_grok_sentiment(asset, force=True)
         crowd_signal = gs.get("signal", "NEUTRAL")
         crowd_conf   = gs.get("confidence", 0)
-    except Exception:
-        pass
+    except Exception as e:
+        gs = {"error": f"{type(e).__name__}: {e}"}
+
+    if not gs.get("live"):
+        return _grok_unavailable("cross_asset_divergence_alert", asset,
+                                 str(gs.get("error") or "no live crowd reading"))
 
     crowd_bull = crowd_signal == "BULLISH"
     crowd_bear = crowd_signal == "BEARISH"
@@ -780,13 +819,18 @@ def handle_btc_regime_pulse(req: dict) -> dict:
     regime = "GREED" if fg_val > 60 else ("FEAR" if fg_val < 40 else "NEUTRAL")
 
     crowd_signal, crowd_conf = "NEUTRAL", 0.0
+    gs = {}
     try:
         from octo_grok_sentiment import get_grok_sentiment
         gs = get_grok_sentiment("BTC", force=True)
         crowd_signal = gs.get("signal", "NEUTRAL")
         crowd_conf   = gs.get("confidence", 0)
-    except Exception:
-        pass
+    except Exception as e:
+        gs = {"error": f"{type(e).__name__}: {e}"}
+
+    if not gs.get("live"):
+        return _grok_unavailable("btc_regime_pulse", "BTC",
+                                 str(gs.get("error") or "no live crowd reading"))
 
     if crowd_signal == "BULLISH" and fg_val < 45:
         contrarian = "BULL_TRAP"
