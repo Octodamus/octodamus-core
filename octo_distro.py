@@ -113,10 +113,10 @@ def oracle_scorecard() -> dict:
     except Exception:
         calls = []
 
-    oracle_calls = [c for c in calls if c.get("call_type") == "oracle"]
+    oracle_calls = [c for c in calls if c.get("tx_hash")]
     resolved = [c for c in oracle_calls if c.get("resolved")]
-    wins = [c for c in resolved if c.get("won") is True or c.get("outcome") == "win"]
-    losses = [c for c in resolved if c.get("outcome") == "loss" or c.get("won") is False]
+    wins = [c for c in resolved if c.get("outcome") == "WIN"]
+    losses = [c for c in resolved if c.get("outcome") == "LOSS"]
     open_calls = [c for c in oracle_calls if not c.get("resolved")]
     win_rate = round(len(wins) / len(resolved) * 100, 1) if resolved else None
 

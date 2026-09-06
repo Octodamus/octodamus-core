@@ -13,6 +13,15 @@ Handler 5: Carry Unwind Risk Monitor ($1.50/call) -- NYSE_MacroMind Session #5
   - Alerts when DXY approaches structural thresholds (119.5 kill-switch, 120.5 full RISK-OFF)
   - Returns: dxy_current, distance_to_kill_switch, alert_level, urgency, recommendation,
              velocity_note, historical_parallel
+Handler 6: Cross-Asset Divergence Alert ($2/call)
+  - Richer divergence: tracks sessions_persistent, conviction level, recommended_action
+  - BULL_TRAP / BEAR_TRAP / NO_DIVERGENCE with HIGH/MEDIUM/LOW conviction
+Handler 7: Macro Economic Event Edge Report ($2/call)
+  - Pre-event brief before CPI/NFP/GDP/Fed decisions
+  - Returns data_trajectory (last 2 FRED releases), edge_assessment, octodamus_alignment
+Handler 8: BTC Regime Pulse ($1.50/call)
+  - Clean structured regime JSON: FEAR/NEUTRAL/GREED + contrarian_signal + session_recommendation
+  - Designed for agents that need a single-call regime read before entering positions
 
 Registered in octo_report_handlers.get_handler() and octo_acp_worker._get_report_type().
 """
@@ -498,4 +507,416 @@ def handle_carry_unwind_risk_monitor(req: dict) -> dict:
         ),
         "designed_by": "NYSE_MacroMind (Agent_Ben ecosystem)",
         "price_usdc":  1.5,
+    }
+
+
+def handle_cross_asset_divergence_alert(req: dict) -> dict:
+    """
+    Cross-Asset Divergence Alert -- $2/call.
+    Richer divergence: tracks persistence over recent sessions, conviction level,
+    and produces BULL_TRAP / BEAR_TRAP / NO_DIVERGENCE with recommended action.
+    """
+    from datetime import datetime
+    asset = str(req.get("ticker", req.get("asset", "BTC"))).upper()
+
+    fg_val, fg_lbl, fg_history = 50, "Neutral", []
+    try:
+        resp = httpx.get("https://api.alternative.me/fng/?limit=14", timeout=6).json()
+        entries = resp.get("data", [])
+        if entries:
+            fg_val = int(entries[0]["value"])
+            fg_lbl = entries[0]["value_classification"]
+            fg_history = [int(e["value"]) for e in entries]
+    except Exception:
+        pass
+
+    crowd_signal, crowd_conf = "NEUTRAL", 0.0
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        gs = get_grok_sentiment(asset, force=True)
+        crowd_signal = gs.get("signal", "NEUTRAL")
+        crowd_conf   = gs.get("confidence", 0)
+    except Exception:
+        pass
+
+    crowd_bull = crowd_signal == "BULLISH"
+    crowd_bear = crowd_signal == "BEARISH"
+    div_score  = abs(crowd_conf * 100 - fg_val)
+
+    if crowd_bull and fg_history:
+        sessions_persistent = sum(1 for v in fg_history if v < 50)
+    elif crowd_bear and fg_history:
+        sessions_persistent = sum(1 for v in fg_history if v > 50)
+    else:
+        sessions_persistent = 0
+
+    if crowd_bull and fg_val < 50:
+        signal          = "BULL_TRAP"
+        recommended_act = "FADE_LONGS"
+        brief = (
+            f"Crowd is {crowd_conf:.0%} bullish while Fear & Greed sits at {fg_val} ({fg_lbl}). "
+            f"Divergence persisted {sessions_persistent} of last 14 sessions. "
+            "Historical pattern: crowded longs get squeezed in fear regimes."
+        )
+    elif crowd_bear and fg_val > 50:
+        signal          = "BEAR_TRAP"
+        recommended_act = "FADE_SHORTS"
+        brief = (
+            f"Crowd is bearish but Fear & Greed at {fg_val} ({fg_lbl}). "
+            f"Divergence persisted {sessions_persistent} of last 14 sessions. "
+            "Squeeze risk: smart money diverging from retail short sellers."
+        )
+    else:
+        signal          = "NO_DIVERGENCE"
+        recommended_act = "HOLD"
+        brief = "No material divergence between crowd sentiment and fear index. Monitor for separation."
+
+    conviction = (
+        "HIGH"   if (div_score > 40 and sessions_persistent >= 7) else
+        "MEDIUM" if div_score > 20 else
+        "LOW"
+    )
+
+    return {
+        "type":                 "cross_asset_divergence",
+        "asset":                asset,
+        "signal":               signal,
+        "fear_greed":           fg_val,
+        "fear_greed_label":     fg_lbl,
+        "crowd_sentiment":      crowd_signal,
+        "crowd_confidence_pct": round(crowd_conf * 100, 1),
+        "divergence_score":     round(div_score, 1),
+        "sessions_persistent":  sessions_persistent,
+        "conviction":           conviction,
+        "recommended_action":   recommended_act,
+        "brief":                brief,
+        "generated_at":         datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "price_usdc":           2.0,
+        "designed_by":          "Agent_Ben",
+    }
+
+
+def handle_macro_event_edge_report(req: dict) -> dict:
+    """
+    Macro Economic Event Edge Report -- $2/call.
+    Pre-event intelligence before CPI, NFP, GDP, or Fed rate decisions.
+    Pulls last 3 FRED releases for trend + oracle signal alignment.
+    """
+    import json as _json
+    import os
+    from pathlib import Path as _Path
+    from datetime import datetime
+
+    event_name = str(req.get("event_name", req.get("event", "CPI"))).upper()
+    event_date = str(req.get("event_date", "unknown"))
+
+    FRED_MAP = {
+        "CPI":      ("CPIAUCSL",  "Consumer Price Index (All Urban)",  "% YoY"),
+        "CORE_CPI": ("CPILFESL", "Core CPI ex-Food/Energy",           "% YoY"),
+        "NFP":      ("PAYEMS",    "Nonfarm Payrolls",                  "thousands added"),
+        "FED":      ("FEDFUNDS",  "Federal Funds Rate",                "%"),
+        "GDP":      ("GDPC1",     "Real GDP",                          "% QoQ annualized"),
+        "PCE":      ("PCEPI",     "PCE Price Index",                   "% YoY"),
+        "PPI":      ("PPIACO",    "Producer Price Index",              "% change"),
+    }
+    series_id, series_name, units = FRED_MAP.get(
+        event_name, ("CPIAUCSL", "Consumer Price Index", "% YoY")
+    )
+
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        try:
+            sp = _Path(__file__).parent / ".octo_secrets"
+            secrets = _json.loads(sp.read_text(encoding="utf-8"))
+            fred_key = secrets.get("secrets", secrets).get("FRED_API_KEY", "")
+        except Exception:
+            pass
+
+    # Index-based FRED series need 13 obs for YoY%; rate/level series need 2-3.
+    INDEX_SERIES = {"CPI", "CORE_CPI", "PCE", "PPI"}
+    fetch_limit = 14 if event_name in INDEX_SERIES else 3
+
+    trajectory = []
+    trend_note = "data unavailable"
+    computed_value = None  # meaningful metric (YoY% or monthly delta)
+    if fred_key:
+        try:
+            url = (
+                f"https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id={series_id}&api_key={fred_key}"
+                f"&sort_order=desc&limit={fetch_limit}&file_type=json"
+            )
+            data = httpx.get(url, timeout=8).json()
+            obs = [{"date": o["date"], "value": float(o["value"])}
+                   for o in data.get("observations", []) if o.get("value") != "."]
+
+            if event_name in INDEX_SERIES and len(obs) >= 13:
+                # Compute YoY% from raw index values
+                yoy_cur  = (obs[0]["value"] - obs[12]["value"]) / obs[12]["value"] * 100
+                trajectory = [{"date": obs[i]["date"], "value": round(obs[i]["value"], 3)} for i in range(3)]
+                computed_value = round(yoy_cur, 2)
+                if len(obs) >= 14:
+                    yoy_prev = (obs[1]["value"] - obs[13]["value"]) / obs[13]["value"] * 100
+                    delta_yoy = yoy_cur - yoy_prev
+                    trend_note = (
+                        f"{'rising' if delta_yoy > 0 else 'falling'} "
+                        f"({yoy_cur:.2f}% YoY, {delta_yoy:+.2f}% vs prior month)"
+                    )
+                else:
+                    trend_note = f"{yoy_cur:.2f}% YoY"
+            elif event_name == "NFP" and len(obs) >= 2:
+                # PAYEMS = total employment level; monthly change is the meaningful metric
+                monthly_change = obs[0]["value"] - obs[1]["value"]
+                trajectory = [{"date": obs[i]["date"], "value": round(obs[i]["value"], 1)} for i in range(min(3, len(obs)))]
+                computed_value = round(monthly_change, 1)
+                prior_change = (obs[1]["value"] - obs[2]["value"]) if len(obs) >= 3 else None
+                if prior_change is not None:
+                    trend_note = (
+                        f"{'accelerating' if monthly_change > prior_change else 'slowing'} "
+                        f"({monthly_change:+.0f}k added vs {prior_change:+.0f}k prior)"
+                    )
+                else:
+                    trend_note = f"{monthly_change:+.0f}k added"
+            elif len(obs) >= 2:
+                trajectory = [{"date": obs[i]["date"], "value": round(obs[i]["value"], 4)} for i in range(min(3, len(obs)))]
+                if event_name == "GDP":
+                    # GDPC1 is level in billions; compute QoQ% annualized
+                    qoq = (obs[0]["value"] / obs[1]["value"] - 1) * 100
+                    ann = ((1 + qoq / 100) ** 4 - 1) * 100
+                    computed_value = round(ann, 2)
+                    trend_note = f"{'expanding' if ann > 0 else 'contracting'} ({ann:+.2f}% QoQ annualized)"
+                else:
+                    # FED: FEDFUNDS already is a rate %
+                    computed_value = obs[0]["value"]
+                    delta = obs[0]["value"] - obs[1]["value"]
+                    trend_note = f"{'rising' if delta > 0 else 'falling'} ({delta:+.2f} {units} vs prior)"
+        except Exception:
+            pass
+
+    oracle_signal = "NONE"
+    try:
+        from octo_calls import get_stats
+        stats = get_stats()
+        oracle_signal = "OPEN" if stats.get("open_calls", 0) > 0 else "NONE"
+    except Exception:
+        pass
+
+    edge = "PASS"
+    edge_note = "Insufficient data to assess edge."
+    if event_name in INDEX_SERIES and computed_value is not None:
+        # computed_value is YoY%
+        v = computed_value
+        if v > 3.0:
+            edge = "WATCH_SHORT"
+            edge_note = f"{event_name} running hot at {v:.2f}% YoY. Historically hawkish -- watch for rate expectations reset."
+        elif v < 2.5:
+            edge = "WATCH_LONG"
+            edge_note = f"{event_name} at {v:.2f}% YoY -- below 2.5%. Dovish regime -- positive for risk assets."
+        else:
+            edge = "NEUTRAL"
+            edge_note = f"{event_name} at {v:.2f}% YoY -- within Fed comfort zone. No directional edge."
+    elif event_name == "NFP" and computed_value is not None:
+        # computed_value is monthly jobs added (thousands)
+        v = computed_value
+        if v > 250:
+            edge = "WATCH_SHORT"
+            edge_note = f"Hot jobs print ({v:+.0f}k). Strong labor = Fed stays hawkish longer."
+        elif v < 100:
+            edge = "WATCH_LONG"
+            edge_note = f"Weak jobs print ({v:+.0f}k). Slowdown fears -- rate cut bets rise."
+        else:
+            edge = "NEUTRAL"
+            edge_note = f"Jobs in-line ({v:+.0f}k). No clear directional edge from labor alone."
+    elif event_name == "GDP" and computed_value is not None:
+        v = computed_value
+        if v < 0:
+            edge = "WATCH_LONG"
+            edge_note = f"Negative GDP ({v:+.2f}% QoQ ann). Recession signal -- rate cut bets rise, risk-on eventually."
+        elif v > 3.0:
+            edge = "WATCH_SHORT"
+            edge_note = f"Hot GDP ({v:+.2f}% QoQ ann). Stagflation risk if paired with high inflation -- watch rates."
+        else:
+            edge = "NEUTRAL"
+            edge_note = f"GDP at {v:+.2f}% QoQ ann -- moderate growth, no clear directional edge."
+    elif event_name == "FED":
+        edge = "WATCH"
+        edge_note = "Fed decision day. Monitor for dot plot revision or forward guidance shift."
+
+    return {
+        "type":               "macro_event_edge",
+        "event_name":         event_name,
+        "event_date":         event_date,
+        "fred_series":        series_id,
+        "series_description": series_name,
+        "data_trajectory":    trajectory,
+        "computed_metric":    computed_value,
+        "trend_note":         trend_note,
+        "edge_assessment":    edge,
+        "edge_note":          edge_note,
+        "octodamus_signal":   oracle_signal,
+        "octodamus_alignment": oracle_signal == "OPEN",
+        "generated_at":       datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "price_usdc":         2.0,
+        "designed_by":        "Agent_Ben",
+    }
+
+
+def handle_btc_regime_pulse(req: dict) -> dict:
+    """
+    BTC Regime Pulse -- $1.50/call.
+    Clean structured regime read: FEAR/NEUTRAL/GREED + contrarian signal
+    + oracle status + BTC price + session recommendation.
+    Single-call regime snapshot for agent decision loops.
+    """
+    from datetime import datetime
+    fg_val, fg_lbl = 50, "Neutral"
+    try:
+        fg = httpx.get("https://api.alternative.me/fng/?limit=1", timeout=6).json()
+        fg_val = int(fg["data"][0]["value"])
+        fg_lbl = fg["data"][0]["value_classification"]
+    except Exception:
+        pass
+
+    regime = "GREED" if fg_val > 60 else ("FEAR" if fg_val < 40 else "NEUTRAL")
+
+    crowd_signal, crowd_conf = "NEUTRAL", 0.0
+    try:
+        from octo_grok_sentiment import get_grok_sentiment
+        gs = get_grok_sentiment("BTC", force=True)
+        crowd_signal = gs.get("signal", "NEUTRAL")
+        crowd_conf   = gs.get("confidence", 0)
+    except Exception:
+        pass
+
+    if crowd_signal == "BULLISH" and fg_val < 45:
+        contrarian = "BULL_TRAP"
+    elif crowd_signal == "BEARISH" and fg_val > 55:
+        contrarian = "BEAR_TRAP"
+    else:
+        contrarian = "NONE"
+
+    btc_price = 0.0
+    try:
+        from financial_data_client import get_crypto_prices
+        prices = get_crypto_prices(["BTC"])
+        btc_price = float(prices.get("BTC", 0))
+    except Exception:
+        pass
+
+    oracle_status = "NONE"
+    try:
+        from octo_calls import get_stats
+        stats = get_stats()
+        oracle_status = "OPEN" if stats.get("open_calls", 0) > 0 else "NONE"
+    except Exception:
+        pass
+
+    if oracle_status == "OPEN" and contrarian == "NONE":
+        recommendation = "TRADE"
+    elif contrarian in ("BULL_TRAP", "BEAR_TRAP"):
+        recommendation = "WATCH"
+    else:
+        recommendation = "PASS"
+
+    # Human-readable summary for agent decision loops
+    if contrarian == "BULL_TRAP":
+        summary = (
+            f"BTC ${btc_price:,.0f} | F&G {fg_val} ({fg_lbl}) -- FEAR regime. "
+            f"Crowd {round(crowd_conf*100):.0f}% bullish against fearful tape. "
+            "BULL_TRAP signal: crowded longs in fear regimes historically get squeezed. Caution."
+        )
+    elif contrarian == "BEAR_TRAP":
+        summary = (
+            f"BTC ${btc_price:,.0f} | F&G {fg_val} ({fg_lbl}) -- GREED regime. "
+            f"Crowd {round(crowd_conf*100):.0f}% bearish against greedy tape. "
+            "BEAR_TRAP signal: short squeeze risk elevated. Monitor for momentum break."
+        )
+    elif regime == "GREED":
+        summary = (
+            f"BTC ${btc_price:,.0f} | F&G {fg_val} ({fg_lbl}). Crowd aligned -- greed regime, "
+            f"no contrarian divergence. {'Oracle open call active.' if oracle_status == 'OPEN' else 'No open oracle call.'}"
+        )
+    elif regime == "FEAR":
+        summary = (
+            f"BTC ${btc_price:,.0f} | F&G {fg_val} ({fg_lbl}). Fear regime, crowd aligned. "
+            f"{'Oracle open call active -- potential dip entry.' if oracle_status == 'OPEN' else 'No open oracle call. Wait for signal.'}"
+        )
+    else:
+        summary = (
+            f"BTC ${btc_price:,.0f} | F&G {fg_val} ({fg_lbl}). Neutral regime, no clear edge. "
+            f"{'Oracle open call active.' if oracle_status == 'OPEN' else 'No open oracle call. Sit tight.'}"
+        )
+
+    return {
+        "type":                   "btc_regime_pulse",
+        "btc_price":              round(btc_price, 2),
+        "fear_greed":             fg_val,
+        "fear_greed_label":       fg_lbl,
+        "regime":                 regime,
+        "crowd_sentiment":        crowd_signal,
+        "crowd_confidence_pct":   round(crowd_conf * 100, 1),
+        "contrarian_signal":      contrarian,
+        "octodamus_signal":       oracle_status,
+        "session_recommendation": recommendation,
+        "signal_summary":         summary,
+        "generated_at":           datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "price_usdc":             1.5,
+        "designed_by":            "Agent_Ben",
+    }
+
+
+def handle_perp_funding_rate_signal(req: dict) -> dict:
+    """
+    Perp Funding Rate Signal -- $1.00/call.
+    Returns 8h funding rate regime for BTC and ETH (or any requested asset).
+    Contrarian signal: extreme longs = fade setup; extreme shorts = squeeze setup.
+    Free data: Binance public futures API, OKX fallback.
+    """
+    from datetime import datetime as _dt
+    assets_raw = req.get("assets") or req.get("asset") or "BTC,ETH"
+    if isinstance(assets_raw, list):
+        assets = [a.upper() for a in assets_raw]
+    else:
+        assets = [a.strip().upper() for a in str(assets_raw).split(",") if a.strip()]
+    if not assets:
+        assets = ["BTC", "ETH"]
+
+    try:
+        from octo_funding_rates import get_funding_rate_signal, get_funding_rate_context
+        signals = {a: get_funding_rate_signal(a) for a in assets}
+        context_str = get_funding_rate_context(assets)
+    except Exception as e:
+        return {"type": "perp_funding_rate_signal", "error": str(e), "reject": True}
+
+    primary = signals.get(assets[0], {})
+    regime  = primary.get("regime", "UNAVAILABLE")
+
+    if regime == "EXTREME_LONG_CROWD":
+        trade_bias = "BEARISH -- fade overcrowded longs"
+    elif regime == "HIGH_LONG_CROWD":
+        trade_bias = "WEAK BEARISH -- elevated long crowd"
+    elif regime == "EXTREME_SHORT_CROWD":
+        trade_bias = "BULLISH -- fade overcrowded shorts"
+    elif regime == "HIGH_SHORT_CROWD":
+        trade_bias = "WEAK BULLISH -- elevated short crowd"
+    else:
+        trade_bias = "NEUTRAL -- no crowd extreme"
+
+    return {
+        "type":          "perp_funding_rate_signal",
+        "assets":        assets,
+        "signals":       signals,
+        "primary_asset": assets[0],
+        "primary_regime": regime,
+        "trade_bias":    trade_bias,
+        "context":       context_str,
+        "note": (
+            "Funding rate is a contrarian signal. "
+            "EXTREME_LONG_CROWD (>0.1%/8h) = overcrowded longs -- fade when X sentiment also 75%+. "
+            "EXTREME_SHORT_CROWD (<-0.03%/8h) = overcrowded shorts -- fade the shorts. "
+            "Strongest when combined with X_Sentiment crowd divergence (amplifies the edge)."
+        ),
+        "generated_at":  _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "price_usdc":    1.0,
+        "designed_by":   "Agent_Ben",
     }

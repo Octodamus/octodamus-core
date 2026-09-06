@@ -147,14 +147,16 @@ def get_grok_sentiment(asset: str = "BTC", force: bool = False) -> dict:
         price_ctx   = _get_price_context(asset)
         accounts_str = ", ".join(f"@{a}" for a in _TOP_ACCOUNTS)
 
-        prompt = f"""Search X (Twitter) RIGHT NOW for posts about {asset_label} from ONLY these accounts in the LAST 60 MINUTES:
+        def _build_prompt(window_minutes: int) -> str:
+            window_label = f"{window_minutes} MINUTES" if window_minutes < 120 else f"{window_minutes // 60} HOURS"
+            return f"""Search X (Twitter) RIGHT NOW for posts about {asset_label} from ONLY these accounts in the LAST {window_label}:
 
 {accounts_str}
 
 {f'Price context: {price_ctx}' if price_ctx else ''}
 
 Instructions:
-1. Only include accounts that have posted about {asset_label} in the last 60 minutes
+1. Only include accounts that have posted about {asset_label} in the last {window_label.lower()}
 2. Count how many of these accounts posted (active_count)
 3. What is the dominant directional view among those active accounts?
 4. Are they acknowledging the current price action or are they ignoring it (lagging)?
@@ -175,20 +177,40 @@ Return ONLY this JSON (no other text):
   "key_themes": ["theme1", "theme2", "theme3"]
 }}"""
 
-        response = client.chat.completions.create(
-            model="grok-3",
-            max_tokens=500,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user",   "content": prompt},
-            ],
-        )
+        def _call_grok(prompt_text: str) -> dict:
+            # Real live X search via grok-4.5 + x_search tool. The prior grok-3 chat
+            # call did NOT search X -- the "search now" prompt was never actually honored,
+            # so results came from stale training data. x_search scopes to the signal
+            # accounts (max 20 handles) over today's posts; the prompt filters to 60 min.
+            import re as _re
+            from datetime import datetime as _dt
+            today = _dt.now().strftime("%Y-%m-%d")
+            resp = client.responses.create(
+                model="grok-4.5",
+                input=[
+                    {"role": "system", "content": _SYSTEM},
+                    {"role": "user",   "content": prompt_text},
+                ],
+                tools=[{"type": "x_search",
+                        "allowed_x_handles": _TOP_ACCOUNTS[:20],
+                        "from_date": today, "to_date": today}],
+                max_output_tokens=500,
+            )
+            raw = (getattr(resp, "output_text", "") or "").strip()
+            raw = _re.sub(r"\[\[\d+\]\]\(https?://[^\)]+\)", "", raw)
+            if "```" in raw:
+                raw = raw.split("```")[1].replace("json", "").strip()
+            m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            return json.loads(m.group(0) if m else raw)
 
-        raw = response.choices[0].message.content.strip()
-        if "```" in raw:
-            raw = raw.split("```")[1].replace("json", "").strip()
+        # Try 90-minute window first; if zero active accounts, widen to 4 hours
+        result = _call_grok(_build_prompt(90))
+        if int(result.get("active_count", 0)) == 0:
+            result = _call_grok(_build_prompt(240))
+            result["window_hours"] = 4
+        else:
+            result["window_hours"] = 1.5
 
-        result = json.loads(raw)
         result["source"] = "grok-targeted"
         result["asset"]  = asset
 
@@ -200,7 +222,7 @@ Return ONLY this JSON (no other text):
         result["confidence"]   = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
         result["active_count"] = int(result.get("active_count", 0))
 
-        # Downgrade confidence if very few accounts active
+        # Downgrade confidence if very few accounts active even after widened window
         if result["active_count"] < 5:
             result["confidence"] = min(result["confidence"], 0.35)
             result["lag_status"] = "UNCLEAR"
