@@ -72,6 +72,24 @@ def _client():
         return None
 
 
+def _extract_json(raw: str) -> dict:
+    """
+    Pull the JSON object out of a Grok reply.
+
+    grok-4.5 with x_search routinely prefixes prose ("I'll pull live X posts
+    first...") and appends inline citation markers, so a fence-only parse fails.
+    Strip citations, unwrap any code fence, then take the outermost braces.
+    """
+    import re
+    raw = re.sub(r"\[\[\d+\]\]\(https?://[^\)]+\)", "", raw).strip()
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    return json.loads(m.group(0) if m else raw)
+
+
 def _load_cache() -> dict:
     try:
         if _CACHE_FILE.exists():
@@ -202,18 +220,17 @@ def get_grok_brief(asset: str = "BTC", force: bool = False) -> dict:
             tools=[{"type": "x_search"}],
             max_output_tokens=1200,
         )
-        raw = (getattr(r, "output_text", "") or "").strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        brief["annotation"] = json.loads(raw.strip())
+        brief["annotation"] = _extract_json(getattr(r, "output_text", "") or "")
     except Exception as e:
         brief["annotation_error"] = f"{type(e).__name__}: {e}"
 
-    brief["_cached_at"] = time.time()
-    cache[asset] = brief
-    _save_cache(cache)
+    # Only cache a brief that actually has its adversarial half. A transient
+    # 429 would otherwise poison the cache for the full TTL and serve a
+    # signal-only brief as though it were the product.
+    if brief.get("annotation"):
+        brief["_cached_at"] = time.time()
+        cache[asset] = brief
+        _save_cache(cache)
     return brief
 
 
@@ -245,10 +262,28 @@ def brief_teaser(asset: str = "BTC") -> dict:
     }
 
 
+def _clean(text: str, limit: int = 0) -> str:
+    """
+    Strip characters that crash Windows cp1252 stdout (Grok returns em dashes
+    and smart quotes freely), then optionally trim on a word boundary.
+    """
+    for bad, good in (("—", "--"), ("–", "-"), ("•", "-"),
+                      ("→", "->"), ("’", "'"), ("“", '"'),
+                      ("”", '"'), ("…", "...")):
+        text = text.replace(bad, good)
+    text = " ".join(text.split())
+    if limit and len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "..."
+    return text
+
+
 def format_brief_x(brief: dict) -> str:
     """
     X-postable form. Data and level first, lore never -- per the rule that a
     post with ~20 views has to do its work in the first line.
+
+    Kept inside a single standard-length post: Grok's contradiction runs long
+    and unbudgeted it produced ~500-char posts.
     """
     sig = brief.get("signal") or {}
     ann = brief.get("annotation") or {}
@@ -266,19 +301,20 @@ def format_brief_x(brief: dict) -> str:
     lines.append(head)
 
     if ann.get("contradiction"):
-        lines.append(f"Against it: {ann['contradiction']}")
+        lines.append(f"Against it: {_clean(ann['contradiction'], 110)}")
 
     falsifiers = ann.get("falsifiers") or []
     if falsifiers:
-        lines.append(f"Wrong if: {falsifiers[0]}")
+        lines.append(f"Wrong if: {_clean(falsifiers[0], 100)}")
 
     tr = sig.get("track_record") or {}
     if tr.get("resolved"):
-        lines.append(f"Public record: {tr.get('wins')}W-{tr.get('losses')}L "
+        lines.append(f"Record: {tr.get('wins')}W-{tr.get('losses')}L on-chain "
                      f"({tr.get('resolved')} resolved)")
 
-    lines.append("Ask Grok to stress-test this. Full brief + falsifiers: "
-                 "api.octodamus.com/v2/grok/brief")
+    lines.append("Ask Grok to stress-test this: api.octodamus.com/v2/grok/brief")
+    # Each line is cleaned individually -- _clean collapses whitespace, so it
+    # must never run over the joined, newline-separated post.
     return "\n".join(lines)
 
 
