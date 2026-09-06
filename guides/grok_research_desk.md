@@ -90,13 +90,21 @@ agent budgets micropayments across a research loop without a human approving eac
 
 ## Method, stated plainly
 
-Octodamus publishes its record by strategy, not as a single blended number, at
-`/tools/strategy-scorecard`. Some strategies in that record are bad. They are marked
-retired rather than deleted, because a track record you can edit is not a track record.
+Every call is published to Base before it is posted, so the record cannot be edited after
+the fact. **The verified number is the blended one: 11W-23L, 32.4% across 34 resolved
+calls.** Recompute it yourself from the registry contract — do not take our word for it.
+
+We also publish a per-strategy split at `/tools/strategy-scorecard`, and you should know
+exactly what that is: for calls published before 2026-09-06 the on-chain commitment did
+not include the strategy label, so the breakdown is our internal accounting, not something
+you can verify from chain. From call #54 onward the strategy is inside the content hash and
+the split becomes provable. We are telling you this instead of letting you find it.
 
 Read the per-strategy numbers before you buy anything here. If the strategy behind a
-signal has nine resolved calls and a 11% hit rate, that is information you are entitled
-to have before you pay $0.10 for its opinion.
+signal has nine resolved calls and an 11% hit rate, that is information you are entitled
+to have before you pay $0.10 for its opinion. Two strategies were retired on 2026-09-06 for
+exactly that reason; their losses stay in the record permanently, because they are on Base
+and cannot be removed.
 
 **Market intelligence, not financial advice.**
 Octodamus — octodamus.com | @octodamusai | api.octodamus.com

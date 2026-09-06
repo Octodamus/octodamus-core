@@ -829,6 +829,9 @@ def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
     for c in allc:
         if c.get("id") == call.get("id"):
             c["tx_hash"] = tx
+            # hash_version is stamped by publish_prediction and decides how the
+            # content hash is recomputed. Lose it and the call is unverifiable.
+            c["hash_version"] = call.get("hash_version", 1)
             break
     _save(allc)
     call["tx_hash"] = tx

@@ -42,26 +42,49 @@ task result — degraded state wearing the costume of a valid one.
 
 ---
 
-## Track record: publish by strategy, never blended
+## Track record: know which number is provable
 
-`octo_distro.strategy_scorecard()` splits the record by `call_type`. As of 2026-09-06:
+**The published record is what is on Base. That is 32.4% (11W-23L, 34 resolved).**
+Anyone can recompute it from chain. It is the only win rate that may be quoted as verified.
 
-| Strategy | W-L | Win rate |
-|---|---|---|
-| funding_extreme | 3-0 | 100% (n=3, thin) |
-| oracle | 5-7 | 41.7% |
-| crowd_fade | 2-8 | 20.0% |
-| range_scout | 1-8 | 11.1% |
+`octo_distro.strategy_scorecard()` splits by `call_type`. As of 2026-09-06:
 
-Blended: **32.4%**. Excluding the two worst: **8W-7L, 53.3%**.
+| Strategy | W-L | Win rate | Status |
+|---|---|---|---|
+| funding_extreme | 3-0 | 100% (n=3, thin) | active |
+| oracle | 5-7 | 41.7% | active |
+| crowd_fade | 2-8 | 20.0% | RETIRED 2026-09-06 |
+| range_scout | 1-8 | 11.1% | RETIRED 2026-09-06 |
 
-The blended number is dragged down almost entirely by `crowd_fade` and `range_scout`.
-Retire a strategy by adding it to `data/retired_strategies.json` — it stays in the record,
-marked, never deleted. A track record you can edit is not a track record.
+Excluding the retired two: 8W-7L, 53.3%.
+
+### The 53.3% is NOT independently verifiable — do not market it as on-chain
+
+`registerPrediction()` commits id, asset, direction, entry/target price, timeframe and a
+content hash. Until 2026-09-06 that hash covered
+`keccak256(id, asset, direction, entry_price, made_at)` — **`call_type` was in none of it**,
+and `data/octo_calls.json` is gitignored, so there is no independent timestamped record of
+which strategy produced a historical call. A third party verifying from Base gets 32.4% and
+cannot reproduce any breakdown of it.
+
+Quoting 53.3% as an on-chain number is exactly the "signal-seller theater" failure. Use it
+internally to decide what to keep running. Externally, quote 32.4% and show the split as a
+stated internal breakdown.
+
+**Fixed forward-only:** `_make_content_hash()` is now versioned. v2 adds `call_type` to the
+commitment and `publish_prediction()` stamps `hash_version: 2`; `commit_call_onchain()`
+persists it beside `tx_hash`. Calls without `hash_version` hash as v1, so all 35 already
+published calls still verify byte-identically. Historical hashes cannot be retrofitted --
+present it as *"strategy labels verifiable on-chain from call #N onward"* and never imply
+the earlier ones are.
+
+Retire a strategy via `data/retired_strategies.json` — marked, never deleted. Losses are
+immutable on Base; retiring changes what gets published going forward, not what is
+published. A track record you can edit is not a track record.
 
 **Do not amplify the blended win rate in marketing while it is below 50%.** The review's
-"publish W/L loudly" advice assumes the record supports it. Lead with per-strategy numbers
-and falsifiers instead.
+"publish W/L loudly" advice assumes the record supports it. Lead with falsifiers and the
+per-strategy split, labelled honestly as internal until v2 calls accumulate.
 
 ---
 
