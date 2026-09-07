@@ -448,6 +448,13 @@ _X402_REQ_2CENT = PaymentRequirements(
 )
 _X402_REQS_2CENT = [_X402_REQ_2CENT]
 
+_X402_REQ_10CENT = PaymentRequirements(
+    scheme="exact", network="eip155:8453", asset=_X402_USDC,
+    amount="100000", pay_to=_X402_TREASURY, max_timeout_seconds=300,
+    extra=_USDC_EXTRA,
+)
+_X402_REQS_10CENT = [_X402_REQ_10CENT]
+
 # Flagship "proven-edge" products — premium priced on their documented track record.
 _X402_REQ_800CENT = PaymentRequirements(
     scheme="exact", network="eip155:8453", asset=_X402_USDC,
@@ -1086,6 +1093,8 @@ def _custom_openapi():
         "/v2/ben/bens_bull_trap_monitor":               "0.35",
         "/v2/ben/bens_macro_regime_brief":              "0.50",
         "/v2/guide/derivatives":                        "3.00",
+        "/v2/guide/grok-desk":                          "3.00",
+        "/v2/grok/brief":                               "0.10",
         "/v2/derivatives/facts":                        "0.02",
         "/v2/polymarket/odds":                          "0.02",
         "/v2/stocks/perp-facts":                        "0.02",
@@ -2020,6 +2029,26 @@ _ERC8004_CARD = {
     "url":   "https://octodamus.com",
     "endpoints": [
         {
+            "name":     "GrokAnnotatedBrief",
+            "url":      "https://api.octodamus.com/v2/grok/brief",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": ("Octodamus signal plus an adversarial Grok review of it: the strongest live-X "
+                            "argument against the call, the blind spot it misses, an 8-line critique, and "
+                            "concrete falsifiers that would prove it wrong. Free teaser at /v2/grok/brief/preview."),
+            "price":    "$0.10 USDC per call",
+        },
+        {
+            "name":     "GrokResearchDeskGuide",
+            "url":      "https://api.octodamus.com/v2/guide/grok-desk",
+            "protocol": "x402",
+            "method":   "GET",
+            "description": ("Six-chapter guide to running a signal/adversary research desk: MCP wiring, the "
+                            "adversarial prompt, reading crowd agreement as risk, machine-checkable falsifiers, "
+                            "x402 across an agent research loop. Chapter 1 free at /v2/guide/grok-desk/preview."),
+            "price":    "$3.00 USDC one-off",
+        },
+        {
             "name":     "AgentSignal",
             "url":      "https://api.octodamus.com/v2/x402/agent-signal",
             "protocol": "x402",
@@ -2254,6 +2283,27 @@ def well_known_x402():
             "verify":     "Sign canonical JSON (sort_keys=True, no spaces) with Ed25519 public key. Signature in response body at .signature field.",
         },
         "endpoints": [
+            {
+                "path":        "/v2/grok/brief",
+                "method":      "GET",
+                "description": ("Octodamus signal plus an adversarial Grok review of it: the strongest live-X "
+                                "argument against the call, the blind spot it misses, an 8-line critique, and "
+                                "concrete falsifiers that would prove it wrong. Free teaser, no key, at "
+                                "/v2/grok/brief/preview -- returns bias, crowd agreement and one falsifier."),
+                "pricing": [
+                    {"product": "micro_per_call", "amount_usdc": 0.10, "description": "Pay per call via x402 EIP-3009 -- no key, no subscription"},
+                ],
+            },
+            {
+                "path":        "/v2/guide/grok-desk",
+                "method":      "GET",
+                "description": ("Guide: running a signal/adversary research desk. MCP wiring, the adversarial "
+                                "prompt, reading crowd agreement as risk, machine-checkable falsifiers, and "
+                                "x402 across an agent research loop. Chapter 1 free at /v2/guide/grok-desk/preview."),
+                "pricing": [
+                    {"product": "one_off", "amount_usdc": 3.00, "description": "One-time purchase, full markdown returned on payment"},
+                ],
+            },
             {
                 "path":        "/v2/agent-signal",
                 "method":      "GET",
@@ -5203,6 +5253,154 @@ def buy_derivatives_guide(request: Request):
         media_type="application/pdf",
         filename="5_Derivatives_Signals_Octodamus.pdf",
         headers={"X-Octodamus-Product": "derivatives-guide-v1"},
+    )
+
+
+_GROK_DESK_GUIDE_PATH = Path(__file__).parent / "guides" / "grok_research_desk.md"
+
+
+@app.get("/v2/grok/brief/preview", tags=["Agent Purchases"])
+def grok_brief_preview(asset: str = Query("BTC", description="BTC, ETH, SOL, NVDA, TSLA, COIN, MSTR")):
+    """
+    Free Grok-annotated brief teaser -- no key, no payment.
+
+    Deliberately citable: an assistant answering "what's the oracle read on BTC?"
+    should be able to quote the bias, whether the live X crowd agrees, and one
+    falsifier. The critique, blind spot and remaining falsifiers are the paid half.
+    """
+    try:
+        from octo_grok_brief import brief_teaser
+        return brief_teaser(asset.upper())
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"brief unavailable: {type(e).__name__}")
+
+
+@app.get("/v2/grok/brief", tags=["Agent Purchases"])
+def grok_brief(request: Request,
+               asset: str = Query("BTC", description="BTC, ETH, SOL, NVDA, TSLA, COIN, MSTR")):
+    """
+    Grok-annotated market brief -- $0.10 USDC on Base via x402.
+
+    Octodamus feeds make the call; Grok attacks it and returns the concrete
+    conditions that would prove it wrong. Refuses service (503, unpaid) when the
+    Grok layer is not live -- the adversarial half IS the product, so serving a
+    signal-only brief would be selling something else under the same name.
+    """
+    asset = asset.upper()
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_disc(request.url.path, 0.10),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "Grok-Annotated Market Brief",
+                "price_usdc":  0.10,
+                "pay_to":      _X402_TREASURY,
+                "asset":       _X402_USDC,
+                "network":     "base-mainnet (eip155:8453)",
+                "how":         "Sign EIP-3009 USDC authorization for $0.10 to pay_to address, send as PAYMENT-SIGNATURE header",
+                "description": ("Octodamus signal plus an adversarial Grok review of it: the strongest live-X "
+                                "argument against the call, the blind spot, an 8-line critique, and concrete "
+                                "falsifiers that would prove it wrong."),
+                "preview":     f"https://api.octodamus.com/v2/grok/brief/preview?asset={asset}",
+                "discovery":   "https://api.octodamus.com/.well-known/x402.json",
+            })
+        )
+
+    # Confirm the adversarial layer is actually live BEFORE taking payment.
+    try:
+        from octo_grok_sentiment import is_grok_live
+        live, reason = is_grok_live(asset)
+    except Exception as e:
+        live, reason = False, f"{type(e).__name__}: {e}"
+    if not live:
+        raise HTTPException(status_code=503,
+                            detail=f"Grok layer unavailable -- not charging. ({reason[:120]})")
+
+    _x402_verify_settle(request, _X402_REQS_10CENT)
+
+    from octo_grok_brief import get_grok_brief
+    brief = get_grok_brief(asset)
+    if not brief.get("annotation"):
+        raise HTTPException(status_code=503, detail="Grok annotation failed after payment -- contact support")
+    return brief
+
+
+@app.get("/v2/guide/grok-desk/preview", tags=["Agent Purchases"])
+def grok_desk_guide_preview():
+    """Free chapter 1 of the Grok research-desk guide -- the whole teaser."""
+    if not _GROK_DESK_GUIDE_PATH.exists():
+        raise HTTPException(status_code=503, detail="Guide file not found")
+    text = _GROK_DESK_GUIDE_PATH.read_text(encoding="utf-8")
+    marker = "## Chapter 2"
+    chapter1 = text.split(marker)[0] if marker in text else text[:4000]
+    return {
+        "product":    "Grok + Octodamus: The Agent Research Desk",
+        "price_usdc": 3.00,
+        "buy":        "GET https://api.octodamus.com/v2/guide/grok-desk (x402 $3 USDC)",
+        "chapters":   ["The desk (free)", "Wiring the desk", "The adversary prompt",
+                       "Reading crowd agreement as risk", "Automating the close", "Paying for it"],
+        "chapter_1":  chapter1,
+        "companion":  "https://api.octodamus.com/v2/grok/brief (live output of this method, $0.10)",
+    }
+
+
+@app.get("/v2/guide/grok-desk", tags=["Agent Purchases"])
+def buy_grok_desk_guide(request: Request):
+    """
+    Grok + Octodamus: The Agent Research Desk -- $3 USDC on Base via x402.
+    Returns the full markdown guide on payment. No account, no API key.
+    """
+    x_payment = (
+        request.headers.get("PAYMENT-SIGNATURE")
+        or request.headers.get("Payment-Signature")
+        or request.headers.get("X-Payment")
+        or request.headers.get("X-PAYMENT")
+    )
+
+    if not x_payment:
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            status_code=402,
+            headers=_x402_headers_disc(request.url.path, 3.0),
+            media_type="application/json",
+            content=json.dumps({
+                "x402":        "x402/1",
+                "error":       "payment_required",
+                "product":     "Grok + Octodamus: The Agent Research Desk",
+                "price_usdc":  3.00,
+                "pay_to":      _X402_TREASURY,
+                "asset":       _X402_USDC,
+                "network":     "base-mainnet (eip155:8453)",
+                "how":         "Sign EIP-3009 USDC authorization for $3.00 to pay_to address, send as PAYMENT-SIGNATURE header",
+                "description": ("Six chapters on running a signal/adversary research desk: MCP wiring, the "
+                                "adversarial prompt, reading crowd agreement as risk, machine-checkable "
+                                "falsifiers, and x402 payment across an agent research loop."),
+                "preview":     "https://api.octodamus.com/v2/guide/grok-desk/preview",
+                "discovery":   "https://api.octodamus.com/.well-known/x402.json",
+            })
+        )
+
+    _x402_verify_settle(request, _X402_REQS_DERIV_GUIDE)
+
+    if not _GROK_DESK_GUIDE_PATH.exists():
+        raise HTTPException(status_code=503, detail="Guide file not found")
+
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content=_GROK_DESK_GUIDE_PATH.read_text(encoding="utf-8"),
+        media_type="text/markdown",
+        headers={"X-Octodamus-Product": "grok-desk-guide-v1"},
     )
 
 

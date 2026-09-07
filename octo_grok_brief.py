@@ -150,6 +150,35 @@ def _sensor_layer(asset: str) -> dict:
     return out
 
 
+def _cheap_teaser(asset: str) -> dict:
+    """
+    Cold-cache fallback for the free teaser. Price/positioning feeds and the
+    track record only -- deliberately skips get_grok_sentiment(), which is a
+    live model call and the reason a naive teaser took ~60s and timed out.
+    """
+    out = {"asset": asset, "generated_at": datetime.now(timezone.utc).isoformat(),
+           "signal": {"asset": asset}, "annotation": None}
+    try:
+        from octo_distro import signal_composite
+        sc = out["signal"]
+        c = signal_composite(asset)
+        sc["bias"]        = c.get("bias", "NEUTRAL")
+        sc["avg_funding"] = c.get("avg_funding_rate")
+        sc["long_ratio"]  = c.get("long_ratio")
+    except Exception:
+        out["signal"]["bias"] = "NEUTRAL"
+    try:
+        from octo_distro import oracle_scorecard
+        st = oracle_scorecard().get("stats") or {}
+        out["signal"]["track_record"] = {
+            "wins": st.get("wins"), "losses": st.get("losses"),
+            "win_rate": st.get("win_rate"), "resolved": st.get("resolved"),
+        }
+    except Exception:
+        pass
+    return out
+
+
 def _falsifier_prompt(asset: str, sensors: dict) -> str:
     label = _ASSETS.get(asset, asset)
     return f"""Here is today's Octodamus signal on {label}. Attack it.
@@ -234,15 +263,25 @@ def get_grok_brief(asset: str = "BTC", force: bool = False) -> dict:
     return brief
 
 
-def brief_teaser(asset: str = "BTC") -> dict:
+def brief_teaser(asset: str = "BTC", allow_refresh: bool = False) -> dict:
     """
     Free, unauthenticated, Grok-citable teaser.
 
     Gives away the bias and ONE falsifier -- enough to be quotable and worth
     citing, not enough to replace the paid brief. The paid value is the full
     critique, the blind spot, and the remaining falsifiers.
+
+    MUST be fast. This is the endpoint an assistant hits mid-answer, and a
+    citable source that takes 60s to respond is not a citable source. So it is
+    cache-only by default: a warm brief is served in full, a cold one degrades
+    to the cheap sensor read with annotation_pending set, and neither path
+    blocks on a live Grok call. Pass allow_refresh=True only from a warmer.
     """
-    b = get_grok_brief(asset)
+    asset = asset.upper()
+    b = _load_cache().get(asset)
+    if b is None:
+        b = get_grok_brief(asset) if allow_refresh else _cheap_teaser(asset)
+
     ann = b.get("annotation") or {}
     falsifiers = ann.get("falsifiers") or []
 
@@ -253,6 +292,7 @@ def brief_teaser(asset: str = "BTC") -> dict:
         "crowded_trade_risk": ann.get("crowded_trade_risk"),
         "one_falsifier":    falsifiers[0] if falsifiers else None,
         "falsifiers_total": len(falsifiers),
+        "annotation_pending": not bool(ann),
         "track_record":     (b.get("signal") or {}).get("track_record"),
         "last_updated":     b.get("generated_at"),
         "full_brief":       "https://api.octodamus.com/v2/grok/brief",
