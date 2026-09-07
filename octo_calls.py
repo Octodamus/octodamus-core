@@ -26,8 +26,18 @@ CALLS_FILE = Path(__file__).parent / "data" / "octo_calls.json"
 _CG_IDS = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binancecoin",
     "XRP": "ripple", "DOGE": "dogecoin", "AVAX": "avalanche-2", "LINK": "chainlink",
-    "UNI": "uniswap",
+    "UNI": "uniswap", "ADA": "cardano", "SUI": "sui",
 }
+
+# Adopt whatever ids the funding-extreme scanner uses, so an asset it can fire on
+# is always resolvable here. SUI was missing from this map, so resolution skipped
+# CoinGecko entirely and fell through to a yfinance ticker that does not exist.
+try:
+    from octo_funding_extreme import _CG_ID as _FE_CG_ID
+    for _k, _v in _FE_CG_ID.items():
+        _CG_IDS.setdefault(_k.upper(), _v)
+except Exception:
+    pass
 
 
 def _cg_headers() -> dict:
@@ -418,7 +428,14 @@ def _fetch_price(asset: str) -> Optional[float]:
                     )
                     if r.status_code == 200:
                         price = r.json().get(_CG_IDS[asset], {}).get("usd")
-                        if price and float(price) > 1:   # sanity: ETH/BTC should never be <$1
+                        # Guard against a zero/null quote only. This used to require
+                        # price > 1 "because ETH/BTC are never under $1", which silently
+                        # rejected every sub-dollar token: SUI at $0.81 was thrown away,
+                        # fell through to a yfinance ticker that does not exist, and
+                        # resolved a call at $0.0003 -- publishing a WIN on-chain for
+                        # what was a LOSS. Sub-dollar assets are normal; bad data is
+                        # caught by _sane_exit_price() at the resolve site instead.
+                        if price and float(price) > 0:
                             return float(price)
                     elif r.status_code == 429 and attempt < 2:
                         _t.sleep(2 * (attempt + 1)); continue
@@ -531,7 +548,45 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     return None
 
 
-_CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
+_CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI", "ADA", "SUI"}
+
+# Pull in whatever the funding-extreme scanner can actually emit, so the two
+# lists cannot drift apart. They had: the scanner fired on SUI, this set did not
+# contain it, and autoresolve then treated SUI as a stock and deferred it
+# forever waiting on US market hours that are meaningless for a token.
+try:
+    from octo_funding_extreme import _ASSETS as _FE_ASSETS
+    _CRYPTO_ASSETS |= {a.upper() for a in _FE_ASSETS}
+except Exception:
+    pass
+
+# Call types that do NOT settle against price feeds. Polymarket resolves via its
+# own market outcome. Everything else settles on price -- keep this a denylist so
+# a new strategy resolves by default instead of silently never resolving.
+_NO_PRICE_RESOLVE = {"polymarket"}
+
+
+def _sane_exit_price(call: dict, price: float, max_move: float = 0.60) -> bool:
+    """
+    Reject an exit price that cannot plausibly belong to this asset.
+
+    A resolution is written to Base and CANNOT be undone -- the contract reverts
+    with "already resolved". So a bad price feed does not merely produce a wrong
+    row, it produces a permanently wrong public record. Call #53 resolved WIN at
+    $0.0003 on a $0.80 asset because a dead yfinance ticker answered; this is the
+    backstop for that class of failure.
+
+    Anything further than max_move from entry in either direction is treated as a
+    feed fault, not a real move, and the call is left open for a human to look at.
+    """
+    try:
+        entry = float(call.get("entry_price") or 0)
+        price = float(price)
+    except (TypeError, ValueError):
+        return False
+    if entry <= 0 or price <= 0:
+        return False
+    return abs(price - entry) / entry <= max_move
 
 
 def _is_us_market_open() -> bool:
@@ -551,8 +606,13 @@ def autoresolve() -> list:
         if c["resolved"]:
             continue
         call_type = c.get("call_type", "oracle")
-        if call_type not in ("oracle", "range_scout", "crowd_fade"):
-            continue  # Polymarket calls resolve via Polymarket, not price feeds
+        # Denylist, not allowlist. Only Polymarket resolves elsewhere (via its own
+        # market outcome); everything else settles against price feeds. This was an
+        # allowlist and every strategy added after it -- funding_extreme,
+        # stock_extreme -- silently never resolved, leaving on-chain calls open
+        # forever and quietly flattering the record by omitting the losses.
+        if call_type in _NO_PRICE_RESOLVE:
+            continue
         if not _is_expired(c):
             continue
         asset = c["asset"].upper()
@@ -576,6 +636,11 @@ def autoresolve() -> list:
             price = _fetch_price(c["asset"])
             if price is None:
                 print(f"[OctoCalls] Could not fetch price for {c['asset']} — skipping #{c['id']}")
+                continue
+            if not _sane_exit_price(c, price):
+                print(f"[OctoCalls] #{c['id']} {asset}: exit ${price:.6g} is implausible vs "
+                      f"entry ${c.get('entry_price')} -- REFUSING to resolve. Fix the price "
+                      f"feed; an on-chain resolution cannot be undone.")
                 continue
         else:
             print(f"[OctoCalls] #{c['id']} {asset} {c['direction']} target touched in-window -- resolving WIN at target ${price:,.2f}")
