@@ -269,14 +269,22 @@ _installed = False
 
 
 def _caller_tag() -> str:
-    """Best-effort attribution: the nearest octodamus frame outside this module."""
+    """
+    Best-effort attribution: the nearest octodamus frame outside this module.
+
+    Every agent in .agents/ is a file called agent.py, so the bare stem would
+    report all eight of them as "agent" and make their rows impossible to tell
+    apart -- which matters, because several run at overlapping times. For those,
+    use the directory name instead.
+    """
     try:
         f = sys._getframe(1)
         while f:
-            name = f.f_globals.get("__name__", "")
             fn = f.f_code.co_filename
             if "octodamus" in fn and "octo_llm" not in fn and "anthropic" not in fn:
-                return f"{Path(fn).stem}:{f.f_code.co_name}"
+                p = Path(fn)
+                stem = p.parent.name if p.stem == "agent" else p.stem
+                return f"{stem}:{f.f_code.co_name}"
             f = f.f_back
     except Exception:
         pass
