@@ -85,7 +85,12 @@ try {
 # Step 7: Catch up any daily content posts missed while the machine was down
 # (e.g. an overnight Windows Update reboot skips scheduled tasks).
 try {
-    & $PYTHON "$PROJECT_DIR\octo_startup_catchup.py" 2>> "$PROJECT_DIR\logs\startup_catchup.log"
+    # No 2>> redirect here. PowerShell holds an exclusive handle on a redirect
+    # target for the life of the command, so the script's own log() -- which
+    # appends to this same file -- got PermissionError on every write and
+    # swallowed it. The catch-up log showed nothing after 2026-07-15 while the
+    # script was in fact running on every boot. It logs itself; let it.
+    & $PYTHON "$PROJECT_DIR\octo_startup_catchup.py"
     Log "OK: Startup catch-up ran"
 } catch {
     Log "WARN: Startup catch-up failed: $_"

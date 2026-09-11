@@ -1,10 +1,23 @@
 """
-octo_startup_catchup.py -- Post-boot catch-up for missed daily content posts.
+octo_startup_catchup.py -- Catch-up for missed daily content posts.
 
-Runs once from octo_startup.ps1 after the secrets cache is ready. If the machine
-was off or rebooting during a scheduled content-post window (e.g. a Windows Update
-reboot overnight), Windows skips the corresponding scheduled task and the post is
-lost -- StartWhenAvailable does not reliably catch up across a full power-off.
+Runs from two places:
+  - octo_startup.ps1 on boot, after the secrets cache is ready.
+  - the Octodamus-Catchup scheduled task, hourly.
+
+Boot alone was not enough. On 2026-09-10 the Anthropic credit balance ran out and
+every LLM-written post failed for ~27 hours -- 7 posts on the 9th, 2 on the 10th,
+0 on the 11th -- while the machine stayed up the whole time. Nothing rebooted, so
+nothing ever caught up. An outage does not have to be a crash to eat a day of
+posts, which is why this now runs on a clock as well.
+
+Safe to run repeatedly: it only fires a mode whose post_type has not already
+posted today, and only for slots whose scheduled time passed within GRACE_HOURS.
+
+If the machine was off or rebooting during a scheduled content-post window (e.g. a
+Windows Update reboot overnight), Windows skips the corresponding scheduled task
+and the post is lost -- StartWhenAvailable does not reliably catch up across a
+full power-off.
 
 This detects a missed daily post by reading octo_posted_log.json for today's posts
 by type, then fires the runner mode to fill the gap -- at most once per post-type
@@ -113,7 +126,7 @@ def catch_up_memory_distill(now):
         r = subprocess.run(
             [PYTHON, str(PROJECT_DIR / "octo_memory_distill.py")],
             cwd=str(PROJECT_DIR), capture_output=True, text=True,
-            encoding="utf-8", timeout=900,
+            encoding="utf-8", errors="replace", timeout=900,
         )
         if r.returncode == 0:
             log("OK memory-distill: completed")
@@ -151,7 +164,7 @@ def main():
             r = subprocess.run(
                 [PYTHON, str(PROJECT_DIR / "octodamus_runner.py"), "--mode", mode],
                 cwd=str(PROJECT_DIR), capture_output=True, text=True,
-                encoding="utf-8", timeout=600,
+                encoding="utf-8", errors="replace", timeout=600,
             )
             if r.returncode == 0:
                 log(f"OK {ptype}: --mode {mode} completed")
