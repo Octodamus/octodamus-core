@@ -969,7 +969,7 @@ def run_session(dry_run: bool = False, focus_asset: str = ""):
                 except Exception as e:
                     result = f"Error: {e}"
                     print(result)
-                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
+                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": octo_llm.clip_tool_result(result)})
             messages.append({"role": "user", "content": results})
             messages = _microcompact(messages)
             time.sleep(0.3)

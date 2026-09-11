@@ -24,7 +24,14 @@ from typing import Optional
 
 import httpx
 
-BINANCE_BASE = "https://api.binance.com"
+# api.binance.com answers HTTP 451 (geo-block) from this machine, and has since
+# at least 2026-06-20 -- the cache file's last write. Signal 12 was silently dead
+# for three months: every fetch returned None and the oracle scored on 12
+# signals while believing it had 13. binance.us serves the same /api/v3/klines
+# shape (taker_buy_base at index 9); absolute volume is smaller but this signal
+# only uses the buy/sell RATIO, which is what matters.
+BINANCE_BASES = ("https://api.binance.com", "https://api.binance.us")
+BINANCE_BASE = BINANCE_BASES[0]
 CACHE_FILE   = Path(__file__).parent / "data" / "binance_delta_cache.json"
 CACHE_TTL_S  = 900  # 15 minutes
 
@@ -74,16 +81,20 @@ def get_delta_signal(symbol: str = "BTCUSDT") -> Optional[dict]:
     if cached and (time.time() - cached.get("fetched_at", 0)) < CACHE_TTL_S:
         return cached
 
-    try:
-        r = httpx.get(
-            f"{BINANCE_BASE}/api/v3/klines",
-            params={"symbol": symbol, "interval": "1h", "limit": 24},
-            timeout=8
-        )
-        if r.status_code != 200:
-            return None
-        klines = r.json()
-    except Exception:
+    klines = None
+    for base in BINANCE_BASES:
+        try:
+            r = httpx.get(
+                f"{base}/api/v3/klines",
+                params={"symbol": symbol, "interval": "1h", "limit": 24},
+                timeout=8
+            )
+            if r.status_code == 200:
+                klines = r.json()
+                break
+        except Exception:
+            continue
+    if not klines:
         return None
 
     try:

@@ -174,6 +174,21 @@ def score_asset(asset: str) -> dict:
             "fng":       fng,
         }
 
+    # Trend gate (octo_regime). This strategy is 3W-1L and the three wins were all
+    # UP squeezes on red days inside a 7d uptrend -- the gate keeps those. The one
+    # loss (#53 SUI DOWN, +7% 7d, +6% vs SMA20) is exactly what it blocks: longs
+    # paying a premium in an uptrend is trend fuel, not a flush.
+    try:
+        from octo_regime import trend_gate
+        _ok, _why = trend_gate(asset, direction)
+    except Exception as _e:
+        _ok, _why = False, f"trend gate error: {_e}"
+    if not _ok:
+        return {
+            "asset": asset, "fire": False, "reason": f"TREND GATE: {_why}",
+            "avg": avg, "neg_count": fd["neg_count"], "pos_count": fd["pos_count"], "fng": fng,
+        }
+
     mult   = 1 + TARGET_PCT / 100
     target = price * mult if direction == "UP" else price / mult
     edge   = abs(avg) / SELL_THRESHOLD  # normalized conviction

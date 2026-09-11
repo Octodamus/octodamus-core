@@ -46,6 +46,7 @@ Update it at the end of every significant session.
 - `.claude/rules/architecture.md` — key files, tasks, data files, deployment
 - `.claude/rules/coding.md`       — coding style, Windows gotchas
 - `.claude/rules/botcoin.md`      — BOTCOIN dashboard + mining rules
+- `.claude/rules/calls.md`        — call policy: trend gate + 24h minimum, the backtest behind it, strategy status
 - `.claude/rules/signals.md`      — aviation volume + calibration signal details
 - `.claude/rules/distro.md`       — Octo Distro Media: 10 free tools, subscriber capture, MCP sales engine
 - `.claude/rules/future.md`       — $OCTO token, roadmap notes

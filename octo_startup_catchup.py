@@ -44,13 +44,20 @@ GRACE_HOURS = 6
 # if ANY slot of a type was missed today (passed + within grace + nothing posted),
 # the mode fires ONCE. Times are local (hour, minute). Extend as more daily content
 # types warrant boot catch-up.
+#
+# post_types is a SET: a mode counts as "posted" if ANY of its types landed today.
+# mode_monitor posts type "signal" when a signal fires and "watchpost" only as the
+# fallback, so keying it on "watchpost" alone made the hourly catch-up re-run the
+# whole monitor (Coinglass, LLM, a possible extra post) every hour for the 6h grace
+# window on any day a signal had fired -- observed 2026-09-11 07:25, 25 minutes
+# after the 07:00 monitor had posted a signal.
 SLOTS = [
-    # (mode, post_type, hour, minute)
-    ("daily",   "daily_read", 3, 30),
-    ("daily",   "daily_read", 5, 0),
-    ("daily",   "daily_read", 19, 0),
-    ("monitor", "watchpost",  7, 0),
-    ("monitor", "watchpost",  16, 0),
+    # (mode, post_types, hour, minute)
+    ("daily",   {"daily_read"},          3, 30),
+    ("daily",   {"daily_read"},          5, 0),
+    ("daily",   {"daily_read"},          19, 0),
+    ("monitor", {"watchpost", "signal"}, 7, 0),
+    ("monitor", {"watchpost", "signal"}, 16, 0),
 ]
 
 # Memory distillation (Octodamus-MemoryDistill task): runs octo_memory_distill.py
@@ -142,21 +149,22 @@ def main():
     log(f"=== Catch-up start (now={now:%H:%M}, posted today: {sorted(posted) or 'none'}) ===")
 
     # Group slots by post_type; keep the most-recent passed + in-grace slot per type.
-    best = {}  # post_type -> (mode, slot_dt)
-    for mode, ptype, hh, mm in SLOTS:
+    best = {}  # mode -> (post_types, slot_dt)
+    for mode, ptypes, hh, mm in SLOTS:
         slot_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if slot_dt > now:
             continue  # not due yet today
         if (now - slot_dt).total_seconds() / 3600 > GRACE_HOURS:
             continue  # too stale to be worth posting
-        cur = best.get(ptype)
+        cur = best.get(mode)
         if cur is None or slot_dt > cur[1]:
-            best[ptype] = (mode, slot_dt)
+            best[mode] = (ptypes, slot_dt)
 
     fired = 0
-    for ptype, (mode, slot_dt) in sorted(best.items(), key=lambda kv: kv[1][1]):
+    for mode, (ptypes, slot_dt) in sorted(best.items(), key=lambda kv: kv[1][1]):
+        ptype = "/".join(sorted(ptypes))
         # Re-read the log each iteration so a mode that just posted is seen.
-        if ptype in _posted_types_today():
+        if ptypes & _posted_types_today():
             log(f"SKIP {ptype}: already posted today (missed slot {slot_dt:%H:%M})")
             continue
         log(f"CATCH-UP {ptype}: missed slot {slot_dt:%H:%M} -> running --mode {mode}")

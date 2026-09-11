@@ -3633,7 +3633,7 @@ def run_session(dry_run: bool = False, session_type: str = ""):
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
-                        "content":     str(result),
+                        "content":     octo_llm.clip_tool_result(result),
                     })
 
                 messages.append({"role": "user", "content": tool_results})

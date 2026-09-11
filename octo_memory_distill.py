@@ -449,6 +449,12 @@ _SUBAGENT_ROLES = {
     "order_chainflow":    ("Order_ChainFlow",    "on-chain order flow agent tracking Binance cumulative buy/sell delta, DEX volume on Base, whale wallet movements, and bridge flows"),
     "nyse_earningsedge":  ("NYSE_EarningsEdge",  "earnings catalyst intelligence agent tracking upcoming earnings, implied move vs historical, analyst estimate revisions, and pre-earnings positioning verdicts"),
     "tokenbot_nyse_base": ("TokenBot_NYSE_Base", "paper trading agent for tokenized NYSE stocks on Base (Dinari dShares) building a win-rate record ahead of live Aerodrome DEX execution"),
+    # Was missing from this roster, so its core memory was never rewritten -- only
+    # appended to, daily, by tool_update_core_memory. By 2026-09-11 it was 317 KB
+    # (~85k tokens) and the agent read the whole thing on turn 1 of every session:
+    # $0.11 per read, three reads a day, and a prefix so large the prompt cache
+    # expired between turns.
+    "x_sentiment_agent":  ("X_Sentiment_Agent",  "X (Twitter) crowd-sentiment agent: macro-regime-gated contrarian divergence detection on BTC, ETH, SOL and tokenized stocks via Grok sentiment"),
 }
 
 

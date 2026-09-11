@@ -43,14 +43,33 @@ def _neutral_result(note: str) -> dict:
     }
 
 
+_OKX_URL = "https://www.okx.com/api/v5/market/ticker"
+
+
 def _fetch_binance_price(symbol: str) -> float | None:
+    """Offshore reference price for the premium calculation.
+
+    api.binance.com returns HTTP 451 from this machine, so this signal has been
+    returning the neutral placeholder for months. OKX spot is the fallback: it is
+    an offshore venue too, which is the property the Coinbase premium depends on
+    (a US-venue reference like binance.us would measure nothing). The dict key
+    stays "binance_price" so downstream readers are unaffected.
+    """
     if httpx is None:
         return None
     try:
         with httpx.Client(timeout=8) as client:
             resp = client.get(_BINANCE_URL, params={"symbol": symbol})
+            if resp.status_code == 200:
+                return float(resp.json()["price"])
+    except Exception:
+        pass
+    try:
+        inst = symbol.replace("USDT", "-USDT")
+        with httpx.Client(timeout=8) as client:
+            resp = client.get(_OKX_URL, params={"instId": inst})
             resp.raise_for_status()
-            return float(resp.json()["price"])
+            return float(resp.json()["data"][0]["last"])
     except Exception:
         return None
 

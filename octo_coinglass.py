@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("OctoCoinglass")
@@ -48,9 +49,47 @@ _call_times: list = []
 RATE_LIMIT = 30
 RATE_WINDOW = 60  # seconds
 
-# Cache to avoid redundant calls within short windows
+# Cache to avoid redundant calls within short windows.
+#
+# Two layers. The in-memory dict serves repeats inside one process. The disk
+# layer (data/coinglass_cache.json) is what actually matters here: every
+# scheduled job is its own short-lived Python process, and eight of them start
+# inside the same five-minute window each morning, each pulling the same
+# funding / OI / long-short rows for BTC, ETH and SOL. With a per-process cache
+# only, that was ~8x the requests for identical data and a steady stream of
+# HTTP 429s on the 30 req/min Hobbyist plan -- and a 429 is a data failure that
+# the caller sees as "no funding data", which degrades the call.
 _cache: dict = {}
 CACHE_TTL = 60  # seconds — most data updates every 30-60s
+DISK_CACHE_TTL = 300  # seconds — shared across processes; funding/OI/LS change slowly
+_DISK_CACHE = Path(__file__).parent / "data" / "coinglass_cache.json"
+
+
+def _disk_get(cache_key: str):
+    try:
+        blob = json.loads(_DISK_CACHE.read_text(encoding="utf-8"))
+        hit = blob.get(cache_key)
+        if hit and (time.time() - hit["ts"]) < DISK_CACHE_TTL:
+            return hit["data"]
+    except Exception:
+        pass
+    return None
+
+
+def _disk_put(cache_key: str, data) -> None:
+    try:
+        try:
+            blob = json.loads(_DISK_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            blob = {}
+        now = time.time()
+        blob = {k: v for k, v in blob.items() if now - v.get("ts", 0) < DISK_CACHE_TTL * 4}
+        blob[cache_key] = {"ts": now, "data": data}
+        tmp = _DISK_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(blob), encoding="utf-8")
+        os.replace(tmp, _DISK_CACHE)
+    except Exception:
+        pass
 
 
 def _get_key() -> str:
@@ -100,11 +139,15 @@ def _get(endpoint: str, params: dict = None, cache_key: str = None) -> dict:
     """
     import httpx
 
-    # Check cache
+    # Check cache: this process first, then the cross-process disk layer
     if cache_key:
         cached = _cache.get(cache_key)
         if cached and (time.time() - cached["ts"]) < CACHE_TTL:
             return cached["data"]
+        disk = _disk_get(cache_key)
+        if disk is not None:
+            _cache[cache_key] = {"ts": time.time(), "data": disk}
+            return disk
 
     _rate_check()
 
@@ -131,6 +174,7 @@ def _get(endpoint: str, params: dict = None, cache_key: str = None) -> dict:
             data = body.get("data", body)
             if cache_key:
                 _cache[cache_key] = {"ts": time.time(), "data": data}
+                _disk_put(cache_key, data)
             return data
         else:
             code = str(body.get("code", ""))

@@ -193,6 +193,27 @@ def rolling_cache(messages):
     return out
 
 
+def clip_tool_result(result, max_chars: int = 16000) -> str:
+    """
+    Bound a tool result before it enters an agent loop's history.
+
+    Every byte a tool returns is re-sent on every later turn of the session, so
+    one oversized result taxes the whole loop. x_sentiment_agent's read_core_memory
+    returned a 317 KB file (~85k tokens) on turn 1 of every session -- $0.11 per
+    read, and a prefix so large the 5-minute cache expired between turns. 16k
+    chars (~4k tokens) is more than any tool here needs; anything past it is
+    clipped from the MIDDLE so both the header and the freshest tail survive.
+    """
+    text = result if isinstance(result, str) else str(result)
+    if len(text) <= max_chars:
+        return text
+    head = max_chars * 2 // 3
+    tail = max_chars - head
+    return (f"{text[:head]}\n\n[... {len(text) - max_chars:,} chars clipped by octo_llm.clip_tool_result "
+            f"-- the tool returned {len(text):,} chars; ask for a narrower slice if you need the middle ...]\n\n"
+            f"{text[-tail:]}")
+
+
 def smart_kwargs(**extra) -> dict:
     """
     Standard keyword arguments for a smart-tier call: Sonnet 5 with thinking
