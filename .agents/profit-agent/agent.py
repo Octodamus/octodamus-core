@@ -3503,6 +3503,8 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         f.write(f"\n{'='*60}\nSession #{session_num} -- {now}\n{'='*60}\n")
 
     import anthropic
+    sys.path.insert(0, str(ROOT))
+    import octo_llm  # installs the usage meter; supplies model + caching helpers
     client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
 
     # Pre-fetch live BTC price + F&G and inject into system prompt — prevents LLM from
@@ -3556,12 +3558,15 @@ def run_session(dry_run: bool = False, session_type: str = ""):
             turns += 1
             print(f"[Agent] Turn {turns}/{MAX_TURNS}...")
 
+            # The fixed prefix here is ~10k tokens (system + 47 tool schemas) and
+            # was resent uncached on every turn. One breakpoint at the end of
+            # system covers tools+system; rolling_cache covers the conversation
+            # that grows behind it.
             response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2000,
-                system=session_sys,
+                **octo_llm.smart_kwargs(max_tokens=2000),
+                system=octo_llm.cache_system(session_sys),
                 tools=TOOLS,
-                messages=messages,
+                messages=octo_llm.rolling_cache(messages),
             )
 
             # Collect text output and tool calls — always show both when present

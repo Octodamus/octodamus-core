@@ -143,6 +143,7 @@ def _mode_error(module: str, error: Exception):
         notify_system_error(module, str(error))
     except Exception:
         pass
+import octo_llm  # usage meter + prompt-caching helpers
 from octo_skill_log import log_post
 from octo_personality import (
     build_x_system_prompt as _build_x_sys,
@@ -360,7 +361,7 @@ def _claw_generate(system: str, user: str, max_tokens: int = 200,
         r = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": _u}],
         )
         return r.content[0].text.strip()
@@ -395,7 +396,7 @@ def _haiku_generate(system: str, user: str, max_tokens: int = 200, enforce_origi
         r = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": user + addendum}],
         )
         if r.stop_reason == "max_tokens":
@@ -1448,6 +1449,10 @@ def _get_recent_posts(n: int = 20) -> str:
 # Full system prompt string — all call sites use this constant.
 # To add live data context, use: _build_x_sys(live_data_block) at the call site.
 OCTO_SYSTEM = _build_x_sys()
+# ~7k tokens of identity/style/rules, byte-identical on every generation.
+# Cached once here so every post, reply and format call reads it at ~0.1x
+# instead of re-billing the whole prefix per call.
+OCTO_SYSTEM_CACHED = octo_llm.cache_system(OCTO_SYSTEM)
 
 
 # ─────────────────────────────────────────────
@@ -1953,9 +1958,10 @@ def mode_daily() -> None:
                     "5 LAWS: (1) relevant to THIS trader watching THIS asset NOW — not generic (2) non-obvious — the thing BEHIND the consensus (3) validated with exact numbers (4) one signal, one implication — grasped in 10 seconds (5) gives something forward to WATCH FOR — a level, trigger, or catalyst, not a closed conclusion."
         )
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=500,
-            system=OCTO_SYSTEM,
+            system=OCTO_SYSTEM_CACHED,
             messages=[{"role": "user", "content": _daily_user}],
         )
 
@@ -1973,9 +1979,10 @@ def mode_daily() -> None:
         # to actually rotate to a different signal, not just rework the draft.
         def _daily_reroll(tripped, topic_clash):
             _rr = claude.messages.create(
-                model="claude-sonnet-4-6",
+                model=octo_llm.MODEL_SMART,
+                thinking=octo_llm.THINKING_OFF,
                 max_tokens=500,
-                system=OCTO_SYSTEM,
+                system=OCTO_SYSTEM_CACHED,
                 messages=[{"role": "user", "content":
                     f"{_daily_user}\n\nYOUR DRAFT (do not just reword it): {post}\n\n"
                     f"{_reroll_instruction(tripped, _get_recent_posts(8), topic_clash)}"}],
@@ -2708,9 +2715,10 @@ Be specific. Use data if you have it. Connect it to the bigger picture.
         )
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=200,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": prompt}],
         )
         post = response.content[0].text.strip()
@@ -2758,9 +2766,10 @@ def mode_trendfront() -> None:
             "chars. No hashtags. Output only the post text."
         )
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=200,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": user_msg}],
         )
         post = response.content[0].text.strip()
@@ -3162,9 +3171,10 @@ def mode_morning_flow() -> None:
         )
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=350,
-            system=OCTO_SYSTEM,
+            system=OCTO_SYSTEM_CACHED,
             messages=[{"role": "user", "content": prompt}],
         )
         post = response.content[0].text.strip()
@@ -3188,9 +3198,10 @@ def mode_morning_flow() -> None:
         )
         try:
             explain_resp = claude.messages.create(
-                model="claude-sonnet-4-6",
+                model=octo_llm.MODEL_SMART,
+                thinking=octo_llm.THINKING_OFF,
                 max_tokens=350,
-                system=OCTO_SYSTEM,
+                system=OCTO_SYSTEM_CACHED,
                 messages=[{"role": "user", "content": explain_prompt}],
             )
             explanation = explain_resp.content[0].text.strip()

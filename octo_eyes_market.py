@@ -14,6 +14,7 @@ import time
 import anthropic
 
 from financial_data_client import get_current_price, build_oracle_context
+import octo_llm  # usage meter + model/caching helpers
 
 _client: anthropic.Anthropic | None = None
 
@@ -303,7 +304,8 @@ def generate_deep_dive_post(ticker: str) -> str:
     client = _get_client()
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=300,
         system=DEEP_DIVE_SYSTEM,
         messages=[{

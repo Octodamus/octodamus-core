@@ -8774,7 +8774,20 @@ async def v2_ask(
                 status_code=502,
                 detail={"error_code": "AI_ERROR", "message": f"AI service returned {r.status_code}."},
             )
-        answer = r.json()["content"][0]["text"].strip()
+        _payload = r.json()
+        # Public, unauthenticated endpoint that spends tokens per request. It talks
+        # to the REST API directly, so the SDK-level meter never sees it -- record
+        # it by hand or the one route strangers can spend our money on is the one
+        # route with no cost data. Not cached: the prompt is ~550 tokens (under the
+        # minimum cacheable prefix) and interpolates live context mid-template, so
+        # a breakpoint here would bill the 1.25x write and never read it back.
+        try:
+            import octo_llm
+            octo_llm.record(_payload.get("model", "claude-haiku-4-5-20251001"),
+                            _payload.get("usage", {}), tag="api_server:v2_ask")
+        except Exception:
+            pass
+        answer = _payload["content"][0]["text"].strip()
     except HTTPException:
         raise
     except Exception as e:

@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import anthropic
+import octo_llm  # usage meter + model/caching helpers
 
 BASE_DIR = Path(__file__).parent.resolve()
 
@@ -238,12 +239,15 @@ def _evaluate(title: str, channel: str, transcript: str) -> dict:
     claude = anthropic.Anthropic()
     snippet = transcript[:MAX_TRANSCRIPT_CHARS]
 
-    prompt = f"""You are the editorial brain for Octodamus — an autonomous AI oracle focused on three things:
-1. Building AI agents and autonomous systems — specifically: agent architecture, how to design and orchestrate agents with Claude, Claude Code (the agentic coding tool), MCP (Model Context Protocol), multi-agent patterns, and tool use. Anthropic and Claude channel content falls entirely in this pillar.
+    prompt = f"""You are the editorial brain for Octodamus — an autonomous AI oracle for crypto traders and market participants. Octodamus's audience: builders, traders, and investors who care about agentic systems and Bitcoin. They are NOT AI researchers.
+
+Octodamus posts on three pillars:
+1. Building AI agents and autonomous systems — specifically: practical agent architecture, Claude Code, MCP, multi-agent orchestration, tool use, agentic finance (agents that trade, pay, or transact). Anthropic content qualifies ONLY if it has practical builder or market implications.
+   DOES NOT QUALIFY for 8+: AI safety research, interpretability/mechanistic research, model internals, alignment theory, or any content a crypto trader would find irrelevant.
 2. Bitcoin's long-term value thesis and market structure
 3. Elite software engineering and system design
 
-Your job: evaluate this YouTube video and decide if it contains something genuinely insightful — a non-obvious idea, a sharp technical observation, or a contrarian thesis worth Octodamus thinking about.
+Your job: evaluate this YouTube video for genuine insight that Octodamus's audience of traders and builders would care about.
 
 Channel: {channel}
 Video title: {title}
@@ -253,10 +257,10 @@ Transcript (may be truncated):
 ---
 
 Scoring guide:
-- 9-10: Rare insight. Something that would make a senior engineer or BTC maximalist say "I haven't thought about it that way." Post-worthy.
-- 7-8: Solid, well-argued content on the three pillars. Good context fuel, not necessarily post-worthy.
-- 5-6: Generic, surface-level, or off-topic. Logged but ignored.
-- 1-4: Filler, ads, or completely irrelevant. Waste of time.
+- 9-10: Rare insight a trader or agent builder would forward to a colleague. Post-worthy.
+- 7-8: Solid, practical content on the three pillars. Context fuel, not necessarily post-worthy.
+- 5-6: Generic, surface-level, or only relevant to AI researchers. Logged but ignored.
+- 1-4: Filler, ads, pure safety/interpretability research, or completely off-topic. Waste of time.
 
 Return JSON only. No commentary outside the JSON.
 
@@ -270,7 +274,8 @@ Return JSON only. No commentary outside the JSON.
 
     try:
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -311,16 +316,17 @@ Topic area: {pillar_context}
 
 Write ONE post under 280 characters. Rules:
 - Make it your own genuine thought — do NOT say "I watched", "according to", or cite any source
-- Lead with the sharpest version of the idea
+- Lead with the sharpest version of the idea AND connect it to markets, trading, or the agentic finance world. A post about AI that has no market implication is not a post Octodamus would write.
 - No hashtags. No emojis. No filler.
-- Sound like a builder who has seen things, not a commentator
+- Sound like a builder who trades and builds systems, not an AI researcher
 - It must contain a specific, concrete detail — no vague platitudes
 
 Post only. No explanation."""
 
     try:
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=120,
             messages=[{"role": "user", "content": prompt}],
         )

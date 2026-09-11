@@ -13,6 +13,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import anthropic
+import octo_llm  # usage meter + model/caching helpers
 
 ROOT        = Path(__file__).parent
 STATE_FILE  = ROOT / "data" / "ceo_state.json"
@@ -210,7 +211,8 @@ def draft_newsletter_issue(week_context: str = "") -> str:
     )
 
     msg = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1000,
         system=CEO_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
@@ -251,7 +253,8 @@ def generate_video_brief(topic: str) -> str:
     )
 
     msg = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1500,
         system=CEO_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

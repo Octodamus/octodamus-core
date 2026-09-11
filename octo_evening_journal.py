@@ -17,8 +17,18 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 import anthropic
+import octo_llm  # usage meter + model/caching helpers
 
 ROOT        = Path(__file__).parent
+
+# Load all secrets into os.environ (Twitter keys, etc.) before anything else
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from bitwarden import load_all_secrets as _load_all_secrets
+    _load_all_secrets()
+except Exception as _e:
+    print(f"[Journal] Secrets load warning: {_e}")
 SECRETS     = ROOT / ".octo_secrets"
 CALLS_FILE  = ROOT / "data" / "octo_calls.json"
 EV_DIR      = ROOT / "journals" / "evening"
@@ -43,7 +53,7 @@ def _load_calls() -> list:
     try:
         calls = json.loads(CALLS_FILE.read_text(encoding="utf-8"))
         # Oracle calls only — exclude Polymarket bets so the record matches the website scorecard.
-        return [c for c in calls if c.get("call_type", "oracle") != "polymarket"]
+        return [c for c in calls if c.get("tx_hash")]
     except Exception:
         return []
 
@@ -168,18 +178,28 @@ def _day_summary(calls: list, ref_date=None) -> dict:
     losses = [c for c in resolved_today if c.get("outcome") == "LOSS"]
     opens  = [c for c in calls if not c.get("resolved")]
 
+    opened_today = []
+    for c in calls:
+        try:
+            made = c.get("made_at", "")[:10]
+            if datetime.strptime(made, "%Y-%m-%d").date() == today:
+                opened_today.append(c)
+        except Exception:
+            pass
+
     all_res  = [c for c in calls if c.get("resolved")]
     all_wins = [c for c in all_res if c.get("outcome") == "WIN"]
     wr = round(len(all_wins) / len(all_res) * 100, 1) if all_res else None
 
     return {
-        "date":   today.strftime("%A, %B %d %Y"),
-        "wins":   wins,
-        "losses": losses,
-        "open":   opens,
-        "aw":     len(all_wins),
-        "al":     len(all_res) - len(all_wins),
-        "wr":     wr,
+        "date":         today.strftime("%A, %B %d %Y"),
+        "wins":         wins,
+        "losses":       losses,
+        "open":         opens,
+        "opened_today": opened_today,
+        "aw":           len(all_wins),
+        "al":           len(all_res) - len(all_wins),
+        "wr":           wr,
     }
 
 
@@ -234,6 +254,19 @@ def _context_block(s: dict, news: list = None, market_data: str = "", core_memor
 
     if not s["wins"] and not s["losses"]:
         lines.append("\nNo calls resolved today. Watching. Waiting.")
+
+    if s.get("opened_today"):
+        lines.append("\nNew oracle calls made today (opened this session):")
+        for c in s["opened_today"]:
+            asset     = c.get("asset", "?")
+            direction = c.get("direction", "?")
+            entry     = c.get("entry_price", 0)
+            target    = c.get("target_price", 0)
+            tf        = c.get("timeframe", "?")
+            note      = c.get("note", "")[:120]
+            lines.append(
+                f"  - {asset} {direction} | Entry ${entry:,.2f} -> Target ${target:,.2f} ({tf}) | {note}"
+            )
 
     if s["open"]:
         lines.append("\nOracle calls still open (unresolved predictions — NOT live trading positions):")
@@ -295,7 +328,8 @@ def _build_system(core_memory: str = "") -> str:
 
 def _generate(context: str, client: anthropic.Anthropic, core_memory: str = "") -> str:
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1200,
         system=_build_system(core_memory),
         messages=[{
@@ -352,7 +386,8 @@ def _generate_thread(context: str, client: anthropic.Anthropic, core_memory: str
     if core_memory:
         system += f"\n\nYour accumulated memory (voice, what works):\n{core_memory}"
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1200,
         system=system,
         messages=[{
@@ -368,7 +403,8 @@ def _generate_article(context: str, client: anthropic.Anthropic, core_memory: st
     if core_memory:
         system += f"\n\nYour accumulated memory (voice, what works):\n{core_memory}"
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1800,
         system=system,
         messages=[{
@@ -576,7 +612,7 @@ def run_test(n: int, dry_run: bool = False):
 
         print(f"  journal...")
         entry = _generate(full_ctx, client)
-        _send(f"Octodamus Journal -- {date_str}", _format_email(date_str, entry), dry_run=dry_run)
+        _send(f"My thoughts on {date_str}", _format_email(date_str, entry), dry_run=dry_run)
         time.sleep(1)
 
         print(f"  thread...")
@@ -740,39 +776,54 @@ def _post_journal_thread(thread_text: str, date_str: str, dry_run: bool = False)
         print(f"[Journal] Thread post failed: {e}")
 
 
-def run_daily(dry_run: bool = False):
-    client   = anthropic.Anthropic(api_key=_anthropic_key())
-    calls    = _load_calls()
-    summary  = _day_summary(calls)
-    date_str = summary["date"]
-
-    print("Loading core memory...")
+def _build_daily_context(client=None) -> tuple:
+    """Fetch calls, summary, market data, news, and core memory. Returns (summary, ctx, core_memory, client)."""
+    if client is None:
+        client = anthropic.Anthropic(api_key=_anthropic_key())
+    calls       = _load_calls()
+    summary     = _day_summary(calls)
     core_memory = _load_core_memory()
-
-    print("Fetching live market data...")
     market_data = _get_live_market_data()
-    print("Fetching today's news...")
-    news = _get_daily_news(date_str)
-    ctx  = _context_block(summary, news=news, market_data=market_data, core_memory=core_memory)
+    news        = _get_daily_news(summary["date"])
+    ctx         = _context_block(summary, news=news, market_data=market_data, core_memory=core_memory)
+    return summary, ctx, core_memory, client
+
+
+def run_thread_only(dry_run: bool = False):
+    """Generate and post the X journal thread without re-sending emails."""
+    print("Loading context for thread post...")
+    summary, ctx, core_memory, client = _build_daily_context()
+    print("Generating X thread...")
+    thread = _generate_thread(ctx, client, core_memory=core_memory)
+    _post_journal_thread(thread, datetime.now().strftime("%Y-%m-%d"), dry_run=dry_run)
+
+
+def run_daily(dry_run: bool = False):
+    summary, ctx, core_memory, client = _build_daily_context()
+    date_str = summary["date"]
 
     print("Generating journal entry...")
     entry     = _generate(ctx, client, core_memory=core_memory)
     formatted = _format_email(date_str, entry)
     _save(datetime.now().strftime("%Y-%m-%d"), formatted)
 
-    _send_gmail(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
+    subject = f"My thoughts on {date_str}"
+    _send_gmail(subject, formatted, dry_run=dry_run)
     print(f"[Journal] Sent to octodamusai@gmail.com")
-    _send(f"Octodamus Journal -- {date_str}", formatted, dry_run=dry_run)
+    _send(subject, formatted, dry_run=dry_run)
     print(f"[Journal] Sent to Evernote")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--test",    type=int, metavar="N", help="Send N test entries")
-    ap.add_argument("--dry-run", action="store_true",   help="Print only, no email")
+    ap.add_argument("--thread",  action="store_true",   help="Post X thread only (no email)")
+    ap.add_argument("--dry-run", action="store_true",   help="Print only, no email/post")
     args = ap.parse_args()
 
     if args.test:
         run_test(args.test, dry_run=args.dry_run)
+    elif args.thread:
+        run_thread_only(dry_run=args.dry_run)
     else:
         run_daily(dry_run=args.dry_run)

@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT         = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT))
+import octo_llm  # usage meter + prompt-caching helpers
 SECRETS_FILE = ROOT / ".octo_secrets"
 STATE_FILE   = Path(__file__).parent / "data" / "state.json"
 DRAFTS_DIR   = Path(__file__).parent / "data" / "drafts"
@@ -636,7 +638,7 @@ def run_session(dry_run: bool = False, focus_asset: str = ""):
     messages = [{"role": "user", "content": f"X_Sentiment_Agent session #{session_num}. Date: {now}.{focus} Run full protocol."}]
     for turn in range(MAX_TURNS):
         resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=1500,
-                                      system=SYSTEM, tools=TOOLS, messages=messages)
+                                      system=octo_llm.cache_system(SYSTEM), tools=TOOLS, messages=octo_llm.rolling_cache(messages))
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         for t in resp.content:
             if t.type == "text" and t.text.strip():

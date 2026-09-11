@@ -20,11 +20,15 @@ CLI:
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _CACHE_FILE = Path(__file__).parent / "data" / "grok_brief_cache.json"
-_CACHE_TTL  = 1800  # 30 min -- fresh enough to cite, cheap enough to serve
+_CACHE_TTL  = 3600  # 60 min -- fresh enough to cite, cheap enough to serve
+# The teaser is a bias read plus a falsifier, not a tick. Every refresh costs two
+# billed grok-4.5 x_search calls (this annotation, plus the sentiment call inside
+# _sensor_layer), so the TTL and the warmer's cadence in octo_grok_warm.py have to
+# be set together: warming faster than the TTL buys nothing and bills twice.
 
 _MODEL = "grok-4.5"
 
@@ -239,6 +243,19 @@ def get_grok_brief(asset: str = "BTC", force: bool = False) -> dict:
         brief["annotation_error"] = "GROK_API_KEY not configured"
         return brief
 
+    # x_search bills per source retrieved, and an unbounded search is a firehose:
+    # octo_grok_live and octo_grok_sentiment both scope theirs for exactly that
+    # reason, but this call -- the one that runs on every warm cycle -- did not.
+    # A date window is the free half of that fix: the falsifier we want is the
+    # strongest argument against the call *right now*, so a post from last year
+    # was never a candidate and there is no reason to pay to retrieve it.
+    # Handles stay unscoped so the adversarial search can still surface a
+    # counterargument from outside the curated signal list.
+    _now = datetime.now(timezone.utc)
+    _window = {
+        "from_date": (_now - timedelta(days=2)).strftime("%Y-%m-%d"),
+        "to_date":   _now.strftime("%Y-%m-%d"),
+    }
     try:
         r = client.responses.create(
             model=_MODEL,
@@ -246,7 +263,7 @@ def get_grok_brief(asset: str = "BTC", force: bool = False) -> dict:
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user",   "content": _falsifier_prompt(asset, sensors)},
             ],
-            tools=[{"type": "x_search"}],
+            tools=[{"type": "x_search", **_window}],
             max_output_tokens=1200,
         )
         brief["annotation"] = _extract_json(getattr(r, "output_text", "") or "")

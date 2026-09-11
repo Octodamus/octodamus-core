@@ -48,13 +48,13 @@ PROCESSES = [
         "critical": True,
         "cooldown": 30,   # seconds between restart attempts
     },
-    {
-        "name":    "OctodamusRunner",
-        "script":  "octodamus_runner.py",
-        "args":    ["--mode", "mentions"],
-        "critical": True,
-        "cooldown": 30,
-    },
+    # NOTE: `octodamus_runner.py --mode mentions` is deliberately NOT watched here.
+    # It is a one-shot job, not a daemon: it polls mentions, replies, and exits.
+    # A watchdog cannot tell a finished one-shot from a crashed daemon, so it
+    # relaunched it on every 5-minute cycle -- ~288 extra runs a day, each one
+    # pulling 20 mentions from the paid X API, against a Octodamus-Mentions
+    # scheduled task that already runs it every 15 minutes. Scheduled tasks own
+    # periodic work; the watchdog owns long-lived processes only.
     {
         "name":    "TelegramBot",
         "script":  "telegram_bot.py",
@@ -102,21 +102,32 @@ def _save_state(state: dict):
 # ── Process detection ─────────────────────────────────────────────────────────
 
 def _find_pid(script_name: str) -> int:
-    """Return PID of a running python process running script_name, or 0."""
+    """Return PID of a running python process running script_name, or 0.
+
+    Uses PowerShell's CIM provider rather than wmic. wmic was removed in Windows
+    11 24H2, so the old implementation raised FileNotFoundError on every call,
+    swallowed it, and returned 0 -- which this module reads as "not running".
+    Every watched process was therefore declared dead and relaunched on every
+    5-minute cycle: ~29k spurious restarts, duplicate Telegram and OctoBoto
+    instances, and a standing fight with the health check's dedup pass.
+    """
     try:
         result = subprocess.run(
-            ["wmic", "process", "where", "name='python.exe'",
-             "get", "ProcessId,CommandLine", "/format:csv"],
-            capture_output=True, text=True, timeout=10
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
+             "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=20,
         )
-        for line in result.stdout.splitlines():
-            if script_name in line:
-                parts = line.strip().split(",")
-                if len(parts) >= 3:
-                    try:
-                        return int(parts[-1].strip())
-                    except ValueError:
-                        pass
+        raw = (result.stdout or "").strip()
+        if not raw:
+            return 0
+        data = json.loads(raw)
+        if isinstance(data, dict):      # ConvertTo-Json emits a bare object for one match
+            data = [data]
+        for entry in data:
+            cmd = entry.get("CommandLine") or ""
+            if script_name in cmd:
+                return int(entry.get("ProcessId") or 0)
     except Exception as e:
         log.warning(f"[Watchdog] PID scan error: {e}")
     return 0

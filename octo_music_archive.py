@@ -29,6 +29,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+import octo_llm  # usage meter + model/caching helpers
 
 DATA_DIR     = Path(__file__).parent / "data"
 CATALOG_FILE = DATA_DIR / "music_catalog.json"
@@ -359,7 +360,8 @@ Catalog batch {batch_num}/{total_b}:
 
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model=octo_llm.MODEL_SMART,
+                thinking=octo_llm.THINKING_OFF,
                 max_tokens=4000,
                 system=SYSTEM,
                 messages=[{"role": "user", "content": prompt}],

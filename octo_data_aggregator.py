@@ -18,6 +18,7 @@ from typing import Optional
 
 import anthropic
 import requests
+import octo_llm  # usage meter + model/caching helpers
 
 # ── paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -213,7 +214,8 @@ def generate_briefing(client: anthropic.Anthropic, sentiment_map: dict, prices: 
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=400,
             system=BRIEFING_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
