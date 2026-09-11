@@ -192,6 +192,66 @@ def _fetch_tweet_metrics(tweet_id: str) -> dict | None:
     return None
 
 
+POSTED_LOG_FILE = BASE_DIR / "octo_posted_log.json"
+
+
+def backfill_from_posted_log(days: int = 30) -> int:
+    """
+    Pull every X post from octo_posted_log.json that the skill log has never seen
+    and register it, so its views get fetched like everything else.
+
+    Only the modes that call log_post() were tracked -- daily_read, engage, the
+    format-engine types. signal, watchpost, defi_signal, thread, funding_extreme,
+    congress and the strategy calls never entered the skill log, which is about
+    half of the schedule (in the 30 days to 2026-09-11: 116 tracked-type posts
+    vs 116 untracked). "Which posts get the most views" cannot be answered while
+    half the posts are invisible. Returns the number of entries added.
+    """
+    try:
+        raw = json.loads(POSTED_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    posted = list(raw.values()) if isinstance(raw, dict) else raw
+    entries = _load_log()
+    known = {e.get("post_id") for e in entries if e.get("post_id")}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    added = 0
+    for p in posted:
+        url = p.get("url") or ""
+        tid = _extract_tweet_id(url)
+        ts = p.get("posted_at") or ""
+        if not tid or tid in known or not ts:
+            continue
+        try:
+            ts_utc = datetime.fromisoformat(ts).astimezone(timezone.utc).isoformat()
+        except Exception:
+            continue
+        if ts_utc < cutoff:
+            continue
+        entries.append({
+            "id":                 f"{ts_utc[:19].replace('-', '').replace(':', '').replace('T', '')}_{(p.get('type') or 'unk')[:3]}",
+            "post_id":            tid,
+            "text":               (p.get("text") or "")[:280],
+            "type":               p.get("type") or "unknown",
+            "voice_mode":         "unknown",
+            "is_card":            (p.get("text") or "").startswith("◈"),
+            "url":                url,
+            "timestamp":          ts_utc,
+            "rating":             None,
+            "rating_note":        "",
+            "engagement_metrics": None,
+            "engagement_score":   None,
+            "metrics_fetched_at": None,
+        })
+        known.add(tid)
+        added += 1
+    if added:
+        entries.sort(key=lambda e: e.get("timestamp", ""))
+        _save_log(entries)
+        print(f"[SkillLog] Backfilled {added} post(s) from the posted log.")
+    return added
+
+
 def fetch_engagement_for_pending(max_fetch: int = 20) -> int:
     """
     Find skill log entries that:
@@ -204,6 +264,7 @@ def fetch_engagement_for_pending(max_fetch: int = 20) -> int:
     (max_fetch > posts/day) still fills older un-fetched entries over time.
     Returns number of entries updated.
     """
+    backfill_from_posted_log()
     entries  = _load_log()
     cutoff   = datetime.now(timezone.utc) - timedelta(hours=_FETCH_DELAY_HOURS)
     updated  = 0
@@ -474,3 +535,50 @@ def get_skill_summary() -> str:
         f"{top_str}\n"
         f"Use /analyze to generate an improvement proposal."
     )
+
+
+def views_report(days: int = 30) -> str:
+    """Views (X impressions) by post type and by local posting hour, plus the top posts.
+
+        python octo_skill_log.py views [days]
+    """
+    import statistics
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = [e for e in _load_log() if e.get("engagement_metrics") and e.get("timestamp", "") >= cutoff]
+    if not rows:
+        return f"No posts with metrics in the last {days} days."
+    views = lambda e: e["engagement_metrics"].get("impression_count", 0) or 0
+    out = [f"VIEWS -- last {days} days, {len(rows)} posts with X metrics (fetched 24h+ after posting)", ""]
+    by_type = {}
+    for e in rows:
+        by_type.setdefault(e.get("type") or "unknown", []).append(views(e))
+    out.append(f"  {'post type':<18}{'n':>4}{'median':>9}{'mean':>8}{'max':>7}")
+    for t, v in sorted(by_type.items(), key=lambda x: -statistics.median(x[1])):
+        out.append(f"  {t:<18}{len(v):>4}{statistics.median(v):>9.0f}{statistics.mean(v):>8.0f}{max(v):>7}")
+    by_hour = {}
+    for e in rows:
+        try:
+            h = datetime.fromisoformat(e["timestamp"]).astimezone().hour
+        except Exception:
+            continue
+        by_hour.setdefault(h, []).append(views(e))
+    out += ["", f"  {'local hour':<12}{'n':>4}{'median':>9}"]
+    for h in sorted(by_hour):
+        out.append(f"  {h:02d}:00       {len(by_hour[h]):>4}{statistics.median(by_hour[h]):>9.0f}")
+    out += ["", "  top 10 by views"]
+    for e in sorted(rows, key=lambda e: -views(e))[:10]:
+        out.append(f"  {views(e):>6}  {e.get('type','?'):<14} {e['timestamp'][:16]}  {e.get('text','')[:70]}")
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    import sys
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "views"
+    if cmd == "views":
+        print(views_report(int(sys.argv[2]) if len(sys.argv) > 2 else 30))
+    elif cmd == "fetch":
+        print(fetch_engagement_for_pending(int(sys.argv[2]) if len(sys.argv) > 2 else 25))
+    elif cmd == "backfill":
+        print(backfill_from_posted_log(int(sys.argv[2]) if len(sys.argv) > 2 else 30))
+    else:
+        print("usage: python octo_skill_log.py views [days] | fetch [n] | backfill [days]")
