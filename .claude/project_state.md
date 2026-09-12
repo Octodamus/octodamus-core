@@ -1,6 +1,15 @@
 # Octodamus — Project State
 # Last updated: 2026-09-11
 
+## Grok + SpaceX shut down (2026-09-12)
+xAI billed >$100 in one day. `octo_grok_kill.py` (GROK_DISABLED = True) is checked in
+octo_grok_sentiment (before the cache, so is_grok_live() is False and /v2/grok/brief + the ACP
+Grok brief refuse WITHOUT charging), octo_grok_live, octo_grok_brief, the runner's x.ai client
+and octo_grok_warm. Tasks Disabled: Octodamus-GrokWarm, Octodamus-SpaceX,
+Octodamus-X-Sentiment-Agent (its only sensor is Grok; running it blind burns Haiku for nothing).
+OctoDataAPI restarted so the live server loaded the switch. To re-enable: flip the flag, enable the
+three tasks, restart OctoDataAPI. One-off test without flipping: OCTO_GROK_ENABLED=1.
+
 ## Call Policy + Cost Pass (2026-09-11)
 Record was 11W-25L (31%), streak L11. Re-scored every resolved on-chain crypto call against
 the trend at call time: trend-opposed calls 0W-7L, DOWN outside a confirmed downtrend 2W-13L.

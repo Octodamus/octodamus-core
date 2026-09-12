@@ -65,6 +65,9 @@ Rules:
 def _client():
     """xAI client, or None if the key is missing."""
     try:
+        from octo_grok_kill import grok_disabled
+        if grok_disabled():
+            return None  # owner kill switch -- see octo_grok_kill.py
         from openai import OpenAI
         secrets_file = Path(__file__).parent / ".octo_secrets"
         secrets = json.loads(secrets_file.read_text(encoding="utf-8"))

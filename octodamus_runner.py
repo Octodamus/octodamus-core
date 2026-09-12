@@ -318,6 +318,12 @@ try:
     from openai import OpenAI as _OpenAI
     _or_key   = secrets.get("OPENROUTER_API_KEY", "")
     _grok_key = secrets.get("GROK_API_KEY", "")
+    try:
+        from octo_grok_kill import grok_disabled as _grok_disabled
+        if _grok_disabled():
+            _grok_key = ""  # owner kill switch -- no x.ai client anywhere in the runner
+    except ImportError:
+        pass
     if _or_key:
         _claw = _OpenAI(base_url="https://openrouter.ai/api/v1", api_key=_or_key)
         _CLAW_ACTIVE = True

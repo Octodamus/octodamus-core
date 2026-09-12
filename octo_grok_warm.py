@@ -43,6 +43,13 @@ def _in_quiet_hours(now=None) -> bool:
 
 
 def warm(assets=None, force: bool = False) -> dict:
+    try:
+        from octo_grok_kill import grok_disabled, DISABLED_REASON
+        if grok_disabled():
+            print(f"[GrokWarm] skipped -- {DISABLED_REASON}")
+            return {"skipped": DISABLED_REASON}
+    except ImportError:
+        pass
     from octo_grok_brief import get_grok_brief
 
     assets = [a.upper() for a in (assets or _DEFAULT_ASSETS)]

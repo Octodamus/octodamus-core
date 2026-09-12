@@ -131,6 +131,16 @@ def get_grok_sentiment(asset: str = "BTC", force: bool = False) -> dict:
         }
     """
     asset = asset.upper()
+
+    # Owner kill switch -- checked BEFORE the cache so a stale live=True reading
+    # cannot let a paid endpoint bill for a layer that is switched off.
+    try:
+        from octo_grok_kill import grok_disabled, DISABLED_REASON
+        if grok_disabled():
+            return _neutral(asset, DISABLED_REASON)
+    except ImportError:
+        pass
+
     cache = _load_cache()
 
     if not force and asset in cache:
