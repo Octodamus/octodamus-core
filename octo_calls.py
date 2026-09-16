@@ -315,18 +315,19 @@ def _save(calls: list):
 # Two rules every call must pass before it is written anywhere, derived from
 # re-scoring the real on-chain record (32 resolved crypto calls, Sep 2026):
 #
-#   1. Minimum 24h horizon. The WIN rule needs a >=1% move in the called
+#   1. Minimum 48h horizon. The WIN rule needs a >=1% move in the called
 #      direction at expiry (or the target touched). Re-simulating every call at
 #      each horizon under that exact rule: 6h 1W-31L, 12h 6W-26L, 24h 12W-20L,
 #      48h 15W-17L. Sub-day calls cannot clear the bar often enough to be worth
-#      a permanent on-chain entry. range_scout's 6h book was 1W-8L.
+#      a permanent on-chain entry. range_scout's 6h book was 1W-8L. Raised from
+#      24h to 48h on 2026-09-16: several live 24h losses resolved as wins at 48h.
 #
 #   2. Never fight the trend (octo_regime.trend_gate). Trend-opposed calls were
 #      0W-7L; DOWN calls outside a confirmed downtrend were 2W-13L.
 #
 # Enforced in record_call() AND commit_call_onchain(), so no strategy, LLM
 # post, or CLI path can bypass it.
-MIN_CALL_HOURS = 24
+MIN_CALL_HOURS = 48
 
 
 def _timeframe_hours(tf: str) -> Optional[float]:
@@ -336,8 +337,11 @@ def _timeframe_hours(tf: str) -> Optional[float]:
     if m:
         n, unit = int(m.group(1)), m.group(2)
         return n if unit == "h" else n * 24
-    if any(k in tf for k in ("friday", "end of week", "eow", "monday", "tuesday", "wednesday", "thursday", "close")):
-        return 24.0  # weekday expiries are always >= 1 trading day out
+    if any(k in tf for k in ("friday", "end of week", "eow", "monday", "tuesday", "wednesday", "thursday")):
+        # named-day expiry: measure it from now, the same way _expiry_dt will at resolve time
+        now = datetime.now(timezone.utc)
+        exp = _expiry_dt({"made_at": now.strftime("%Y-%m-%d %H:%M UTC"), "timeframe": tf})
+        return (exp - now).total_seconds() / 3600 if exp else None
     return None
 
 
@@ -345,7 +349,7 @@ def call_policy_check(asset: str, direction: str, timeframe: str) -> tuple[bool,
     """(ok, reason). Fails closed: no trend data means no call."""
     hours = _timeframe_hours(timeframe)
     if hours is not None and hours < MIN_CALL_HOURS:
-        return (False, f"timeframe {timeframe!r} is under the {MIN_CALL_HOURS}h minimum (sub-day calls: 1W-31L re-simulated)")
+        return (False, f"timeframe {timeframe!r} is under the {MIN_CALL_HOURS}h minimum (24h re-simulated 12W-20L, 48h 15W-17L)")
     try:
         from octo_regime import trend_gate
         ok, why = trend_gate(asset, direction)
@@ -1143,7 +1147,7 @@ def build_call_rules() -> str:
     lines = ["CALL RULES -- your win rate IS your reputation:"]
     lines.append("1. Make exactly one Oracle call in this post, or none if the data does not support one.")
     lines.append(f"2. Never call against the trend: DOWN only in a confirmed downtrend (7d down AND below the 20d average). Trend-opposed calls are 0W-7L on record.")
-    lines.append(f"3. Minimum horizon {MIN_CALL_HOURS}h. Use 24h, 48h, or end of week. Never longer than 7 days.")
+    lines.append(f"3. Minimum horizon {MIN_CALL_HOURS}h. Use 48h, 72h, or 5d. Never longer than 7 days.")
     lines.append("4. Use realistic targets: 2-5% crypto, 1-3% stocks. No moonshots.")
     lines.append("5. FORMAT -- put this as the LAST LINE of your post, exactly like this:")
     lines.append("   Oracle call: ASSET UP from $PRICE to $TARGET by TIMEFRAME.")

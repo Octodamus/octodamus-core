@@ -14,7 +14,7 @@ three tasks, restart OctoDataAPI. One-off test without flipping: OCTO_GROK_ENABL
 Record was 11W-25L (31%), streak L11. Re-scored every resolved on-chain crypto call against
 the trend at call time: trend-opposed calls 0W-7L, DOWN outside a confirmed downtrend 2W-13L.
 Shipped `octo_regime.py` (Kraken daily OHLC, 30-min disk cache) + `call_policy_check()` in
-octo_calls (trend gate + 24h minimum), enforced in record_call AND commit_call_onchain and
+octo_calls (trend gate + 48h minimum, raised from 24h 2026-09-16), enforced in record_call AND commit_call_onchain and
 called early in range_scout / crowd_fade / funding_extreme. Full write-up: `.claude/rules/calls.md`.
 Cost: x_sentiment_agent core memory was 317 KB and read whole every session (never in the
 distill roster) -> distilled to 4 KB + added to roster; `octo_llm.clip_tool_result` (16k chars)

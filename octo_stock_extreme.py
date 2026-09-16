@@ -21,7 +21,7 @@ Fire rules (strict -- fires rarely, high conviction):
       -> DOWN  (long flush in a downtrend)
   everything else -> no fire (esp. crowd-long-in-uptrend = the trend-fighting trap)
 
-Timeframe: 24h. Target: 2.5%. call_type: "stock_extreme".
+Timeframe: 48h. Target: 2.5%. call_type: "stock_extreme".
 Protected by the fleet circuit breaker (octo_calls.strategy_should_pause) once it has a record.
 
 Usage:
@@ -41,7 +41,7 @@ SHORT_CROWD  = 35.0   # long_pct <= this = short-heavy crowd (squeeze fuel in an
 LONG_CROWD   = 68.0   # long_pct >= this = long-heavy crowd (flush fuel in a downtrend)
 OI_CONFIRM   = 3.0    # oi_chg_24h_pct >= this = leverage building (complacent offside crowd)
 TARGET_PCT   = 2.5
-TIMEFRAME    = "24h"
+TIMEFRAME    = "48h"
 
 
 def _get_price(ticker: str):

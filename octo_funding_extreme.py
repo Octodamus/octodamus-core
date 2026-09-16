@@ -6,7 +6,7 @@ Fires oracle calls when funding rates hit extremes across exchanges.
   avg > +0.010/8h AND 3+ exchanges positive -> SELL (longs overheated)
 
 The ETH call in April (call #25) fired on this exact setup and won +5%.
-Timeframe: 24h. Target: 3%. call_type: "funding_extreme"
+Timeframe: 48h. Target: 3%. call_type: "funding_extreme"
 
 Run:
   python octo_funding_extreme.py          # check BTC ETH SOL
@@ -32,7 +32,7 @@ BUY_THRESHOLD  = -0.005   # avg 8h rate below -> BUY
 SELL_THRESHOLD = +0.010   # avg 8h rate above -> SELL
 MIN_EXCHANGES  = 3        # min exchanges confirming direction
 TARGET_PCT     = 3.0      # % target
-TIMEFRAME      = "24h"
+TIMEFRAME      = "48h"
 
 
 def _load_calls() -> list:

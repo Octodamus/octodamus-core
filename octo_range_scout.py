@@ -1,7 +1,7 @@
 """
 octo_range_scout.py — Ranging Market Short-Term Oracle
 
-Generates 24h trade calls when the main 13-signal oracle is quiet (HOLD/WATCH).
+Generates 48h trade calls when the main 13-signal oracle is quiet (HOLD/WATCH).
 Built for ranging markets where trending signals (RSI, 24h change, F&G) are neutral
 but derivative signals (funding, taker flow, L/S ratio) still show short-term edge.
 
@@ -13,7 +13,7 @@ Strategy:
     Four of the six mini-signals are mean-reversion reads (funding, L/S, taker,
     F&G-vs-price) and all read BEAR through an entire uptrend, so this fired DOWN
     into strength every 2h for a 1W-8L book. Re-scored, every trend-opposed call lost.
-  - Timeframe: 24h (was 6h). Under the >=1% WIN rule the 6h book re-simulates 0W-9L,
+  - Timeframe: 48h (was 6h, then 24h). Under the >=1% WIN rule the 6h book re-simulates 0W-9L,
     the same calls at 24h 5W-4L. Target 2% (was 1.5%).
   - call_type: "range_scout" — tracked separately, merged to track record at 70%+/20 calls
   - Max 1 open range_scout call per asset (same guard as main oracle)
@@ -221,9 +221,9 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
             "signals": signals, "bull": bull, "bear": bear,
         }
 
-    # 24h minimum: octo_calls.MIN_CALL_HOURS. A 6/6 vote earns the wider target,
+    # 48h minimum: octo_calls.MIN_CALL_HOURS. A 6/6 vote earns the wider target,
     # not a shorter clock -- sub-day calls cannot clear the >=1% WIN rule often enough.
-    timeframe = "24h"
+    timeframe = "48h"
     target_pct = 2.0 if maximum == 5 else 2.5
     target_price = price * (1 + target_pct / 100) if direction == "UP" else price * (1 - target_pct / 100)
     edge_score = (bull - bear) / 6.0

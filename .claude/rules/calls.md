@@ -9,8 +9,10 @@ without a new backtest that shows they cost wins.
    - DOWN only in a confirmed downtrend: 7d change < 0 AND price below 20d SMA.
    - UP blocked only into a confirmed downtrend (bias DOWN); allowed if 7d > 0 OR above SMA20.
    - No trend data -> no call (fail closed; a skipped call is free, a blind one is permanent).
-2. **Minimum 24h horizon.** `octo_calls.MIN_CALL_HOURS`. The WIN rule needs >=1% at expiry
-   or the target touched; sub-day calls cannot clear it.
+2. **Minimum 48h horizon.** `octo_calls.MIN_CALL_HOURS`. The WIN rule needs >=1% at expiry
+   or the target touched; sub-day calls cannot clear it. Raised 24h -> 48h on 2026-09-16
+   after several live 24h losses resolved as wins at 48h (matches the 48h 15W-17L re-sim).
+   Named-day expiries ("Friday close") are measured from now and must also clear 48h.
 
 Both run in `octo_calls.call_policy_check()`, called by `record_call()` AND
 `commit_call_onchain()`. Every strategy also calls the gate early (before Coinglass/gas).
@@ -43,8 +45,8 @@ A rejected call prints `REJECTED by call policy` and emails via octo_notify.
 ## Strategy status
 | strategy        | record  | task            | notes |
 |-----------------|---------|-----------------|-------|
-| funding_extreme | 3W-1L   | every 4h        | keep; gated |
-| stock_extreme   | 0W-1L   | every 2h        | trend-aligned by design; gated again at record time |
+| funding_extreme | 3W-1L   | every 4h        | keep; gated; 48h |
+| stock_extreme   | 0W-1L   | every 2h        | trend-aligned by design; gated again at record time; 48h |
 | oracle (13-sig) | 5W-7L   | monitor 7am/4pm | STRONG threshold + MTF; gated at record time |
-| range_scout     | 1W-8L   | **Disabled**    | 24h/2% + gate now; re-enable only after a fresh look |
+| range_scout     | 1W-8L   | **Disabled**    | 48h/2% + gate now; re-enable only after a fresh look |
 | crowd_fade      | 2W-8L   | **Disabled**    | gated; still no evidence of edge |
