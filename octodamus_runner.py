@@ -1535,6 +1535,9 @@ def _core_memory_section() -> str:
 # MODE: MONITOR — scan signals → post 1
 # ─────────────────────────────────────────────
 
+WATCHPOST_FALLBACK = False
+
+
 def mode_monitor() -> None:
     print(f"\n[{datetime.now().strftime('%H:%M')}] OctoEyes scanning...")
     try:
@@ -1554,8 +1557,9 @@ def mode_monitor() -> None:
         posted = process_queue(max_posts=1)
         print(f"[Runner] Posted {posted} item(s) to X.")
 
-        # Fallback watchpost — fires when no signal post was queued
-        if not posted:
+        # Fallback watchpost — fires when no signal post was queued. Off since 2026-10-06:
+        # median 14 views vs 28 for real signal posts; a quiet monitor run should stay quiet.
+        if not posted and WATCHPOST_FALLBACK:
             try:
                 from financial_data_client import get_crypto_prices as _gcp
                 _cp = _gcp(["BTC", "ETH", "SOL"])
@@ -2889,7 +2893,7 @@ def mode_congress() -> None:
     import re as _re
     print(f"\n[Runner] Scanning congressional trades (full House + Senate)...")
     try:
-        data = run_full_congress_scan(days_back=14)
+        data = run_full_congress_scan(days_back=30)
         if data.get("error"):
             print(f"[Runner] Congress error: {data['error']}")
             return
@@ -2953,8 +2957,14 @@ def mode_congress() -> None:
         process_queue(max_posts=1, force=True)
         print(f"[Runner] Congress signal posted:\n  {post}")
 
-        # Mark all fresh trades as posted so they won't repeat
-        mark_trades_posted(fresh_trades)
+        # Mark only the trades this post is about. Marking every fresh trade burned the
+        # whole 14-day pool on one post (47 trades on 2026-09-29) and starved the best
+        # performing post type of material for days.
+        _post_lower = post.lower()
+        used = [t for t in fresh_trades
+                if (t.get("politician") or "").split()
+                and t["politician"].split()[-1].lower() in _post_lower]
+        mark_trades_posted(used or fresh_trades)
 
     except Exception as e:
         print(f"[Runner] mode_congress failed: {e}")
