@@ -200,7 +200,9 @@ def _get_service(interactive: bool = False):
             # run_local_server() blocks forever waiting on a browser callback. Under Task
             # Scheduler that is a hang, not a failure: the task gets killed at its time
             # limit and reports 267014, which looks like nothing is wrong. Refuse instead.
-            if not (interactive or sys.stdin.isatty()):
+            # Only `--mode auth` may open the browser: the task runs python.exe under an
+            # Interactive logon, so it has a console and isatty() is True -- not a signal.
+            if not interactive:
                 msg = ("GDrive OAuth token is dead (invalid_grant) and no browser is available. "
                        "Backups have stopped. Run `python octo_gdrive.py --mode auth` on the box "
                        "to sign in again.")
