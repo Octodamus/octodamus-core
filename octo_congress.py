@@ -14,11 +14,84 @@ Functions:
     format_congress_for_prompt(data) -- Claude prompt context
 """
 
+import json
 import os
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
-WATCH_TICKERS = ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL"]
+WATCH_TICKERS = ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "QCOM", "COIN", "AMD"]
+
+# ── Posted-trade deduplication ────────────────────────────────────────────────
+_ROOT = Path(__file__).parent
+_CONGRESS_LOG = _ROOT / "data" / "congress_posted.json"
+_TRADE_TTL_DAYS   = 45   # must exceed the 30-day scan window or old trades re-post
+_POLITICIAN_COOLDOWN_DAYS = 7  # don't post same politician twice in 7 days
+
+
+def _load_congress_log() -> list:
+    try:
+        if _CONGRESS_LOG.exists():
+            return json.loads(_CONGRESS_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_congress_log(log: list):
+    _CONGRESS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    cutoff = (datetime.utcnow() - timedelta(days=_TRADE_TTL_DAYS)).isoformat()
+    log = [e for e in log if e.get("posted_at", "") >= cutoff]
+    _CONGRESS_LOG.write_text(json.dumps(log, indent=2), encoding="utf-8")
+
+
+def _trade_key(trade: dict) -> str:
+    return f"{trade.get('politician','')}_{trade.get('ticker','')}_{trade.get('date','')}_{trade.get('direction','')}"
+
+
+def mark_trades_posted(trades: list):
+    """Call after a congress post goes out. Marks each trade as seen so it won't repeat."""
+    log = _load_congress_log()
+    now = datetime.utcnow().isoformat()
+    existing_keys = {e["key"] for e in log}
+    for t in trades:
+        k = _trade_key(t)
+        if k not in existing_keys:
+            log.append({"key": k, "politician": t.get("politician",""), "posted_at": now})
+    _save_congress_log(log)
+
+
+def filter_unposted_trades(trades: list) -> list:
+    """
+    Remove trades that have already been posted or whose politician is in cooldown.
+    Returns only fresh, postable trades.
+    """
+    log = _load_congress_log()
+    posted_keys = {e["key"] for e in log}
+    cooldown_cutoff = (datetime.utcnow() - timedelta(days=_POLITICIAN_COOLDOWN_DAYS)).isoformat()
+    recently_posted_politicians = {
+        e["politician"] for e in log if e.get("posted_at", "") >= cooldown_cutoff
+    }
+    fresh = []
+    for t in trades:
+        if _trade_key(t) in posted_keys:
+            continue
+        if t.get("politician", "") in recently_posted_politicians:
+            continue
+        fresh.append(t)
+    return fresh
+
+
+def _get_token() -> str:
+    """Load QUIVER_API_KEY from .octo_secrets, fall back to env."""
+    try:
+        raw = json.loads((Path(__file__).parent / ".octo_secrets").read_text(encoding="utf-8"))
+        key = raw.get("QUIVER_API_KEY") or raw.get("secrets", {}).get("QUIVER_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("QUIVER_API_KEY", "")
 MIN_TRADE_SIZE = 15000
 FULL_SCAN_MIN_AMOUNT = 15000   # $15K floor for full scan
 DAYS_BACK = 30
@@ -29,7 +102,7 @@ _BOND_RE = re.compile(r'[0-9]')
 
 def _get_client():
     import quiverquant
-    token = os.environ.get("QUIVER_API_KEY", "")
+    token = _get_token()
     if not token:
         raise ValueError("QUIVER_API_KEY not set")
     return quiverquant.quiver(token)
@@ -54,7 +127,7 @@ def run_congress_scan(days_back: int = DAYS_BACK) -> dict:
     Scan recent congressional trades for watchlist tickers.
     Returns structured data for signal posts and Telegram.
     """
-    token = os.environ.get("QUIVER_API_KEY", "")
+    token = _get_token()
     if not token:
         return {"error": "QUIVER_API_KEY not set", "trades": [], "signals": []}
 
@@ -171,7 +244,7 @@ def run_full_congress_scan(days_back: int = 14) -> dict:
 
     Returns same structure as run_congress_scan() for drop-in compatibility.
     """
-    token = os.environ.get("QUIVER_API_KEY", "")
+    token = _get_token()
     if not token:
         return {"error": "QUIVER_API_KEY not set", "trades": [], "signals": []}
 
@@ -270,11 +343,14 @@ def run_full_congress_scan(days_back: int = 14) -> dict:
     # Signals: top 10 by size
     signals = []
     for t in all_trades[:12]:
-        last_name = t["politician"].split()[-1]
-        chamber   = t["chamber"][0]  # H or S
-        amt       = t["range_str"] or f"${t['amount_low']:,.0f}+"
+        full_name = t["politician"]
+        party_raw = t.get("party", "")
+        party_tag = "(R)" if "republican" in party_raw.lower() else "(D)" if "democrat" in party_raw.lower() else ""
+        chamber   = t["chamber"][0] if t.get("chamber") else "H"  # H or S
+        amt       = t.get("range_str") or f"${t['amount_low']:,.0f}+"
+        name_tag  = f"{full_name} {party_tag}".strip() if party_tag else full_name
         signals.append({
-            "text": f"{last_name} ({chamber}) {t['direction']} {t['ticker']} -- {amt} -- {t['date']}",
+            "text": f"{name_tag} ({chamber}) {t['direction']} {t['ticker']} -- {amt} -- {t['date']}",
             "ticker":     t["ticker"],
             "politician": t["politician"],
             "chamber":    t["chamber"],

@@ -3457,14 +3457,38 @@ def _get_session_focus() -> str:
         return SESSION_FOCUS["overnight"]
 
 
-def _microcompact(msgs: list, keep_last: int = 3) -> list:
+def _microcompact(msgs: list, keep_last: int = 3, trigger_at: int = 9) -> list:
+    """Collapse old tool results so the context stays bounded.
+
+    Pruning rewrites a message in the MIDDLE of the history, which invalidates the
+    prompt cache from that point to the end. Running it every turn therefore paid
+    to re-write the whole tail on every single turn: measured on profit-agent
+    session #566 at 63% cache hit and $0.65 for 13 turns, with cache reads
+    collapsing from 80,654 back to the bare system prefix the moment pruning
+    started.
+
+    Batching fixes that without changing the context ceiling. Nothing is pruned
+    until `trigger_at` live tool results have accumulated, then everything older
+    than `keep_last` is pruned at once -- one cold miss every few turns instead of
+    one per turn. Between batches the message array stays byte-identical, which is
+    the whole reason the cache can hit at all.
+    """
+    def _is_live(m) -> bool:
+        return any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and b.get("content") != "[pruned]"
+            for b in m["content"]
+        )
+
     tr_indices = [
         i for i, m in enumerate(msgs)
         if m.get("role") == "user"
         and isinstance(m.get("content"), list)
         and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
     ]
-    to_prune = tr_indices[:-keep_last]
+    live = [i for i in tr_indices if _is_live(msgs[i])]
+    if len(live) < trigger_at:
+        return msgs            # below the batch threshold: leave the bytes alone
+    to_prune = live[:-keep_last] if keep_last else live
     if not to_prune:
         return msgs
     pruned = list(msgs)
@@ -3503,6 +3527,8 @@ def run_session(dry_run: bool = False, session_type: str = ""):
         f.write(f"\n{'='*60}\nSession #{session_num} -- {now}\n{'='*60}\n")
 
     import anthropic
+    sys.path.insert(0, str(ROOT))
+    import octo_llm  # installs the usage meter; supplies model + caching helpers
     client = anthropic.Anthropic(api_key=_secrets().get("ANTHROPIC_API_KEY", ""))
 
     # Pre-fetch live BTC price + F&G and inject into system prompt — prevents LLM from
@@ -3556,12 +3582,15 @@ def run_session(dry_run: bool = False, session_type: str = ""):
             turns += 1
             print(f"[Agent] Turn {turns}/{MAX_TURNS}...")
 
+            # The fixed prefix here is ~10k tokens (system + 47 tool schemas) and
+            # was resent uncached on every turn. One breakpoint at the end of
+            # system covers tools+system; rolling_cache covers the conversation
+            # that grows behind it.
             response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2000,
-                system=session_sys,
+                **octo_llm.smart_kwargs(max_tokens=2000),
+                system=octo_llm.cache_system(session_sys),
                 tools=TOOLS,
-                messages=messages,
+                messages=octo_llm.rolling_cache(messages),
             )
 
             # Collect text output and tool calls — always show both when present
@@ -3604,7 +3633,7 @@ def run_session(dry_run: bool = False, session_type: str = ""):
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
-                        "content":     str(result),
+                        "content":     octo_llm.clip_tool_result(result),
                     })
 
                 messages.append({"role": "user", "content": tool_results})

@@ -1,10 +1,23 @@
 """
-octo_startup_catchup.py -- Post-boot catch-up for missed daily content posts.
+octo_startup_catchup.py -- Catch-up for missed daily content posts.
 
-Runs once from octo_startup.ps1 after the secrets cache is ready. If the machine
-was off or rebooting during a scheduled content-post window (e.g. a Windows Update
-reboot overnight), Windows skips the corresponding scheduled task and the post is
-lost -- StartWhenAvailable does not reliably catch up across a full power-off.
+Runs from two places:
+  - octo_startup.ps1 on boot, after the secrets cache is ready.
+  - the Octodamus-Catchup scheduled task, hourly.
+
+Boot alone was not enough. On 2026-09-10 the Anthropic credit balance ran out and
+every LLM-written post failed for ~27 hours -- 7 posts on the 9th, 2 on the 10th,
+0 on the 11th -- while the machine stayed up the whole time. Nothing rebooted, so
+nothing ever caught up. An outage does not have to be a crash to eat a day of
+posts, which is why this now runs on a clock as well.
+
+Safe to run repeatedly: it only fires a mode whose post_type has not already
+posted today, and only for slots whose scheduled time passed within GRACE_HOURS.
+
+If the machine was off or rebooting during a scheduled content-post window (e.g. a
+Windows Update reboot overnight), Windows skips the corresponding scheduled task
+and the post is lost -- StartWhenAvailable does not reliably catch up across a
+full power-off.
 
 This detects a missed daily post by reading octo_posted_log.json for today's posts
 by type, then fires the runner mode to fill the gap -- at most once per post-type
@@ -31,13 +44,20 @@ GRACE_HOURS = 6
 # if ANY slot of a type was missed today (passed + within grace + nothing posted),
 # the mode fires ONCE. Times are local (hour, minute). Extend as more daily content
 # types warrant boot catch-up.
+#
+# post_types is a SET: a mode counts as "posted" if ANY of its types landed today.
+# mode_monitor posts type "signal" when a signal fires and "watchpost" only as the
+# fallback, so keying it on "watchpost" alone made the hourly catch-up re-run the
+# whole monitor (Coinglass, LLM, a possible extra post) every hour for the 6h grace
+# window on any day a signal had fired -- observed 2026-09-11 07:25, 25 minutes
+# after the 07:00 monitor had posted a signal.
 SLOTS = [
-    # (mode, post_type, hour, minute)
-    ("daily",   "daily_read", 3, 30),
-    ("daily",   "daily_read", 5, 0),
-    ("daily",   "daily_read", 19, 0),
-    ("monitor", "watchpost",  7, 0),
-    ("monitor", "watchpost",  16, 0),
+    # (mode, post_types, hour, minute)
+    ("daily",   {"daily_read"},          3, 30),
+    ("daily",   {"daily_read"},          5, 0),
+    ("daily",   {"daily_read"},          19, 0),
+    ("monitor", {"watchpost", "signal"}, 7, 0),
+    ("monitor", {"watchpost", "signal"}, 16, 0),
 ]
 
 # Memory distillation (Octodamus-MemoryDistill task): runs octo_memory_distill.py
@@ -113,7 +133,7 @@ def catch_up_memory_distill(now):
         r = subprocess.run(
             [PYTHON, str(PROJECT_DIR / "octo_memory_distill.py")],
             cwd=str(PROJECT_DIR), capture_output=True, text=True,
-            encoding="utf-8", timeout=900,
+            encoding="utf-8", errors="replace", timeout=900,
         )
         if r.returncode == 0:
             log("OK memory-distill: completed")
@@ -129,21 +149,22 @@ def main():
     log(f"=== Catch-up start (now={now:%H:%M}, posted today: {sorted(posted) or 'none'}) ===")
 
     # Group slots by post_type; keep the most-recent passed + in-grace slot per type.
-    best = {}  # post_type -> (mode, slot_dt)
-    for mode, ptype, hh, mm in SLOTS:
+    best = {}  # mode -> (post_types, slot_dt)
+    for mode, ptypes, hh, mm in SLOTS:
         slot_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if slot_dt > now:
             continue  # not due yet today
         if (now - slot_dt).total_seconds() / 3600 > GRACE_HOURS:
             continue  # too stale to be worth posting
-        cur = best.get(ptype)
+        cur = best.get(mode)
         if cur is None or slot_dt > cur[1]:
-            best[ptype] = (mode, slot_dt)
+            best[mode] = (ptypes, slot_dt)
 
     fired = 0
-    for ptype, (mode, slot_dt) in sorted(best.items(), key=lambda kv: kv[1][1]):
+    for mode, (ptypes, slot_dt) in sorted(best.items(), key=lambda kv: kv[1][1]):
+        ptype = "/".join(sorted(ptypes))
         # Re-read the log each iteration so a mode that just posted is seen.
-        if ptype in _posted_types_today():
+        if ptypes & _posted_types_today():
             log(f"SKIP {ptype}: already posted today (missed slot {slot_dt:%H:%M})")
             continue
         log(f"CATCH-UP {ptype}: missed slot {slot_dt:%H:%M} -> running --mode {mode}")
@@ -151,7 +172,7 @@ def main():
             r = subprocess.run(
                 [PYTHON, str(PROJECT_DIR / "octodamus_runner.py"), "--mode", mode],
                 cwd=str(PROJECT_DIR), capture_output=True, text=True,
-                encoding="utf-8", timeout=600,
+                encoding="utf-8", errors="replace", timeout=600,
             )
             if r.returncode == 0:
                 log(f"OK {ptype}: --mode {mode} completed")

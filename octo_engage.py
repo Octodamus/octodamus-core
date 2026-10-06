@@ -570,9 +570,9 @@ def run(count: int = DEFAULT_COUNT):
       trimmed = take.rstrip()
       if cashtag and cashtag not in trimmed:
         trimmed = f"{trimmed} {cashtag}"
-      # 280 total; URL as t.co = 23 chars + 1 space = 24 reserved when URL present
-      # Use 230 (tighter than prompt's 235) to ensure sentence-complete truncation has room
-      _char_limit = 230 if url else 265
+      # The source URL goes in a self-reply (X ranks posts with external links down),
+      # so the main post gets the full limit.
+      _char_limit = 265
 
       def _sentence_trim(text: str, limit: int) -> str:
           if len(text) <= limit:
@@ -591,7 +591,7 @@ def run(count: int = DEFAULT_COUNT):
         trimmed = _sentence_trim(trimmed, _char_limit)
       except Exception:
         pass
-      tweet_text = f"{trimmed}\n{url}" if url else trimmed
+      tweet_text = trimmed
 
       # Fetch + brand the article image
       media_id = None
@@ -608,6 +608,13 @@ def run(count: int = DEFAULT_COUNT):
       from octo_x_poster import _post_single
       result = _post_single(tweet_text, media_ids=[media_id] if media_id else None)
       tweet_url = result.get("url", "")
+      if url and result.get("id"):
+        try:
+          from octo_x_poster import post_reply
+          time.sleep(2)
+          post_reply(f"Source: {url}", result["id"])
+        except Exception as src_e:
+          print(f"[Engage] Source self-reply failed: {src_e}")
       posted += 1
       posted_titles.append(article["title"])
       print(f"[Engage] OK [{article['ticker']}] {trimmed[:80]}...")

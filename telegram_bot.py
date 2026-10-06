@@ -54,12 +54,32 @@ except ImportError:
     def get_call_stats(): return {"wins":0,"losses":0,"win_rate":"N/A","streak":"","open":0,"open_calls":[]}
 
 from octo_personality import build_telegram_system_prompt as _build_tg_system
+from octo_personality import build_telegram_system_blocks as _build_tg_blocks
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL    = "claude-sonnet-4-6"
+CLAUDE_MODEL    = "claude-sonnet-5"             # smart tier: oracle / signal / drafting
+CLAUDE_MODEL_FAST = "claude-haiku-4-5-20251001"  # fast tier: casual chat / status pings
+
+# Route casual messages to Haiku (1/5 the price of Sonnet) but keep anything that smells like
+# market analysis, an oracle call, or a drafting request on Sonnet. Conservative by design:
+# a market keyword OR a long message stays on Sonnet; only short, keyword-free chatter drops to Haiku.
+_SIGNAL_HINTS = (
+    "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "xrp", "doge", "nvda", "tsla", "spy", "qqq",
+    "price", "signal", "oracle", "call", "predict", "market", "macro", "funding", "liquidation",
+    "chart", "trade", "trading", "long", "short", "draft", "reply", "thread", "post", "congress",
+    "whale", "flow", "dxy", "fed", "cpi", "polymarket", "boto", "moonshot", "watchpost", "edge",
+)
+
+def _route_model(user_message: str) -> str:
+    m = (user_message or "").lower()
+    if any(h in m for h in _SIGNAL_HINTS):
+        return CLAUDE_MODEL          # market/oracle/drafting -> Sonnet
+    if len(user_message or "") < 200:
+        return CLAUDE_MODEL_FAST     # short, no market terms -> casual -> Haiku
+    return CLAUDE_MODEL              # long / ambiguous -> Sonnet (safe default)
 MEMORY_FILE     = BASE_DIR / "octodamus_memory.json"
 MAX_HISTORY     = 20
 TZ              = ZoneInfo("America/Los_Angeles")
@@ -557,7 +577,7 @@ def _get_live_prices() -> str:
         pass
     return "LIVE PRICES: unavailable. HARD STOP — do NOT quote any price, do NOT make any oracle call, do NOT reference any specific dollar figure. Tell the user live data is temporarily down."
 
-def build_system_prompt() -> str:
+def _system_fields() -> dict:
     live_prices   = _get_live_prices()
     signal_feeds  = _get_signal_feeds_context()
     project_state = _get_project_state()
@@ -592,13 +612,27 @@ CURRENT CONTEXT:
     if project_state:
         live_context += f"\n\nPROJECT STATE (current builds, pending work, key decisions):\n{project_state}"
 
-    return _build_tg_system(
+    return dict(
         live_prices=live_prices,
         call_record=call_record,
         live_context=live_context,
         signal_feeds=signal_feeds,
         brain_memory=brain_memory,
     )
+
+
+def build_system_prompt() -> str:
+    return _build_tg_system(**_system_fields())
+
+
+def build_system_blocks() -> list:
+    """System prompt as cacheable content blocks: stable identity/rules prefix (cache_control)
+    + volatile live-data suffix. Serves the big static prefix from cache on follow-up turns."""
+    stable, volatile = _build_tg_blocks(**_system_fields())
+    blocks = [{"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}]
+    if volatile:
+        blocks.append({"type": "text", "text": volatile})
+    return blocks
 
 
 # ── Claude API ──────────────────────────────────────────────────────────────────
@@ -623,9 +657,12 @@ async def ask_claude(user_message: str, history: list) -> str:
                 "content-type": "application/json",
             },
             json={
-                "model": CLAUDE_MODEL,
+                "model": _route_model(user_message),
+                # Sonnet 5 thinks by default where Sonnet 4.6 did not; pinned off
+                # so a chat reply does not quietly bill reasoning tokens.
+                "thinking": {"type": "disabled"},
                 "max_tokens": 1024,
-                "system": build_system_prompt(),
+                "system": build_system_blocks(),
                 "messages": messages,
             },
         )
@@ -633,7 +670,16 @@ async def ask_claude(user_message: str, history: list) -> str:
             body = r.text[:500]
             log.error(f"Anthropic API error {r.status_code}: {body}")
             raise Exception(f"API {r.status_code}: {body}")
-        response_text = r.json()["content"][0]["text"]
+        payload = r.json()
+        # This path talks to the REST endpoint directly, so the SDK-level meter in
+        # octo_llm never sees it. Record it by hand or Telegram is a blind spot.
+        try:
+            import octo_llm
+            octo_llm.record(payload.get("model", CLAUDE_MODEL), payload.get("usage", {}),
+                            tag="telegram_bot:ask_claude")
+        except Exception:
+            pass
+        response_text = payload["content"][0]["text"]
 
         # Price hallucination guard — catch wrong BTC prices in narrative text
         live_btc = _get_live_btc_price()
@@ -1080,9 +1126,36 @@ async def boto_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("Loading OctoBoto status...")
     lines = ["OCTOBOTO STATUS"]
     lines.append("Role: autonomous trading bot powered by Octodamus signal")
-    lines.append("Current phase: track-record building on Polymarket")
-    lines.append("Vision: AI-managed copytrading -- deposit capital, AI grows it, takes % of profits")
+    lines.append("Phase: paper trading on Polymarket")
+    lines.append("Signals: 11-signal composite + crowd fade oracle (L/S + funding extremes)")
+    lines.append("Vision: AI-managed copytrading -- deposit capital, AI manages sizing")
     lines.append("")
+
+    # Active oracle calls (crowd_fade + directional) — these are OctoBoto's signal inputs
+    try:
+        stats = get_call_stats()
+        open_calls = stats.get("open_calls", [])
+        if open_calls:
+            lines.append(f"Active oracle calls ({len(open_calls)}):")
+            for oc in open_calls:
+                ct     = oc.get("call_type", "oracle")
+                asset  = oc.get("asset", "?")
+                dirn   = oc.get("direction", "?")
+                entry  = oc.get("entry_price", 0)
+                target = oc.get("target_price", 0)
+                tf     = oc.get("timeframe", "?")
+                made   = oc.get("made_at", "?")[:10]
+                lines.append(f"  [{ct}] {asset} {dirn} | ${entry:,.2f} -> ${target:,.2f} | {tf} | {made}")
+        else:
+            lines.append("Active oracle calls: none")
+        lines.append(
+            f"Oracle record: {stats['wins']}W/{stats['losses']}L"
+            f" | {stats['win_rate']} win rate | streak: {stats['streak']}"
+        )
+        lines.append("")
+    except Exception as e:
+        lines.append(f"Oracle calls: unavailable ({e})")
+        lines.append("")
 
     # Trade count today
     try:
@@ -1229,6 +1302,18 @@ async def ben_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"Ben status error: {e}")
 
 
+async def loop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/loop — show agentic loop status for all agents (goal + last reflection)."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        text = AgentLoop.all_status()
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"Loop status error: {e}")
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -1256,6 +1341,7 @@ def main() -> None:
     app.add_handler(CommandHandler("correlations", correlations_command))
     app.add_handler(CommandHandler("myid",      myid_command))
     app.add_handler(CommandHandler("ben",       ben_command))
+    app.add_handler(CommandHandler("loop",      loop_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 

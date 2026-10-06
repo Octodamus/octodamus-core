@@ -25,6 +25,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+import octo_llm  # usage meter + model/caching helpers
 
 STRATEGY_URL = "https://strategytracker.com/"
 INTEL_FILE   = Path(__file__).parent / "strategy_weekly_intel.json"
@@ -432,7 +433,8 @@ def _vision_extract(img_bytes: bytes, api_key: str) -> dict:
     img_b64 = base64.standard_b64encode(img_bytes).decode()
     client  = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=1200,
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
@@ -488,7 +490,8 @@ def _pick_subject_for_tweet(tweet: str, api_key: str, avoid_subjects: list[str] 
     )
 
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=20,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -561,7 +564,8 @@ def _generate_tweet(data: dict, intel: dict, api_key: str) -> str:
     )
 
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=octo_llm.MODEL_SMART,
+        thinking=octo_llm.THINKING_OFF,
         max_tokens=200,
         system=STRATEGY_TWEET_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

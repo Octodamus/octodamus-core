@@ -167,7 +167,7 @@ def _build_zip() -> tuple[bytes, int, list[str]]:
 
 # ── Google Drive ──────────────────────────────────────────────────────────────
 
-def _get_service():
+def _get_service(interactive: bool = False):
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
@@ -188,14 +188,28 @@ def _get_service():
             try:
                 creds.refresh(Request())
             except Exception as e:
-                # Dead refresh token (invalid_grant) -- don't crash the 4h backup silently.
-                # Fall through to interactive re-auth (needs a browser, run manually once).
-                print(f"[GDrive] Token refresh failed: {e}. Re-authorization required -- "
-                      f"run `python octo_gdrive.py` interactively (opens a browser) to sign in again.")
+                # Dead refresh token (invalid_grant). Google expires refresh tokens after
+                # 7 days while the OAuth consent screen is in "Testing" -- publish the app
+                # to "In production" or this recurs weekly.
+                print(f"[GDrive] Token refresh failed: {e}")
                 creds = None
         if not (creds and creds.valid):
             if not CREDS_FILE.exists():
                 print(f"[GDrive] credentials.json not found at {CREDS_FILE}")
+                sys.exit(1)
+            # run_local_server() blocks forever waiting on a browser callback. Under Task
+            # Scheduler that is a hang, not a failure: the task gets killed at its time
+            # limit and reports 267014, which looks like nothing is wrong. Refuse instead.
+            if not (interactive or sys.stdin.isatty()):
+                msg = ("GDrive OAuth token is dead (invalid_grant) and no browser is available. "
+                       "Backups have stopped. Run `python octo_gdrive.py --mode auth` on the box "
+                       "to sign in again.")
+                print(f"[GDrive] {msg}")
+                try:
+                    from octo_notify import notify_system_error
+                    notify_system_error("octo_gdrive", msg)
+                except Exception:
+                    pass
                 sys.exit(1)
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), SCOPES)
             creds = flow.run_local_server(port=0)
@@ -393,7 +407,7 @@ if __name__ == "__main__":
 
     if args.mode == "auth":
         print("[GDrive] Starting OAuth flow...")
-        _get_service()
+        _get_service(interactive=True)
         print("[GDrive] Auth complete. Token saved.")
     elif args.mode == "backup":
         backup()

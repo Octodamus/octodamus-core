@@ -6,7 +6,7 @@ Fires oracle calls when funding rates hit extremes across exchanges.
   avg > +0.010/8h AND 3+ exchanges positive -> SELL (longs overheated)
 
 The ETH call in April (call #25) fired on this exact setup and won +5%.
-Timeframe: 24h. Target: 3%. call_type: "funding_extreme"
+Timeframe: 48h. Target: 3%. call_type: "funding_extreme"
 
 Run:
   python octo_funding_extreme.py          # check BTC ETH SOL
@@ -32,7 +32,7 @@ BUY_THRESHOLD  = -0.005   # avg 8h rate below -> BUY
 SELL_THRESHOLD = +0.010   # avg 8h rate above -> SELL
 MIN_EXCHANGES  = 3        # min exchanges confirming direction
 TARGET_PCT     = 3.0      # % target
-TIMEFRAME      = "24h"
+TIMEFRAME      = "48h"
 
 
 def _load_calls() -> list:
@@ -172,6 +172,21 @@ def score_asset(asset: str) -> dict:
             "neg_count": fd["neg_count"],
             "pos_count": fd["pos_count"],
             "fng":       fng,
+        }
+
+    # Trend gate (octo_regime). This strategy is 3W-1L and the three wins were all
+    # UP squeezes on red days inside a 7d uptrend -- the gate keeps those. The one
+    # loss (#53 SUI DOWN, +7% 7d, +6% vs SMA20) is exactly what it blocks: longs
+    # paying a premium in an uptrend is trend fuel, not a flush.
+    try:
+        from octo_regime import trend_gate
+        _ok, _why = trend_gate(asset, direction)
+    except Exception as _e:
+        _ok, _why = False, f"trend gate error: {_e}"
+    if not _ok:
+        return {
+            "asset": asset, "fire": False, "reason": f"TREND GATE: {_why}",
+            "avg": avg, "neg_count": fd["neg_count"], "pos_count": fd["pos_count"], "fng": fng,
         }
 
     mult   = 1 + TARGET_PCT / 100

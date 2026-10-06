@@ -1,7 +1,7 @@
 """
 octo_range_scout.py — Ranging Market Short-Term Oracle
 
-Generates 4h-6h trade calls when the main 13-signal oracle is quiet (HOLD/WATCH).
+Generates 48h trade calls when the main 13-signal oracle is quiet (HOLD/WATCH).
 Built for ranging markets where trending signals (RSI, 24h change, F&G) are neutral
 but derivative signals (funding, taker flow, L/S ratio) still show short-term edge.
 
@@ -9,7 +9,12 @@ Strategy:
   - 6 mini-signals, requires 5/6 to fire (vs 9/13 for main oracle)
   - Only activates when main oracle is NOT STRONG (prevents override)
   - Regime filter: F&G 28-72, 24h change <±5%, BB not in squeeze
-  - Timeframe: 4h (standard) or 6h (if 5+/6)
+  - TREND GATE (octo_regime.trend_gate): never fires against the 7d / 20d-SMA trend.
+    Four of the six mini-signals are mean-reversion reads (funding, L/S, taker,
+    F&G-vs-price) and all read BEAR through an entire uptrend, so this fired DOWN
+    into strength every 2h for a 1W-8L book. Re-scored, every trend-opposed call lost.
+  - Timeframe: 48h (was 6h, then 24h). Under the >=1% WIN rule the 6h book re-simulates 0W-9L,
+    the same calls at 24h 5W-4L. Target 2% (was 1.5%).
   - call_type: "range_scout" — tracked separately, merged to track record at 70%+/20 calls
   - Max 1 open range_scout call per asset (same guard as main oracle)
 
@@ -142,6 +147,17 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
     except Exception:
         pass
 
+    # ── Trend gate: refuse the direction that fights the tape ─────────────────
+    # Evaluated before the vote so a losing setup costs no on-chain gas and no post.
+    try:
+        from octo_regime import get_regime, trend_gate
+        _rg = get_regime(asset)
+        signals["trend_bias"] = _rg["bias"] if _rg else "unknown"
+        signals["chg_7d"] = _rg["chg_7d"] if _rg else None
+    except Exception:
+        _rg = None
+        signals["trend_bias"] = "unknown"
+
     # ── 6 mini-signals ────────────────────────────────────────────────────────
     bull = bear = 0
 
@@ -194,8 +210,21 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
             "signals": signals, "bull": bull, "bear": bear,
         }
 
-    timeframe = "6h" if maximum == 5 else "8h"
-    target_pct = {"6h": 1.5, "8h": 2.0}[timeframe]
+    try:
+        _ok, _why = trend_gate(asset, direction, _rg)
+    except Exception as _e:
+        _ok, _why = False, f"trend gate error: {_e}"
+    if not _ok:
+        return {
+            "asset": asset, "fire": False,
+            "reason": f"TREND GATE: {_why}",
+            "signals": signals, "bull": bull, "bear": bear,
+        }
+
+    # 48h minimum: octo_calls.MIN_CALL_HOURS. A 6/6 vote earns the wider target,
+    # not a shorter clock -- sub-day calls cannot clear the >=1% WIN rule often enough.
+    timeframe = "48h"
+    target_pct = 2.0 if maximum == 5 else 2.5
     target_price = price * (1 + target_pct / 100) if direction == "UP" else price * (1 - target_pct / 100)
     edge_score = (bull - bear) / 6.0
 
@@ -243,7 +272,7 @@ def _post_range_call(result: dict) -> str:
         f"Entry: ${price:,.0f}\n"
         f"Target: ${target:,.0f} (+{pct:.1f}% / {tf})\n\n"
         f"RSI: {rsi:.0f} | TakerBuy: {taker:.0f}% | F&G: {fng}\n\n"
-        f"Range play — NOT main oracle grade. Short TF, tighter target."
+        f"Range play — NOT main oracle grade. Trend-aligned only."
     )
     return text
 

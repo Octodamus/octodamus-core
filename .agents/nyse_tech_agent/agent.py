@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT         = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT))
+import octo_llm  # usage meter + prompt-caching helpers
 SECRETS_FILE = ROOT / ".octo_secrets"
 STATE_FILE          = Path(__file__).parent / "data" / "state.json"
 DRAFTS_DIR          = Path(__file__).parent / "data" / "drafts"
@@ -1152,14 +1154,38 @@ CALIBRATION SCORE RULE: The session footer must use this exact format:
   Example: "Calibration: 3 resolved -- 1 correct / 2 wrong / 1 pending\""""
 
 
-def _microcompact(msgs: list, keep_last: int = 3) -> list:
+def _microcompact(msgs: list, keep_last: int = 3, trigger_at: int = 9) -> list:
+    """Collapse old tool results so the context stays bounded.
+
+    Pruning rewrites a message in the MIDDLE of the history, which invalidates the
+    prompt cache from that point to the end. Running it every turn therefore paid
+    to re-write the whole tail on every single turn: measured on profit-agent
+    session #566 at 63% cache hit and $0.65 for 13 turns, with cache reads
+    collapsing from 80,654 back to the bare system prefix the moment pruning
+    started.
+
+    Batching fixes that without changing the context ceiling. Nothing is pruned
+    until `trigger_at` live tool results have accumulated, then everything older
+    than `keep_last` is pruned at once -- one cold miss every few turns instead of
+    one per turn. Between batches the message array stays byte-identical, which is
+    the whole reason the cache can hit at all.
+    """
+    def _is_live(m) -> bool:
+        return any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and b.get("content") != "[pruned]"
+            for b in m["content"]
+        )
+
     tr_indices = [
         i for i, m in enumerate(msgs)
         if m.get("role") == "user"
         and isinstance(m.get("content"), list)
         and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
     ]
-    to_prune = tr_indices[:-keep_last]
+    live = [i for i in tr_indices if _is_live(msgs[i])]
+    if len(live) < trigger_at:
+        return msgs            # below the batch threshold: leave the bytes alone
+    to_prune = live[:-keep_last] if keep_last else live
     if not to_prune:
         return msgs
     pruned = list(msgs)
@@ -1190,7 +1216,7 @@ def run_session(dry_run: bool = False):
     messages = [{"role": "user", "content": f"{loop_prefix}NYSE_Tech_Agent session #{session_num}. Date: {now}. Run full protocol."}]
     for turn in range(MAX_TURNS):
         resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=2000,
-                                      system=SYSTEM, tools=TOOLS, messages=messages)
+                                      system=octo_llm.cache_system(SYSTEM), tools=TOOLS, messages=octo_llm.rolling_cache(messages))
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         for t in resp.content:
             if t.type == "text" and t.text.strip():
@@ -1205,7 +1231,7 @@ def run_session(dry_run: bool = False):
                 result = TOOL_HANDLERS[tu.name](tu.input); print(str(result)[:60])
             except Exception as e:
                 result = f"Error: {e}"; print(result)
-            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
+            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": octo_llm.clip_tool_result(result)})
         messages.append({"role": "user", "content": results})
         messages = _microcompact(messages)
         time.sleep(0.3)

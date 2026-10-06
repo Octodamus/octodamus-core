@@ -143,6 +143,7 @@ def _mode_error(module: str, error: Exception):
         notify_system_error(module, str(error))
     except Exception:
         pass
+import octo_llm  # usage meter + prompt-caching helpers
 from octo_skill_log import log_post
 from octo_personality import (
     build_x_system_prompt as _build_x_sys,
@@ -317,6 +318,12 @@ try:
     from openai import OpenAI as _OpenAI
     _or_key   = secrets.get("OPENROUTER_API_KEY", "")
     _grok_key = secrets.get("GROK_API_KEY", "")
+    try:
+        from octo_grok_kill import grok_disabled as _grok_disabled
+        if _grok_disabled():
+            _grok_key = ""  # owner kill switch -- no x.ai client anywhere in the runner
+    except ImportError:
+        pass
     if _or_key:
         _claw = _OpenAI(base_url="https://openrouter.ai/api/v1", api_key=_or_key)
         _CLAW_ACTIVE = True
@@ -360,7 +367,7 @@ def _claw_generate(system: str, user: str, max_tokens: int = 200,
         r = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": _u}],
         )
         return r.content[0].text.strip()
@@ -395,7 +402,7 @@ def _haiku_generate(system: str, user: str, max_tokens: int = 200, enforce_origi
         r = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": user + addendum}],
         )
         if r.stop_reason == "max_tokens":
@@ -1448,6 +1455,10 @@ def _get_recent_posts(n: int = 20) -> str:
 # Full system prompt string — all call sites use this constant.
 # To add live data context, use: _build_x_sys(live_data_block) at the call site.
 OCTO_SYSTEM = _build_x_sys()
+# ~7k tokens of identity/style/rules, byte-identical on every generation.
+# Cached once here so every post, reply and format call reads it at ~0.1x
+# instead of re-billing the whole prefix per call.
+OCTO_SYSTEM_CACHED = octo_llm.cache_system(OCTO_SYSTEM)
 
 
 # ─────────────────────────────────────────────
@@ -1524,6 +1535,9 @@ def _core_memory_section() -> str:
 # MODE: MONITOR — scan signals → post 1
 # ─────────────────────────────────────────────
 
+WATCHPOST_FALLBACK = False
+
+
 def mode_monitor() -> None:
     print(f"\n[{datetime.now().strftime('%H:%M')}] OctoEyes scanning...")
     try:
@@ -1543,8 +1557,9 @@ def mode_monitor() -> None:
         posted = process_queue(max_posts=1)
         print(f"[Runner] Posted {posted} item(s) to X.")
 
-        # Fallback watchpost — fires when no signal post was queued
-        if not posted:
+        # Fallback watchpost — fires when no signal post was queued. Off since 2026-10-06:
+        # median 14 views vs 28 for real signal posts; a quiet monitor run should stay quiet.
+        if not posted and WATCHPOST_FALLBACK:
             try:
                 from financial_data_client import get_crypto_prices as _gcp
                 _cp = _gcp(["BTC", "ETH", "SOL"])
@@ -1953,9 +1968,10 @@ def mode_daily() -> None:
                     "5 LAWS: (1) relevant to THIS trader watching THIS asset NOW — not generic (2) non-obvious — the thing BEHIND the consensus (3) validated with exact numbers (4) one signal, one implication — grasped in 10 seconds (5) gives something forward to WATCH FOR — a level, trigger, or catalyst, not a closed conclusion."
         )
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=500,
-            system=OCTO_SYSTEM,
+            system=OCTO_SYSTEM_CACHED,
             messages=[{"role": "user", "content": _daily_user}],
         )
 
@@ -1973,9 +1989,10 @@ def mode_daily() -> None:
         # to actually rotate to a different signal, not just rework the draft.
         def _daily_reroll(tripped, topic_clash):
             _rr = claude.messages.create(
-                model="claude-sonnet-4-6",
+                model=octo_llm.MODEL_SMART,
+                thinking=octo_llm.THINKING_OFF,
                 max_tokens=500,
-                system=OCTO_SYSTEM,
+                system=OCTO_SYSTEM_CACHED,
                 messages=[{"role": "user", "content":
                     f"{_daily_user}\n\nYOUR DRAFT (do not just reword it): {post}\n\n"
                     f"{_reroll_instruction(tripped, _get_recent_posts(8), topic_clash)}"}],
@@ -2708,9 +2725,10 @@ Be specific. Use data if you have it. Connect it to the bigger picture.
         )
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=200,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": prompt}],
         )
         post = response.content[0].text.strip()
@@ -2758,9 +2776,10 @@ def mode_trendfront() -> None:
             "chars. No hashtags. Output only the post text."
         )
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=200,
-            system=system,
+            system=octo_llm.cache_if_stable(system, OCTO_SYSTEM),
             messages=[{"role": "user", "content": user_msg}],
         )
         post = response.content[0].text.strip()
@@ -2874,7 +2893,7 @@ def mode_congress() -> None:
     import re as _re
     print(f"\n[Runner] Scanning congressional trades (full House + Senate)...")
     try:
-        data = run_full_congress_scan(days_back=14)
+        data = run_full_congress_scan(days_back=30)
         if data.get("error"):
             print(f"[Runner] Congress error: {data['error']}")
             return
@@ -2938,8 +2957,14 @@ def mode_congress() -> None:
         process_queue(max_posts=1, force=True)
         print(f"[Runner] Congress signal posted:\n  {post}")
 
-        # Mark all fresh trades as posted so they won't repeat
-        mark_trades_posted(fresh_trades)
+        # Mark only the trades this post is about. Marking every fresh trade burned the
+        # whole 14-day pool on one post (47 trades on 2026-09-29) and starved the best
+        # performing post type of material for days.
+        _post_lower = post.lower()
+        used = [t for t in fresh_trades
+                if (t.get("politician") or "").split()
+                and t["politician"].split()[-1].lower() in _post_lower]
+        mark_trades_posted(used or fresh_trades)
 
     except Exception as e:
         print(f"[Runner] mode_congress failed: {e}")
@@ -3162,9 +3187,10 @@ def mode_morning_flow() -> None:
         )
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=350,
-            system=OCTO_SYSTEM,
+            system=OCTO_SYSTEM_CACHED,
             messages=[{"role": "user", "content": prompt}],
         )
         post = response.content[0].text.strip()
@@ -3188,9 +3214,10 @@ def mode_morning_flow() -> None:
         )
         try:
             explain_resp = claude.messages.create(
-                model="claude-sonnet-4-6",
+                model=octo_llm.MODEL_SMART,
+                thinking=octo_llm.THINKING_OFF,
                 max_tokens=350,
-                system=OCTO_SYSTEM,
+                system=OCTO_SYSTEM_CACHED,
                 messages=[{"role": "user", "content": explain_prompt}],
             )
             explanation = explain_resp.content[0].text.strip()

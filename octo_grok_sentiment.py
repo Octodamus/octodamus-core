@@ -13,7 +13,11 @@ import time
 from pathlib import Path
 
 _CACHE_FILE = Path(__file__).parent / "data" / "grok_sentiment_cache.json"
-_CACHE_TTL  = 600  # 10 minutes — tighter window for faster signal
+_CACHE_TTL  = 1800  # 30 minutes -- every miss is a billed grok-4.5 x_search
+# Was 10 minutes. Crowd positioning does not turn over inside ten minutes, and at
+# that TTL every caller (the warmer, the runner, the ACP reports) paid for a fresh
+# live search rather than sharing one. 30 minutes keeps the signal current for a
+# post while letting callers inside the same half hour share a single search.
 
 # Top 50 active crypto/macro accounts — informed traders, analysts, on-chain.
 # Retail noise accounts excluded. Updated manually as landscape shifts.
@@ -127,6 +131,16 @@ def get_grok_sentiment(asset: str = "BTC", force: bool = False) -> dict:
         }
     """
     asset = asset.upper()
+
+    # Owner kill switch -- checked BEFORE the cache so a stale live=True reading
+    # cannot let a paid endpoint bill for a layer that is switched off.
+    try:
+        from octo_grok_kill import grok_disabled, DISABLED_REASON
+        if grok_disabled():
+            return _neutral(asset, DISABLED_REASON)
+    except ImportError:
+        pass
+
     cache = _load_cache()
 
     if not force and asset in cache:

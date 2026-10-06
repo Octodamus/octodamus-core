@@ -45,6 +45,12 @@ _SIGNAL_HANDLES = [
 
 def _client():
     from openai import OpenAI
+    try:
+        from octo_grok_kill import grok_disabled
+        if grok_disabled():
+            return None  # owner kill switch -- see octo_grok_kill.py
+    except ImportError:
+        pass
     sec = json.loads((Path(__file__).parent / ".octo_secrets").read_text(encoding="utf-8"))
     key = sec.get("secrets", sec).get("GROK_API_KEY", "")
     if not key:

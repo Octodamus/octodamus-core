@@ -1,5 +1,31 @@
 # Octodamus — Project State
-# Last updated: 2026-07-18
+# Last updated: 2026-09-11
+
+## Grok + SpaceX shut down (2026-09-12)
+xAI billed >$100 in one day. `octo_grok_kill.py` (GROK_DISABLED = True) is checked in
+octo_grok_sentiment (before the cache, so is_grok_live() is False and /v2/grok/brief + the ACP
+Grok brief refuse WITHOUT charging), octo_grok_live, octo_grok_brief, the runner's x.ai client
+and octo_grok_warm. Tasks Disabled: Octodamus-GrokWarm, Octodamus-SpaceX,
+Octodamus-X-Sentiment-Agent (its only sensor is Grok; running it blind burns Haiku for nothing).
+OctoDataAPI restarted so the live server loaded the switch. To re-enable: flip the flag, enable the
+three tasks, restart OctoDataAPI. One-off test without flipping: OCTO_GROK_ENABLED=1.
+
+## Call Policy + Cost Pass (2026-09-11)
+Record was 11W-25L (31%), streak L11. Re-scored every resolved on-chain crypto call against
+the trend at call time: trend-opposed calls 0W-7L, DOWN outside a confirmed downtrend 2W-13L.
+Shipped `octo_regime.py` (Kraken daily OHLC, 30-min disk cache) + `call_policy_check()` in
+octo_calls (trend gate + 48h minimum, raised from 24h 2026-09-16), enforced in record_call AND commit_call_onchain and
+called early in range_scout / crowd_fade / funding_extreme. Full write-up: `.claude/rules/calls.md`.
+Cost: x_sentiment_agent core memory was 317 KB and read whole every session (never in the
+distill roster) -> distilled to 4 KB + added to roster; `octo_llm.clip_tool_result` (16k chars)
+now bounds every tool result in all 8 agent loops; Coinglass got a cross-process disk cache
+(5 min) so the 8 morning processes stop 429-ing each other; catch-up no longer re-runs
+`--mode monitor` hourly after a signal post; the contradictory "MUST make a call" block is
+out of 5 post prompts (12 posts had been generated then blocked in Aug-Sep); Mentions poll
+15 -> 30 min (6 replies from 2,595 fetches in 8 days). Binance 451 geo-block had silently
+killed Signal 12 since June and crowd_fade's trend gate forever -- both fixed.
+OPEN QUESTION for the owner: ~10-12 content posts/day are scheduled; BRAIN.md's own learned
+patterns say 4/day max. Which tasks to cut is a product call, not made here.
 
 ## Proven-Edge Flagship Products (2026-07-19)
 First move on "more data sales for profit." Reframe: supply isn't the bottleneck (20 live services +
@@ -304,7 +330,10 @@ Required before flipping any live mode:
   - nyse_earningsedge: full conviction rule added (was missing entirely)
 
 ## Current Oracle State
-- Oracle record: 8W/12L (on-chain, June 5) — 20 calls with tx_hash
+- Oracle record: 11W/25L (on-chain, 2026-09-11) — 37 calls with tx_hash, streak L11.
+  By strategy: oracle 5W-7L, funding_extreme 3W-1L, crowd_fade 2W-8L (task Disabled),
+  range_scout 1W-8L (task Disabled), stock_extreme 0W-1L. Policy: `.claude/rules/calls.md`.
+- (older) Oracle record: 8W/12L (on-chain, June 5) — 20 calls with tx_hash
   - 11 on-chain calls in data/octo_calls.json. tx_hash present = counts. call_type irrelevant.
   - Range Scout call #27 has tx_hash → counts as official LOSS.
   - Range Scout call #28 has no tx_hash → does NOT count.

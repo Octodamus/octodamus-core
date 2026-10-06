@@ -17,6 +17,7 @@ import os
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import octo_llm  # usage meter + model/caching helpers
 
 BASE_DIR = Path(__file__).parent.resolve()
 DATA_DIR = BASE_DIR / "data"
@@ -101,7 +102,8 @@ Return JSON only. No commentary outside the JSON.
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=octo_llm.MODEL_SMART,
+            thinking=octo_llm.THINKING_OFF,
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )

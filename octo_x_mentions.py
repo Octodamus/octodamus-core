@@ -289,8 +289,10 @@ def _generate_reply(mention_text: str, market_ctx: str, claude_client, parent_tw
     try:
         from octo_personality import build_x_system_prompt
         system = build_x_system_prompt(live_data_block=market_ctx or "")
+        _stable_prefix = build_x_system_prompt()
     except Exception:
         system = "You are Octodamus (@octodamusai) — a sharp, dry AI market oracle. Never hype. No hashtags."
+        _stable_prefix = ""   # nothing worth a cache breakpoint on the fallback prompt
 
     system += (
         "\n\nREPLY RULES (this is a reply, not a standalone post):\n"
@@ -316,10 +318,14 @@ def _generate_reply(mention_text: str, market_ctx: str, claude_client, parent_tw
         )
 
     try:
+        # Worst ratio in the system: ~7k tokens of identity prompt to produce a
+        # 100-token reply. The identity half is byte-stable, so cache it and pay
+        # full price only for the live data, the reply rules and the mention.
+        import octo_llm
         resp = claude_client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=100,
-            system=system,
+            system=octo_llm.cache_if_stable(system, _stable_prefix),
             messages=[{"role": "user", "content": user_msg}],
         )
         reply = resp.content[0].text.strip().strip('"')

@@ -8,6 +8,11 @@ they're paying for it. The pain trade goes the other direction.
   L/S < 38% long  AND avg_funding < -0.002/8h -> BUY  (crowd short trap)
   F&G floor for DOWN: >= 50 neutral trend, >= 65 if 7d up >5%, blocked if 7d up >10%
   F&G bonus: F&G > 70 strengthens SELL; F&G < 30 strengthens BUY
+  TREND GATE (octo_regime.trend_gate): DOWN only in a confirmed downtrend, UP never
+  into one. The book is 2W-8L; re-scored against the trend at call time, the fades
+  that fired into strength (+19% 7d, +18% vs SMA20) all lost. Note the May losses
+  (#32-37) fired DOWN after -8..-11% weeks -- a crowd that is long AFTER a flush is
+  capitulating, not trapped. The gate cannot see that; the circuit breaker can.
 
 Timeframe: 48h (crowd unwinds slower than funding extremes).
 Target: 4%. call_type: "crowd_fade". Cooldown: 24h between calls per asset.
@@ -113,21 +118,20 @@ def _get_fng() -> int:
 
 
 def _get_7d_change(asset: str) -> float:
-    """Returns 7-day price change percentage via Binance daily klines, or 0.0 on failure."""
+    """7-day % change from the shared trend regime (Kraken daily OHLC).
+
+    This used to hit api.binance.com, which returns HTTP 451 from this machine, so
+    it was 0.0 on every call and the 7d trend gate below never blocked anything --
+    both Aug/Sep crowd_fade losses were fired at +0.0% "trend" into a +19% week.
+    """
     try:
-        import httpx
-        sym = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}[asset]
-        r = httpx.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": sym, "interval": "1d", "limit": 8},
-            timeout=8,
-        )
-        data = r.json()
-        price_7d_ago = float(data[0][4])   # close 7 days ago
-        price_now    = float(data[-1][4])  # most recent close
-        return (price_now - price_7d_ago) / price_7d_ago * 100
+        from octo_regime import get_regime
+        rg = get_regime(asset)
+        if rg:
+            return float(rg["chg_7d"])
     except Exception:
-        return 0.0
+        pass
+    return 0.0
 
 
 def _fetch_ls(asset: str) -> float | None:
@@ -143,19 +147,17 @@ def _fetch_ls(asset: str) -> float | None:
 
 
 def _fetch_avg_funding(asset: str) -> float | None:
-    """Returns avg funding rate across stablecoin-margin exchanges."""
+    """Returns avg funding rate across stablecoin-margin exchanges.
+
+    Delegates to octo_funding_extreme._fetch_funding, which filters the
+    exchange-list response for THIS asset. The old code took raw[0] -- the
+    first coin in the list, BTC -- so ETH and SOL were "confirmed" by BTC's
+    funding on every scan (+0.344% for all three assets in the same run).
+    """
     try:
-        from octo_coinglass import funding_rate_exchange
-        raw = funding_rate_exchange(asset)
-        if not raw or not isinstance(raw, list):
-            return None
-        rates = []
-        current = raw[0] if isinstance(raw[0], dict) else {}
-        for ex in current.get("stablecoin_margin_list", []):
-            fr = ex.get("funding_rate")
-            if fr is not None:
-                rates.append(float(fr))
-        return sum(rates) / len(rates) if rates else None
+        from octo_funding_extreme import _fetch_funding
+        fd = _fetch_funding(asset)
+        return float(fd["avg"]) if fd.get("ok") else None
     except Exception:
         return None
 
@@ -180,7 +182,20 @@ def score_asset(asset: str) -> dict:
     note       = ""
 
     if long_pct >= LONG_TRAP_THRESHOLD and avg_funding >= FUNDING_CONFIRM_BEAR:
-        # Trend gate: bull momentum overrides crowd positioning
+        # Shared trend gate first: a DOWN fade needs a confirmed downtrend
+        # (7d down AND below the 20d average). Every trend-opposed call on the
+        # record lost; DOWN outside a confirmed downtrend was 2W-13L.
+        try:
+            from octo_regime import trend_gate
+            _ok, _why = trend_gate(asset, "DOWN")
+        except Exception as _e:
+            _ok, _why = False, f"trend gate error: {_e}"
+        if not _ok:
+            return {
+                "asset": asset, "fire": False, "reason": f"TREND GATE: {_why}",
+                "long_pct": long_pct, "avg_funding": avg_funding, "fng": fng, "change_7d": change_7d,
+            }
+        # Legacy momentum gate (kept; now sees a real 7d number)
         if change_7d >= 10.0:
             return {
                 "asset": asset, "fire": False,
@@ -208,6 +223,16 @@ def score_asset(asset: str) -> dict:
         )
 
     elif long_pct <= SHORT_TRAP_THRESHOLD and avg_funding <= FUNDING_CONFIRM_BULL:
+        try:
+            from octo_regime import trend_gate
+            _ok, _why = trend_gate(asset, "UP")
+        except Exception as _e:
+            _ok, _why = False, f"trend gate error: {_e}"
+        if not _ok:
+            return {
+                "asset": asset, "fire": False, "reason": f"TREND GATE: {_why}",
+                "long_pct": long_pct, "avg_funding": avg_funding, "fng": fng, "change_7d": change_7d,
+            }
         direction  = "UP"
         conviction = 2
         if fng <= FNG_FEAR:

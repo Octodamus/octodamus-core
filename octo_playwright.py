@@ -37,7 +37,7 @@ except ImportError:
     log.warning("[OctoPlaywright] playwright not installed — run: python -m playwright install chromium")
 
 # ── Claude Vision model ───────────────────────────────────────────────────────
-VISION_MODEL = "claude-sonnet-4-6"
+VISION_MODEL = "claude-sonnet-5"   # $2/$10 vs 4.6's $3/$15, same vision support
 
 # ── TradingView interval codes ────────────────────────────────────────────────
 TIMEFRAME_MAP: dict[str, str] = {
@@ -222,6 +222,7 @@ def _vision_call(img_bytes: bytes, question: str, api_key: str) -> str:
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
         model=VISION_MODEL,
+        thinking={"type": "disabled"},  # Sonnet 5 thinks by default; 4.6 did not
         max_tokens=700,
         messages=[{
             "role": "user",

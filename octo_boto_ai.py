@@ -21,6 +21,7 @@ from typing import Optional
 
 import anthropic
 
+import octo_llm  # usage meter + model/caching helpers
 from octo_boto_math import (best_trade, composite_score, is_valid_market,
                             resolution_risk_score, hours_until, ev_threshold_for_market)
 
@@ -222,7 +223,7 @@ def _get_octodamus_signal_context(question: str) -> tuple[str, str]:
         return "", "NEUTRAL"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-MODEL      = "claude-sonnet-4-6"
+MODEL      = octo_llm.MODEL_SMART
 MAX_TOKENS = 800    # Raised — web search responses can be verbose
 WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 
@@ -540,6 +541,9 @@ Confidence guide:
         _boto_system = SYSTEM_PROMPT + get_brain_context() + get_calibration_context()
         kwargs = {
             "model":      MODEL,
+            # Sonnet 5 runs adaptive thinking when `thinking` is omitted, where
+            # Sonnet 4.6 ran none. Pinned off to keep the previous behaviour.
+            "thinking":   octo_llm.THINKING_OFF,
             "max_tokens": MAX_TOKENS,
             "system":     [{"type": "text", "text": _boto_system, "cache_control": {"type": "ephemeral"}}],
             "messages":   [{"role": "user", "content": prompt}],
@@ -569,7 +573,8 @@ Confidence guide:
                 ]}
             ]
             follow = client.messages.create(
-                model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT,
+                model=MODEL, thinking=octo_llm.THINKING_OFF,
+                max_tokens=MAX_TOKENS, system=octo_llm.cache_system(SYSTEM_PROMPT),
                 messages=follow_msgs, tools=WEB_SEARCH
             )
             for block in follow.content:

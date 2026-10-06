@@ -26,8 +26,18 @@ CALLS_FILE = Path(__file__).parent / "data" / "octo_calls.json"
 _CG_IDS = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binancecoin",
     "XRP": "ripple", "DOGE": "dogecoin", "AVAX": "avalanche-2", "LINK": "chainlink",
-    "UNI": "uniswap",
+    "UNI": "uniswap", "ADA": "cardano", "SUI": "sui",
 }
+
+# Adopt whatever ids the funding-extreme scanner uses, so an asset it can fire on
+# is always resolvable here. SUI was missing from this map, so resolution skipped
+# CoinGecko entirely and fell through to a yfinance ticker that does not exist.
+try:
+    from octo_funding_extreme import _CG_ID as _FE_CG_ID
+    for _k, _v in _FE_CG_ID.items():
+        _CG_IDS.setdefault(_k.upper(), _v)
+except Exception:
+    pass
 
 
 def _cg_headers() -> dict:
@@ -80,26 +90,57 @@ def _fetch_market_snapshot(asset: str, price: float) -> dict:
     except Exception:
         pass
 
-    # Funding rate + open interest (CoinGlass — requires key, graceful skip)
+    # Funding rate (CoinGlass V4). The exchange-list endpoint returns a list of
+    # per-coin rows, each with a stablecoin_margin_list -- the old parse here did
+    # fr.get("data") on that list, raised, and was swallowed, so no call ever had a
+    # funding snapshot and the post-mortem pattern context ran blind.
     if asset.upper() in ("BTC", "ETH", "SOL"):
         try:
-            import octo_coinglass as glass
-            fr = glass.funding_rate_exchange(asset.upper())
-            rates = [ex.get("funding_rate", 0) or 0 for ex in fr.get("data", []) if ex.get("funding_rate") is not None]
-            if rates:
-                snap["funding_rate_pct"] = round(sum(rates) / len(rates) * 100, 4)
+            from octo_funding_extreme import _fetch_funding
+            fd = _fetch_funding(asset.upper())
+            if fd.get("ok"):
+                snap["funding_rate_pct"] = round(fd["avg"] * 100, 4)
         except Exception:
             pass
         try:
             import octo_coinglass as glass
             oi = glass.open_interest(asset.upper(), interval="4h")
-            rows = oi.get("data", {}).get("list", [])
-            if rows:
-                snap["open_interest_usd"] = rows[-1].get("openInterest", None)
+            rows = oi.get("data", {}).get("list", []) if isinstance(oi, dict) else oi
+            if rows and isinstance(rows, list) and isinstance(rows[-1], dict):
+                snap["open_interest_usd"] = rows[-1].get("openInterest") or rows[-1].get("open_interest")
         except Exception:
             pass
 
+    # Trend regime at call time -- so post-mortems can say whether the call
+    # fought the trend, and the learning loop can see it.
+    try:
+        from octo_regime import get_regime
+        rg = get_regime(asset)
+        if rg:
+            snap["trend_bias"] = rg["bias"]
+            snap["chg_7d_pct"] = rg["chg_7d"]
+            snap["vs_sma20_pct"] = rg["vs_sma20_pct"]
+    except Exception:
+        pass
+
     snap["captured_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return snap
+
+
+def _normalize_snapshot(snap: Optional[dict]) -> dict:
+    """
+    The strategy modules build their own snapshot with short keys ("fng",
+    "chg_24h") while everything that READS a snapshot -- _get_pattern_context,
+    the post-mortem, build_call_context -- expects the long keys this module
+    writes ("fear_greed", "change_24h_pct"). Every strategy call therefore showed
+    up as F&G=None in its own post-mortem. Map the short keys onto the long ones
+    without dropping anything.
+    """
+    snap = dict(snap or {})
+    aliases = {"fng": "fear_greed", "chg_24h": "change_24h_pct", "change_24h": "change_24h_pct"}
+    for short, long in aliases.items():
+        if short in snap and long not in snap and snap[short] is not None:
+            snap[long] = snap[short]
     return snap
 
 
@@ -119,9 +160,12 @@ def _get_pattern_context(asset: str, direction: str, snap: dict) -> str:
     Similarity: same asset + direction + F&G bucket + macro signal.
     """
     calls = _load()
+    # Every on-chain strategy counts: a range_scout ETH DOWN loss is exactly the
+    # history a funding_extreme ETH DOWN post-mortem needs to see.
     resolved = [
         c for c in calls
-        if c.get("resolved") and c.get("call_type", "oracle") == "oracle"
+        if c.get("resolved") and c.get("tx_hash")
+        and c.get("call_type", "oracle") != "polymarket"
         and c.get("asset") == asset.upper()
         and c.get("direction") == direction.upper()
     ]
@@ -219,6 +263,11 @@ def _generate_post_mortem(call: dict) -> str:
             ]
             if res_snap:
                 sections.append(_snap_line(res_snap, "At resolution"))
+            if call_snap.get("trend_bias"):
+                sections.append(
+                    f"Trend at call: bias {call_snap['trend_bias']} "
+                    f"(7d {call_snap.get('chg_7d_pct', 0):+.1f}%, {call_snap.get('vs_sma20_pct', 0):+.1f}% vs 20d avg)"
+                )
             if pattern:
                 sections.append(f"Historical pattern:\n{pattern}")
             if call.get("note"):
@@ -229,7 +278,9 @@ def _generate_post_mortem(call: dict) -> str:
             + ("What did the market price in correctly or incorrectly? What would improve the next similar call? " if is_pm else
                "Reference specific signals (funding, macro, F&G, OI) and whether conditions changed between call and resolution. "
                "If pattern history is provided, note whether this outcome was consistent with it. ")
-            + "No hedging. No generic observations. Start with the specific prediction topic."
+            + "No hedging. No generic observations. Start with the specific prediction topic. "
+            "Plain prose only: no markdown headers, no bold, no bullet points -- this text is "
+            "injected verbatim into prompts and posts."
         )
 
         client = anthropic.Anthropic(api_key=api_key)
@@ -257,6 +308,64 @@ def _load() -> list:
 def _save(calls: list):
     CALLS_FILE.parent.mkdir(parents=True, exist_ok=True)
     CALLS_FILE.write_text(json.dumps(calls, indent=2), encoding="utf-8")
+
+
+# ── Call policy ───────────────────────────────────────────────────────────────
+#
+# Two rules every call must pass before it is written anywhere, derived from
+# re-scoring the real on-chain record (32 resolved crypto calls, Sep 2026):
+#
+#   1. Minimum 48h horizon. The WIN rule needs a >=1% move in the called
+#      direction at expiry (or the target touched). Re-simulating every call at
+#      each horizon under that exact rule: 6h 1W-31L, 12h 6W-26L, 24h 12W-20L,
+#      48h 15W-17L. Sub-day calls cannot clear the bar often enough to be worth
+#      a permanent on-chain entry. range_scout's 6h book was 1W-8L. Raised from
+#      24h to 48h on 2026-09-16: several live 24h losses resolved as wins at 48h.
+#
+#   2. Never fight the trend (octo_regime.trend_gate). Trend-opposed calls were
+#      0W-7L; DOWN calls outside a confirmed downtrend were 2W-13L.
+#
+# Enforced in record_call() AND commit_call_onchain(), so no strategy, LLM
+# post, or CLI path can bypass it.
+MIN_CALL_HOURS = 48
+
+
+def _timeframe_hours(tf: str) -> Optional[float]:
+    """Hours in a timeframe string, or None if unparseable (treated as the 48h default)."""
+    tf = (tf or "").lower().strip()
+    m = re.search(r"(\d+)\s*([hd])", tf)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return n if unit == "h" else n * 24
+    if any(k in tf for k in ("friday", "end of week", "eow", "monday", "tuesday", "wednesday", "thursday")):
+        # named-day expiry: measure it from now, the same way _expiry_dt will at resolve time
+        now = datetime.now(timezone.utc)
+        exp = _expiry_dt({"made_at": now.strftime("%Y-%m-%d %H:%M UTC"), "timeframe": tf})
+        return (exp - now).total_seconds() / 3600 if exp else None
+    return None
+
+
+def call_policy_check(asset: str, direction: str, timeframe: str) -> tuple[bool, str]:
+    """(ok, reason). Fails closed: no trend data means no call."""
+    hours = _timeframe_hours(timeframe)
+    if hours is not None and hours < MIN_CALL_HOURS:
+        return (False, f"timeframe {timeframe!r} is under the {MIN_CALL_HOURS}h minimum (24h re-simulated 12W-20L, 48h 15W-17L)")
+    try:
+        from octo_regime import trend_gate
+        ok, why = trend_gate(asset, direction)
+    except Exception as e:
+        return (False, f"trend gate unavailable ({e}) -- refusing to call blind")
+    return (ok, why)
+
+
+def _reject_call(label: str, reason: str) -> None:
+    msg = f"{label} REJECTED by call policy: {reason}"
+    print(f"[OctoCalls] {msg}")
+    try:
+        from octo_notify import _send
+        _send("Octodamus call rejected (policy)", msg)
+    except Exception:
+        pass
 
 
 # ── Record ────────────────────────────────────────────────────────────────────
@@ -293,12 +402,18 @@ def record_call(
                 print(f"[OctoCalls] Skipped -- already have open {direction.upper()} call on {asset.upper()} (#{c['id']})")
             return c
 
+    ok, why = call_policy_check(asset, direction, timeframe)
+    if not ok:
+        _reject_call(f"{asset.upper()} {direction.upper()} [{timeframe}]", why)
+        return None
+
     # Auto-fetch market snapshot if not supplied
     if market_snapshot is None:
         try:
             market_snapshot = _fetch_market_snapshot(asset, entry_price)
         except Exception:
             market_snapshot = {"price": entry_price}
+    market_snapshot = _normalize_snapshot(market_snapshot)
 
     call = {
         "id":                     max((c.get("id", 0) for c in calls), default=0) + 1,
@@ -418,7 +533,14 @@ def _fetch_price(asset: str) -> Optional[float]:
                     )
                     if r.status_code == 200:
                         price = r.json().get(_CG_IDS[asset], {}).get("usd")
-                        if price and float(price) > 1:   # sanity: ETH/BTC should never be <$1
+                        # Guard against a zero/null quote only. This used to require
+                        # price > 1 "because ETH/BTC are never under $1", which silently
+                        # rejected every sub-dollar token: SUI at $0.81 was thrown away,
+                        # fell through to a yfinance ticker that does not exist, and
+                        # resolved a call at $0.0003 -- publishing a WIN on-chain for
+                        # what was a LOSS. Sub-dollar assets are normal; bad data is
+                        # caught by _sane_exit_price() at the resolve site instead.
+                        if price and float(price) > 0:
                             return float(price)
                     elif r.status_code == 429 and attempt < 2:
                         _t.sleep(2 * (attempt + 1)); continue
@@ -531,7 +653,45 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     return None
 
 
-_CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI"}
+_CRYPTO_ASSETS = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "UNI", "ADA", "SUI"}
+
+# Pull in whatever the funding-extreme scanner can actually emit, so the two
+# lists cannot drift apart. They had: the scanner fired on SUI, this set did not
+# contain it, and autoresolve then treated SUI as a stock and deferred it
+# forever waiting on US market hours that are meaningless for a token.
+try:
+    from octo_funding_extreme import _ASSETS as _FE_ASSETS
+    _CRYPTO_ASSETS |= {a.upper() for a in _FE_ASSETS}
+except Exception:
+    pass
+
+# Call types that do NOT settle against price feeds. Polymarket resolves via its
+# own market outcome. Everything else settles on price -- keep this a denylist so
+# a new strategy resolves by default instead of silently never resolving.
+_NO_PRICE_RESOLVE = {"polymarket"}
+
+
+def _sane_exit_price(call: dict, price: float, max_move: float = 0.60) -> bool:
+    """
+    Reject an exit price that cannot plausibly belong to this asset.
+
+    A resolution is written to Base and CANNOT be undone -- the contract reverts
+    with "already resolved". So a bad price feed does not merely produce a wrong
+    row, it produces a permanently wrong public record. Call #53 resolved WIN at
+    $0.0003 on a $0.80 asset because a dead yfinance ticker answered; this is the
+    backstop for that class of failure.
+
+    Anything further than max_move from entry in either direction is treated as a
+    feed fault, not a real move, and the call is left open for a human to look at.
+    """
+    try:
+        entry = float(call.get("entry_price") or 0)
+        price = float(price)
+    except (TypeError, ValueError):
+        return False
+    if entry <= 0 or price <= 0:
+        return False
+    return abs(price - entry) / entry <= max_move
 
 
 def _is_us_market_open() -> bool:
@@ -551,8 +711,13 @@ def autoresolve() -> list:
         if c["resolved"]:
             continue
         call_type = c.get("call_type", "oracle")
-        if call_type not in ("oracle", "range_scout", "crowd_fade"):
-            continue  # Polymarket calls resolve via Polymarket, not price feeds
+        # Denylist, not allowlist. Only Polymarket resolves elsewhere (via its own
+        # market outcome); everything else settles against price feeds. This was an
+        # allowlist and every strategy added after it -- funding_extreme,
+        # stock_extreme -- silently never resolved, leaving on-chain calls open
+        # forever and quietly flattering the record by omitting the losses.
+        if call_type in _NO_PRICE_RESOLVE:
+            continue
         if not _is_expired(c):
             continue
         asset = c["asset"].upper()
@@ -576,6 +741,11 @@ def autoresolve() -> list:
             price = _fetch_price(c["asset"])
             if price is None:
                 print(f"[OctoCalls] Could not fetch price for {c['asset']} — skipping #{c['id']}")
+                continue
+            if not _sane_exit_price(c, price):
+                print(f"[OctoCalls] #{c['id']} {asset}: exit ${price:.6g} is implausible vs "
+                      f"entry ${c.get('entry_price')} -- REFUSING to resolve. Fix the price "
+                      f"feed; an on-chain resolution cannot be undone.")
                 continue
         else:
             print(f"[OctoCalls] #{c['id']} {asset} {c['direction']} target touched in-window -- resolving WIN at target ${price:,.2f}")
@@ -660,8 +830,8 @@ def asset_direction_loss_streak(asset: str, direction: str) -> int:
     calls = _load()
     resolved = [
         c for c in calls
-        if c.get("call_type", "oracle") == "oracle" and c.get("resolved")
-        and c.get("outcome") in ("WIN", "LOSS")
+        if c.get("tx_hash") and c.get("call_type", "oracle") != "polymarket"
+        and c.get("resolved") and c.get("outcome") in ("WIN", "LOSS")
         and c.get("asset", "").upper() == asset.upper()
         and c.get("direction", "").upper() == direction.upper()
     ]
@@ -677,7 +847,7 @@ def asset_direction_loss_streak(asset: str, direction: str) -> int:
 
 def strategy_should_pause(call_type: str, min_resolved: int = 6,
                           max_win_rate: float = 0.30, loss_streak_trip: int = 5,
-                          stale_days: int = 10) -> tuple[bool, str]:
+                          stale_days: int = 14) -> tuple[bool, str]:
     """Auto-pause a systematic strategy that is deeply underwater ON-CHAIN so it stops repeating
     losing calls. This is the fleet-wide learning loop: contrarian strategies (range_scout,
     crowd_fade) fight a trend and bleed; a strategy at 1W-8L should not keep firing.
@@ -736,9 +906,11 @@ def build_performance_feedback() -> str:
     asset+direction patterns with active loss streaks. This is the learning loop -- without it
     the model never sees that (e.g.) ETH DOWN is 3W-12L and keeps re-issuing the losing call."""
     calls = _load()
+    # The whole on-chain book, every strategy. The oracle's public record is the
+    # blended number, so the feedback has to be about the blended number.
     resolved = [
         c for c in calls
-        if c.get("call_type", "oracle") == "oracle" and c.get("tx_hash")
+        if c.get("tx_hash") and c.get("call_type", "oracle") != "polymarket"
         and c.get("resolved") and c.get("outcome") in ("WIN", "LOSS")
     ]
     if len(resolved) < 5:
@@ -747,6 +919,11 @@ def build_performance_feedback() -> str:
     l = len(resolved) - w
     lines = ["PERFORMANCE FEEDBACK -- learn from your own scored record before calling:"]
     lines.append(f"  Overall: {w}W-{l}L ({w/(w+l)*100:.0f}% win). You are being graded on-chain; a call is only worth making if the data genuinely supports it.")
+    by = {}
+    for c in resolved:
+        by.setdefault(c.get("call_type", "oracle"), [0, 0])[0 if c["outcome"] == "WIN" else 1] += 1
+    lines.append("  By strategy: " + ", ".join(f"{k} {ww}W-{ll}L" for k, (ww, ll) in sorted(by.items(), key=lambda x: -(x[1][0] + x[1][1]))))
+    lines.append("  Standing rule (from re-scoring this record): never call against the 7d/20d trend. Trend-opposed calls went 0W-7L; DOWN outside a confirmed downtrend went 2W-13L.")
 
     # Directional bias -- flag the losing side hard.
     for d in ("UP", "DOWN"):
@@ -766,7 +943,9 @@ def build_performance_feedback() -> str:
         ad[key][0 if c["outcome"] == "WIN" else 1] += 1
     flagged = []
     for (a, d), (ww, ll) in ad.items():
-        if ll >= 3 and ll > ww:
+        # Flag a setup that is genuinely underwater, not a coin flip: 3W-12L and
+        # 1W-5L qualify, 3W-4L does not.
+        if ll >= 4 and ll >= 2 * ww:
             streak = asset_direction_loss_streak(a, d)
             note = f"  {a} {d}: {ww}W-{ll}L"
             if streak >= 3:
@@ -798,6 +977,13 @@ def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
     Returns the tx_hash on success, or None (call was neither posted nor kept).
     """
     from octo_oracle_registry import publish_prediction
+    label = f"{call.get('call_type','?')} {call.get('asset','?')} {call.get('direction','?')} [{call.get('timeframe','?')}]"
+    ok, why = call_policy_check(call.get("asset", ""), call.get("direction", ""), call.get("timeframe", ""))
+    if not ok:
+        _reject_call(label, why)
+        return None
+    call["market_snapshot"] = _normalize_snapshot(call.get("market_snapshot"))
+
     calls = _load()
     if not call.get("id"):
         call["id"] = max((c.get("id", 0) for c in calls), default=0) + 1
@@ -817,7 +1003,6 @@ def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
             import time as _t
             _t.sleep(3)
 
-    label = f"{call.get('call_type','?')} {call.get('asset','?')} {call.get('direction','?')}"
     if not tx:
         # Roll back the un-anchored call; do NOT post.
         _save([c for c in _load() if c.get("id") != call.get("id")])
@@ -945,89 +1130,79 @@ def calibration_summary_str() -> str:
 
 # ── Prompt injection ──────────────────────────────────────────────────────────
 
-def build_call_context() -> str:
-    """Injected into every Claude prompt by the runner."""
-    s = get_stats()
-    lines = []
-    lines.append("── DIRECTIONAL CALL SYSTEM ──")
-    lines.append(f"Record: {s['wins']}W / {s['losses']}L | Win rate: {s['win_rate']} | Streak: {s['streak']}")
+def build_call_rules() -> str:
+    """
+    The "you MUST make exactly one Oracle call" instruction block, with the
+    format the parser understands. ONLY for a mode that actually runs
+    parse_call_from_post() on its output. No scheduled mode does today: the
+    calls come from the 13-signal engine and the strategy modules, and every
+    LLM post mode hard-blocks stray "Oracle call:" text in octo_x_poster.
 
-    # #8: Surface recent win rate for context
-    recent_wr = get_recent_win_rate(n=5)
-    if recent_wr is not None:
-        lines.append(f"Last 5 calls win rate: {recent_wr:.0%}" +
-                     (" ⚠ circuit breaker active" if recent_wr < 0.50 else ""))
-
-    # #2: Time quality context
-    tq = time_quality_score()
-    if tq != "peak":
-        lines.append(f"Current market window: {tq.upper()} — factor this into confidence.")
-
-    # #7: Direction concentration
-    dc = get_direction_concentration()
-    if dc["UP"] >= 2:
-        lines.append(f"WARNING: {dc['UP']} open UP calls — avoid adding more UP calls (correlated risk).")
-    if dc["DOWN"] >= 2:
-        lines.append(f"WARNING: {dc['DOWN']} open DOWN calls — avoid adding more DOWN calls (correlated risk).")
-
-    if s["open_calls"]:
-        lines.append("Open calls (do NOT call these assets again):")
-        for c in s["open_calls"]:
-            t = f" target ${c['target_price']:,.0f}" if c.get("target_price") else ""
-            eq = f" edge={c.get('edge_score', 0):+.2f}" if c.get("edge_score") else ""
-            lines.append(f"  #{c['id']} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f}{t} [{c['timeframe']}]{eq}")
-
-    lines.append("")
-    lines.append("CALL RULES — your win rate IS your reputation:")
-    lines.append("1. You MUST make exactly one Oracle call in this post.")
-    lines.append("2. Only skip if you have open calls on ALL available assets (BTC, ETH, SOL, NVDA, TSLA).")
-    lines.append("3. F&G below 15 or above 80 = high conviction. Big moves (>3%) with catalyst = call it.")
+    This used to be part of build_call_context(), which wisdom / moonshot /
+    format / morning_flow / thread all injected -- while telling the model in
+    the same prompt not to write an Oracle call. The model obeyed the louder
+    instruction often enough that 12 posts in Aug-Sep were generated, paid for,
+    and then blocked by the poster.
+    """
+    lines = ["CALL RULES -- your win rate IS your reputation:"]
+    lines.append("1. Make exactly one Oracle call in this post, or none if the data does not support one.")
+    lines.append(f"2. Never call against the trend: DOWN only in a confirmed downtrend (7d down AND below the 20d average). Trend-opposed calls are 0W-7L on record.")
+    lines.append(f"3. Minimum horizon {MIN_CALL_HOURS}h. Use 48h, 72h, or 5d. Never longer than 7 days.")
     lines.append("4. Use realistic targets: 2-5% crypto, 1-3% stocks. No moonshots.")
-    lines.append("5. Timeframes: 24h, 48h, or end of week. Never longer than 7 days.")
-    lines.append("6. FORMAT — put this as the LAST LINE of your post, exactly like this:")
+    lines.append("5. FORMAT -- put this as the LAST LINE of your post, exactly like this:")
     lines.append("   Oracle call: ASSET UP from $PRICE to $TARGET by TIMEFRAME.")
     lines.append("   Oracle call: ASSET DOWN from $PRICE to $TARGET by TIMEFRAME.")
-    lines.append("7. Examples:")
-    lines.append("   Oracle call: BTC UP from $70000 to $73500 by 48h.")
-    lines.append("   Oracle call: NVDA DOWN from $175 to $165 by Friday close.")
-    lines.append("   Oracle call: SOL DOWN from $89 to $83 by end of week.")
-    lines.append("8. The Oracle call line MUST be present. It is how your record is tracked.")
+    lines.append("   e.g. Oracle call: BTC UP from $70000 to $73500 by 48h.")
+    return "\n".join(lines)
 
-    # #10: Signal calibration — show which signals have proven predictive
-    cal_str = calibration_summary_str()
-    if cal_str:
-        lines.append("")
-        lines.append(cal_str)
-        lines.append("Prefer directions where the highest-accuracy signals agree.")
 
-    # Post-mortem learning: inject recent loss and win patterns
+def build_call_context() -> str:
+    """
+    Record + open-calls awareness for any prompt. Deliberately contains NO
+    instruction to make a call -- see build_call_rules() for why. What a post
+    mode needs from this block is: what the scored record is, what is already
+    open (so it is not contradicted), and what the last post-mortems taught.
+    """
+    s = get_stats()
+    lines = []
+    lines.append("-- ORACLE CALL RECORD (context only; do NOT write 'Oracle call:' -- calls are issued by the signal engine) --")
+    lines.append(f"On-chain record: {s['wins']}W / {s['losses']}L | Win rate: {s['win_rate']} | Streak: {s['streak']}")
+
+    # Per-strategy record: the honest picture is by strategy, not the blended number.
+    try:
+        by = {}
+        for c in s["all_calls"]:
+            if c.get("resolved") and c.get("outcome") in ("WIN", "LOSS"):
+                k = c.get("call_type", "oracle")
+                by.setdefault(k, [0, 0])[0 if c["outcome"] == "WIN" else 1] += 1
+        if by:
+            lines.append("By strategy: " + ", ".join(f"{k} {w}W-{l}L" for k, (w, l) in sorted(by.items(), key=lambda x: -(x[1][0] + x[1][1]))))
+    except Exception:
+        pass
+
+    tq = time_quality_score()
+    if tq != "peak":
+        lines.append(f"Current market window: {tq.upper()}.")
+
+    if s["open_calls"]:
+        lines.append("Open calls (do not contradict these):")
+        for c in s["open_calls"]:
+            t = f" target ${c['target_price']:,.0f}" if c.get("target_price") else ""
+            lines.append(f"  #{c['id']} {c.get('call_type','oracle')} {c['asset']} {c['direction']} @ ${c['entry_price']:,.2f}{t} [{c['timeframe']}]")
+
+    # Post-mortem learning: the last two losses and the last win, across every
+    # on-chain strategy. Kept short -- this block rides on 6+ prompts a day.
     calls = _load()
-    oracle_resolved = [
-        c for c in calls
-        if c.get("call_type", "oracle") == "oracle"
-        and c.get("resolved")
-        and c.get("post_mortem")
-    ]
-    recent_losses = [c for c in reversed(oracle_resolved) if c.get("outcome") == "LOSS"][:3]
-    recent_wins   = [c for c in reversed(oracle_resolved) if c.get("outcome") == "WIN"][:1]
-
+    with_pm = [c for c in calls if c.get("tx_hash") and c.get("resolved") and c.get("post_mortem")]
+    recent_losses = [c for c in reversed(with_pm) if c.get("outcome") == "LOSS"][:2]
+    recent_wins   = [c for c in reversed(with_pm) if c.get("outcome") == "WIN"][:1]
     if recent_losses:
-        lines.append("")
-        lines.append("RECENT LOSS PATTERNS (learn from these — do not repeat):")
+        lines.append("Recent loss lessons:")
         for c in recent_losses:
-            snap = c.get("market_snapshot", {})
-            fng = snap.get("fear_greed", "?")
-            chg = snap.get("change_24h_pct", "?")
-            lines.append(
-                f"  #{c['id']} {c['asset']} {c['direction']} "
-                f"(F&G={fng}, 24h={chg}%): {c['post_mortem']}"
-            )
-
+            lines.append(f"  #{c['id']} {c['asset']} {c['direction']}: {c['post_mortem'][:220]}")
     if recent_wins:
         c = recent_wins[0]
-        if c.get("post_mortem"):
-            lines.append("")
-            lines.append(f"RECENT WIN PATTERN: #{c['id']} {c['asset']} {c['direction']}: {c['post_mortem']}")
+        lines.append(f"Recent win: #{c['id']} {c['asset']} {c['direction']}: {c['post_mortem'][:220]}")
 
     return "\n".join(lines)
 

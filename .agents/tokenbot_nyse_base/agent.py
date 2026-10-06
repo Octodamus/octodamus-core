@@ -6,7 +6,7 @@ Trades Dinari dShares (dAAPL, dTSLA, dNVDA, etc.) using multi-signal confluence:
   1. Octodamus oracle stock signal (primary)
   2. Congressional trading signal (from NYSE_StockOracle ecosystem buy)
   3. Macro regime (from NYSE_MacroMind ecosystem buy)
-  4. Grok sentiment (from X_Sentiment_Agent ecosystem buy)
+  4. Earnings risk (from NYSE_EarningsEdge ecosystem buy)
 
 Paper mode: $1,000 virtual USDC. Max $100/position, max 5 open positions.
 Target: +10%. Stop: -5%. Hold: 1-5 sessions.
@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT         = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT))
+import octo_llm  # usage meter + prompt-caching helpers
 SECRETS_FILE = ROOT / ".octo_secrets"
 STATE_FILE   = Path(__file__).parent / "state.json"
 HISTORY_FILE = Path(__file__).parent / "data" / "history.json"
@@ -57,7 +59,7 @@ TARGET_PCT = 0.10   # +10% take profit
 STOP_PCT   = 0.05   # -5% stop loss
 MAX_POS    = 5      # max simultaneous positions
 MAX_POS_USD = 100.0  # max per position ($100 of $1000)
-MIN_SIG_COUNT = 2   # minimum signals aligned before entering
+MIN_SIG_COUNT = 1   # minimum signals aligned before entering (paper mode)
 
 
 def _secrets() -> dict:
@@ -118,10 +120,13 @@ def tool_get_session_history() -> str:
     lines = [f"TokenBot history ({len(history)} sessions):"]
     for h in history[-5:]:
         lines.append(f"\n[{h.get('date','?')} #{h.get('session','?')} {h.get('session_type','')}]")
+        # Always show structured state values -- these come from state.json and are authoritative
+        lines.append(
+            f"  ACTUAL STATE at recording: P&L=${h.get('portfolio_pnl',0):.2f} | "
+            f"{h.get('wins',0)}W/{h.get('losses',0)}L (DO NOT use lesson/pnl text for stats)"
+        )
         if h.get("lesson"):
             lines.append(f"  Signal: {h['lesson']}")
-        if h.get("pnl"):
-            lines.append(f"  Session P&L: {h['pnl']}")
         if h.get("prediction"):
             lines.append(f"  Prediction: {h['prediction']}")
     return "\n".join(lines)
@@ -266,7 +271,7 @@ def tool_paper_trade(
     current_price: from get_stock_price (Finnhub).
     signal_reason: 2-3 sentence summary of why -- signals that aligned.
 
-    Gate: must have >= 2 aligned signals before calling this.
+    Gate: must have >= 1 aligned signal. 2+ preferred. In paper mode, Macro RISK-ON alone is valid.
     """
     ticker = ticker.upper()
     if ticker not in WATCHLIST:
@@ -461,7 +466,14 @@ def tool_get_spend_budget() -> str:
     import re
     raw = check_agent_wallet("TokenBot_NYSE_Base")
     m = re.search(r"\$([\d.]+)", raw)
-    balance = float(m.group(1)) if m else -1.0
+    if not m:
+        return (
+            "SPEND BUDGET: 0 ecosystem buys allowed this session.\n"
+            "WALLET: address not configured -- add TOKENBOT_NYSE_ADDRESS and TOKENBOT_NYSE_PRIVATE_KEY "
+            "to .octo_secrets from Bitwarden entry 'AGENT - TokenBot_NYSE_Base - Wallet'.\n"
+            "Revenue earned to date: $0.00 USDC"
+        )
+    balance = float(m.group(1))
 
     rev_file = ROOT / "data" / "x402_agent_revenue.json"
     total_revenue = 0.0
@@ -473,12 +485,12 @@ def tool_get_spend_budget() -> str:
     except Exception:
         pass
 
-    if balance <= 2.0:
+    if balance <= 1.0:
         allowed = 0
-        reason  = f"WALLET CRITICAL (${balance:.2f}) -- NO ecosystem buys this session. Conserve."
+        reason  = f"WALLET CRITICAL (${balance:.2f}) -- NO ecosystem buys this session. Conserve. Use Budget=0 fallback rules."
     elif balance <= 5.0 and total_revenue == 0:
         allowed = 1
-        reason  = f"Wallet ${balance:.2f}, no revenue yet. MAX 1 ecosystem buy. Pick highest-value signal only."
+        reason  = f"Wallet ${balance:.2f}, no revenue yet. MAX 1 ecosystem buy. Pick Congressional (NYSE_StockOracle) only."
     elif balance <= 10.0:
         allowed = 1
         reason  = f"Wallet ${balance:.2f}. MAX 1 ecosystem buy per session until revenue turns positive."
@@ -576,14 +588,20 @@ def tool_record_session(
     }
     history.append(entry)
     _save_history(history)
-    return f"Session recorded. History: {len(history)} entries."
+    return (
+        f"Session recorded. History: {len(history)} entries.\n"
+        f"ACTUAL STATE (use these for email/reports, not lesson text):\n"
+        f"  total_pnl=${state.get('total_pnl',0):.2f} | "
+        f"wins={state.get('wins',0)} | losses={state.get('losses',0)} | "
+        f"cash=${state.get('cash',0):.2f}"
+    )
 
 
 def tool_send_email(subject: str, body: str) -> str:
     import re as _re
     body = _re.sub(r"^\|[-|: ]+\|\s*$", "", body, flags=_re.MULTILINE)
     body = body.replace("|", "  ")
-    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|_{1,2}|`{1,3}", _re.MULTILINE)
+    _MD = _re.compile(r"\*{1,3}|#{1,4}\s?|`{1,3}", _re.MULTILINE)
     body = _MD.sub("", body)
     sys.path.insert(0, str(ROOT))
     try:
@@ -605,6 +623,70 @@ def tool_update_core_memory(section: str, content: str) -> str:
         return f"Memory update failed: {e}"
 
 
+def tool_search_session_history(query: str, agent: str = None) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_session_fts import search_session_history, index_agent
+    index_agent("tokenbot_nyse_base", verbose=False)
+    return search_session_history(query, agent=agent)
+
+def tool_list_skills() -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import list_skills
+    return list_skills("tokenbot_nyse_base")
+
+def tool_read_skill(skill_name: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import read_skill
+    return read_skill("tokenbot_nyse_base", skill_name)
+
+def tool_create_skill(skill_name: str, description: str, when_to_use: str, procedure: str, lessons: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import create_skill
+    return create_skill("tokenbot_nyse_base", skill_name, description, when_to_use, procedure, lessons)
+
+def tool_update_skill(skill_name: str, improvement: str, what_changed: str = "") -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import update_skill
+    return update_skill("tokenbot_nyse_base", skill_name, improvement, what_changed)
+
+def tool_search_skills(query: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from octo_skill_manager import search_skills
+    return search_skills("tokenbot_nyse_base", query)
+
+
+# ── Agentic Loop ───────────────────────────────────────────────────────────────
+
+_loop_instance = None
+
+def _get_loop():
+    global _loop_instance
+    if _loop_instance is None:
+        sys.path.insert(0, str(ROOT))
+        from octo_loop import AgentLoop
+        _loop_instance = AgentLoop("tokenbot_nyse_base", Path(__file__).parent)
+    return _loop_instance
+
+
+def tool_save_loop_reflection(
+    plan: str,
+    acted: str,
+    observed: str,
+    lesson: str,
+    next_plan: str,
+    goal_resolved: bool = False,
+    new_goal: str = "",
+) -> str:
+    """Save agentic loop reflection. Call every session after record_session."""
+    loop = _get_loop()
+    state = _load_state()
+    session_num = state.get("sessions", 0) + 1
+    return loop.save_reflection(
+        session_num, plan, acted, observed, lesson, next_plan,
+        goal_resolved=goal_resolved, new_goal=new_goal,
+    )
+
+
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -620,12 +702,35 @@ TOOLS = [
     {"name": "paper_trade",             "description": "Open a LONG paper position on a Dinari dShare. Max $100/trade. Requires 2+ signals aligned. Gate yourself before calling.", "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}, "direction": {"type": "string", "enum": ["LONG"]}, "size_usd": {"type": "number"}, "current_price": {"type": "number"}, "signal_reason": {"type": "string"}}, "required": ["ticker", "direction", "size_usd", "current_price", "signal_reason"]}},
     {"name": "check_market_day",        "description": "CALL FIRST every session. Returns NYSE market status: OPEN or CLOSED (weekend/holiday). If CLOSED, skip to abbreviated check-in only.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_spend_budget",        "description": "CALL BEFORE any buy_ecosystem_intel. Returns how many ecosystem buys are allowed this session based on wallet balance and revenue. Respect the limit exactly.", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "buy_ecosystem_intel",     "description": "Buy a signal from NYSE_StockOracle (congressional), NYSE_MacroMind (macro), X_Sentiment_Agent (crowd). Each is $0.25-$0.50 USDC from your wallet. MUST call get_spend_budget first.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "NYSE_StockOracle | NYSE_MacroMind | X_Sentiment_Agent | NYSE_Tech_Agent"}, "service_name": {"type": "string"}}, "required": ["target_agent", "service_name"]}},
+    {"name": "buy_ecosystem_intel",     "description": "Buy a signal from NYSE_StockOracle (congressional), NYSE_MacroMind (macro), NYSE_EarningsEdge (earnings catalyst). Each is $0.25-$0.50 USDC from your wallet. MUST call get_spend_budget first.", "input_schema": {"type": "object", "properties": {"target_agent": {"type": "string", "description": "NYSE_StockOracle | NYSE_MacroMind | NYSE_EarningsEdge | NYSE_Tech_Agent"}, "service_name": {"type": "string"}}, "required": ["target_agent", "service_name"]}},
     {"name": "list_ecosystem_services", "description": "List all services available in the Octodamus ecosystem with prices.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "save_draft",              "description": "Save a session analysis or report draft.", "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}},
     {"name": "record_session",          "description": "Record this session to history. Call at end of every session.", "input_schema": {"type": "object", "properties": {"lesson": {"type": "string"}, "prediction": {"type": "string", "default": ""}, "session_pnl": {"type": "string", "default": ""}, "what_worked": {"type": "string", "default": ""}}, "required": ["lesson"]}},
     {"name": "send_email",              "description": "Send email report to owner.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["subject", "body"]}},
     {"name": "update_core_memory",      "description": "Distill 3-5 bullets into persistent memory. Call before record_session. Section='Distilled YYYY-MM-DD'. Only what a future session would want to know.", "input_schema": {"type": "object", "properties": {"section": {"type": "string"}, "content": {"type": "string"}}, "required": ["section", "content"]}},
+    {"name": "search_session_history", "description": "FTS5 search across all past session history, lessons, and briefs. Use to recall specific past decisions, prices, or events.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "agent": {"type": "string", "description": "Optional: filter to one agent"}}, "required": ["query"]}},
+    {"name": "list_skills",            "description": "List all your refined skills with descriptions. Check at session start.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "read_skill",             "description": "Read the full procedure and lessons for a specific skill.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}}, "required": ["skill_name"]}},
+    {"name": "create_skill",           "description": "Create a new skill when you discover a repeatable procedure worth capturing.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "description": {"type": "string"}, "when_to_use": {"type": "string"}, "procedure": {"type": "string"}, "lessons": {"type": "string"}}, "required": ["skill_name", "description", "when_to_use", "procedure"]}},
+    {"name": "update_skill",           "description": "Update a skill with a new lesson after completing a task.", "input_schema": {"type": "object", "properties": {"skill_name": {"type": "string"}, "improvement": {"type": "string"}, "what_changed": {"type": "string"}}, "required": ["skill_name", "improvement"]}},
+    {"name": "search_skills",          "description": "Search your skills by keyword.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {
+        "name": "save_loop_reflection",
+        "description": "MANDATORY every session -- call after record_session. Saves Plan->Act->Observe->Reflect to the agentic loop. The loop repeats until goal_thread is resolved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan":          {"type": "string", "description": "What you set out to test this session"},
+                "acted":         {"type": "string", "description": "What tools you called and decisions made"},
+                "observed":      {"type": "string", "description": "What you found -- signals, data, market state"},
+                "lesson":        {"type": "string", "description": "ONE specific insight from this session"},
+                "next_plan":     {"type": "string", "description": "What to watch or do next session"},
+                "goal_resolved": {"type": "boolean", "description": "True if current goal thread is complete", "default": False},
+                "new_goal":      {"type": "string", "description": "If goal_resolved=True, the next multi-session goal", "default": ""},
+            },
+            "required": ["plan", "acted", "observed", "lesson", "next_plan"],
+        },
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -654,6 +759,15 @@ TOOL_HANDLERS = {
                                   ),
     "send_email":                 lambda i: tool_send_email(i["subject"], i["body"]),
     "update_core_memory":         lambda i: tool_update_core_memory(i["section"], i["content"]),
+    "search_session_history":     lambda i: tool_search_session_history(i["query"], i.get("agent")),
+    "list_skills":                lambda i: tool_list_skills(),
+    "read_skill":                 lambda i: tool_read_skill(i["skill_name"]),
+    "create_skill":               lambda i: tool_create_skill(i["skill_name"], i["description"], i["when_to_use"], i["procedure"], i.get("lessons", "")),
+    "update_skill":               lambda i: tool_update_skill(i["skill_name"], i["improvement"], i.get("what_changed", "")),
+    "search_skills":              lambda i: tool_search_skills(i["query"]),
+    "save_loop_reflection": lambda i: tool_save_loop_reflection(
+        i["plan"], i["acted"], i["observed"], i["lesson"], i["next_plan"],
+        bool(i.get("goal_resolved", False)), i.get("new_goal", "")),
 }
 
 
@@ -664,7 +778,7 @@ You paper trade Dinari dShares (dAAPL, dTSLA, dNVDA, etc.) on Base using a $1,00
 Goal: prove profitable over 90 days of paper trading, then flip live.
 When live, you execute real swaps on Aerodrome DEX (Base): USDC -> dAAPL, USDC -> dTSLA, etc.
 Dinari tokens are 1:1 collateralized by real shares. Finnhub prices = Dinari prices.
-Your edge is AI signal confluence -- you only trade when 2+ independent signals agree.
+Your edge is AI signal confluence -- you trade when signals align (1 strong signal in paper mode, 2+ preferred).
 
 THE TOKENIZED NYSE THESIS:
 NYSE stocks on Base = 24/7 AI-tradable equities. No brokers. No market hours. No settlement delays.
@@ -675,7 +789,7 @@ When you go live, TokenBot_NYSE_Base becomes a signal subscription that agents p
 PORTFOLIO RULES (enforced by tools, not just instructions):
 - $1,000 paper USDC. Max $100/position. Max 5 open positions. LONG only (Dinari = long-only).
 - Target: +10%. Stop: -5%. Max hold: 5 sessions.
-- Signal gate: minimum 2 aligned signals before opening ANY position. Never on 1 signal alone.
+- Signal gate: 1+ aligned signal is sufficient in paper mode. 2+ signals preferred for higher conviction.
 - ONLY trade from the watchlist: AAPL, TSLA, NVDA, GOOGL, AMZN, META, SPY, MSFT.
 - Pass = ZERO positions is better than 5 forced positions. Idle cash earns credibility.
 
@@ -683,14 +797,26 @@ SIGNAL STACK (in priority order):
 1. Congressional trading (buy_ecosystem_intel -> NYSE_StockOracle) -- best edge. Recent Congress buys = smart money. Counts as BULLISH signal for that ticker.
 2. Macro regime (get_macro_signal) -- free, always run. RISK-OFF = no new LONG positions (hard rule). NOT RISK-OFF = counts as a supporting signal.
 3. Octodamus oracle (get_octodamus_stock_signal) -- bonus confirmation only. If BULLISH for a ticker, counts as +1. If NEUTRAL, skip -- oracle NEUTRAL is NOT a trade blocker. Never required.
+   CRITICAL: Never call Oracle NEUTRAL a "veto," "streak," or reason for HOLD. A 6-session NEUTRAL streak does not block anything. Congressional BULLISH + Macro RISK-ON = 2 signals = valid entry regardless of oracle.
+   Do NOT spin oracle NEUTRAL as "validated" when a watchlist ticker gained 2%+. That is a missed directional call, not a correct silence.
 4. Grok sentiment (get_grok_sentiment) -- crowd positioning. Use GROK SENTIMENT RULE for confidence thresholds.
 5. NYSE_Tech_Agent (buy_ecosystem_intel) -- regulatory/tokenization news. Counts as +1 if bullish on a ticker.
 
-SIGNAL GATE (hard rule):
-- Need 2+ signals from {Congressional BULLISH, Macro NOT RISK-OFF, Oracle BULLISH, Grok 70%+} to enter.
-- Minimum viable trade: Congressional BULLISH (step 1) + Macro NOT RISK-OFF (step 2) = 2 signals = enter.
-- Never trade on Macro alone or Oracle alone -- must have at least Congressional or two other sources.
-- Oracle NEUTRAL does not block a trade when 2+ other signals align.
+SIGNAL GATE:
+- 2+ signals from {Congressional BULLISH, Macro NOT RISK-OFF, Oracle BULLISH, Grok 70%+} = preferred entry.
+- 1 signal (any of the above) = valid entry in paper mode. Never paralyzed by lack of ecosystem buys.
+- Macro NOT RISK-OFF on a market day = MANDATORY paper entry if 0 positions open. Not optional. Not "strategically rejected." Pick the ticker with strongest pre-market momentum and open $50.
+- Oracle BULLISH alone (on a watchlist ticker) = MANDATORY paper entry.
+- Oracle NEUTRAL is not a blocker. It simply doesn't count as a signal.
+- HARD MINIMUM: on every NYSE market day session, you must either (a) have an open position already running, or (b) open a new one. Cash-only sessions on market days are only allowed when macro is RISK-OFF.
+
+STAGNATION OVERRIDE (HARD RULE):
+- If it is a market day (NYSE OPEN) and 0 open positions AND macro is NOT RISK-OFF: you MUST open at least 1 paper trade this session. No exceptions, no strategic rejection.
+- Weekend/holiday sessions do NOT count as active trading sessions for this rule.
+- "Congressional unavailable" is NOT a veto. Congressional is a preferred enhancer, not a gate.
+- The purpose of this agent is to BUILD A TRACK RECORD. Finishing a market day session with 0 positions and no trade opened (when macro permits) = mission failure.
+- When rule fires: enter the watchlist ticker with the strongest pre-market or overnight move at $50 position size. Document it as "Market day mandatory entry -- Macro NOT RISK-OFF, 0 open positions."
+- Target cadence: at least 2 trades per week on market days.
 
 POSITION SIZING:
 - $50-$75 per position for first 10 trades (prove the system).
@@ -728,32 +854,43 @@ SESSION PROTOCOL:
    No trades. No ecosystem buys. Do NOT say "Agent session skipped" -- the session ran.
 
    IF OPEN -- FULL SESSION PROTOCOL:
-1. read_core_memory + get_session_history (what did last session predict? did it happen?)
+1. read_core_memory + get_session_history + list_skills (load your refined trade procedures)
 2. get_portfolio_status (cash available, open positions)
 3. check_and_close_positions (let the system close winners/losers automatically)
 4. get_macro_signal (RISK-OFF = hard stop, no new longs this session)
 5. get_spend_budget -- check before ANY ecosystem buys. Respect the allowed count exactly.
-6. buy_ecosystem_intel from NYSE_StockOracle (congressional signal) -- this is the PRIMARY trade trigger. Do this first within budget.
+6. buy_ecosystem_intel from NYSE_StockOracle (congressional signal) -- PRIMARY trade trigger. ALWAYS buy this first.
+   BUY PRIORITY ORDER (strict): Congressional → Oracle → Grok sentiment
+   If budget = 1: buy Congressional only. Never skip Congressional to buy Grok instead.
+   If budget = 0: use macro + oracle (free) only.
 7. get_octodamus_stock_signal -- bonus. Check for any open stock calls. NEUTRAL is fine, just no count.
 8. For tickers with congressional BULLISH signal: get_stock_price (free)
-9. If congressional BULLISH + macro NOT RISK-OFF (= 2 signals): paper_trade. Add oracle/grok if budget allows for higher conviction.
-10. If wallet budget = 0: use macro + oracle only. If both neutral, hold.
+9. If congressional BULLISH + macro NOT RISK-OFF (= 2 signals): paper_trade.
+10. If 0 open positions after step 9 AND macro is NOT RISK-OFF: MANDATORY paper entry regardless of budget. Congressional offline = not a veto. Pick the watchlist ticker with strongest pre-market move. Size $50. No strategic rejection allowed. This is not optional.
 9. save_draft with full analysis and trade rationale
 10. update_core_memory with 3-5 compressed bullets:
     - What signals aligned this session (ticker, direction, signal count)
     - Whether last session's prediction proved correct (CORRECT/WRONG/PARTIAL -- price moved?)
     - One calibration note (e.g., "NVDA congressional buy led to +12% in 3 sessions")
     - One forward prediction for next session validation
-11. record_session with:
+11. update_skill for any skill used this session (add what worked or what the procedure missed)
+12. record_session with:
     lesson: "SIGNAL: [ticker] [direction] [signal sources] | ACTION: [opened/held/closed] | CONF: [1-5]"
     prediction: "PREDICTION: [ticker] [direction] [timeframe] | TRIGGER: [what to watch]"
     session_pnl: "[realized P&L this session in $]"
-12. send_email with full session report (positions, signals, P&L, forward outlook)
+13. send_email with full session report (positions, signals, P&L, forward outlook)
 
 EMAIL FORMAT:
 
+CRITICAL DATA INTEGRITY RULE:
+- lesson and pnl text in session history is AI-generated narrative. It may contain inaccurate numbers.
+- NEVER use win/loss counts or P&L figures from session history lesson/pnl text.
+- ALWAYS call get_portfolio_status immediately before send_email and use ONLY those values for cash, total_pnl, wins, losses, sessions.
+- The ACTUAL STATE line in get_session_history is authoritative. The lesson/pnl text is not.
+
 WEEKEND CHECK-IN format:
 Subject: [TokenBot] Weekend Check-In -- [date] | P&L: $X | [W]W/[L]L
+  CRITICAL: P&L in subject = total_pnl (realized only). Never use unrealized position P&L.
 Body:
   === TOKENBOT_NYSE_BASE WEEKEND CHECK-IN ===
   [Day] [Date] [Time] | NYSE: CLOSED
@@ -775,17 +912,20 @@ Body:
 
 FULL SESSION (morning pre-open / evening) format:
 Subject: [TokenBot] [Morning Pre-Open / Evening Session] Report -- [date] | P&L: $X.XX | [W]W/[L]L | [TRADE/HOLD]
+  CRITICAL: P&L in subject line = total_pnl from get_portfolio_status (realized closed-trade P&L only). NEVER use an open position's unrealized mark-to-market. If dTSLA is up $7.58 but total_pnl is $0.49, subject shows $0.49.
 Body (keep under 300 words total -- tight and scannable):
 
 === TOKENBOT_NYSE_BASE [MORNING PRE-OPEN / EVENING SESSION] REPORT ===
 [Day, Date | Time PST] | Next session: [time]
 
 PORTFOLIO:
-  Paper capital: $[cash] | Total P&L: $[pnl] | Record: [W]W/[L]L | Sessions: [N]
-  ACP wallet: $[usdc_earned] USDC earned | Ecosystem budget: [N] buys this session
+  Paper capital: $[FILL: cash field from get_portfolio_status] | Total P&L: $[FILL: total_pnl] | Record: [W]W/[L]L | Sessions: [N]
+  ACP wallet: $[FILL: usdc_earned from get_portfolio_status] USDC earned | Ecosystem budget: [N] buys this session
+  NOTE TO AGENT: Every [FILL: ...] above MUST be replaced with the actual number from get_portfolio_status before send_email is called. Never send the bracket text literally.
 
 SIGNALS:
-  Oracle: [BULLISH ticker / BEARISH ticker / NEUTRAL] (N-session streak if applicable)
+  Congressional: [BULLISH ticker / NO ACTIVE BUYS / UNAVAILABLE -- no budget]
+  Oracle: [BULLISH ticker / BEARISH ticker / NEUTRAL]
   Macro: [RISK-ON / NEUTRAL / RISK-OFF] ([score]/5 -- one key driver)
   Sentiment: [result or "UNAVAILABLE -- no budget"]
   Price action: [top 2-3 movers, one line]
@@ -799,8 +939,9 @@ TRADES THIS SESSION:
   [If trade opened: ticker, direction, size $X, entry $X, target $X, stop $X -- one line each]
 
 OVERNIGHT WATCH:
-  [2-3 lines. Concrete triggers only: "If oracle fires BULLISH + macro neutral -> enter Tuesday pre-open."
-   Do NOT write probability estimates (no "~40-50% chance"). No speculation.]
+  [2-3 lines. Concrete triggers only: "If oracle fires BULLISH + macro NOT RISK-OFF -> enter Tuesday pre-open."
+   Do NOT write probability estimates (no "70% probability", "~40-50% chance", "likely", "probable").
+   Do NOT create named-day subsections (no "THURSDAY TRIGGER", "WEDNESDAY SETUP") -- all forward-looking content belongs here only.]
 
 -- TokenBot_NYSE_Base | Paper trading Dinari dShares | Building track record for live deployment
 
@@ -810,14 +951,32 @@ PROHIBITED SECTIONS -- never include these:
 - No "ASIAN OPEN POSITIONING CONTEXT" section
 - No "WALLET STATUS" section (use PORTFOLIO block only)
 - No "DISCIPLINE SCORE" or "CONFIDENCE: MAXIMUM" ratings
-- No probability estimates ("~40-50%", "Medium chance", etc.)
+- No probability estimates ("~40-50%", "Medium chance", "70% probability", "likely", "probable") -- anywhere in the email including OVERNIGHT WATCH
+- No named-day subsections ("THURSDAY TRIGGER", "WEDNESDAY SETUP", "MONDAY WATCH") -- all forward-looking content goes in OVERNIGHT WATCH only
+- Never omit [W]W/[L]L from subject line -- always include, even when 0W/0L
+- Never write "[from check_and_close]", "[N]", "[X]", "$X.XX", or any unresolved placeholder in the sent email -- if the tool returned no value or the entry doesn't exist, write $0.00 for dollar amounts and 0 for counts
+- Never mention Oracle NEUTRAL streak count ("7-session streak", "N-session streak") -- write "NEUTRAL" only, no framing around it
 - Never restate the HOLD/TRADE rationale more than once
+- Congressional signal must use exactly one of: "BULLISH [ticker]" / "NO ACTIVE BUYS" / "UNAVAILABLE -- no budget" / "BLOCKED -- OWNER ACTION NEEDED: ...". Never invent states like "DORMANT", "SUSPENDED", or "QUIET". The signal source is either checked (BULLISH or NO ACTIVE BUYS) or unavailable.
+
+NEXT SESSION FIELD: Always means the next SCHEDULED RUN, not the next trade date.
+- After a morning session: "Today 4:00 PM PST (Evening Session)"
+- After an evening session: "Tomorrow 6:15 AM PST (Morning Pre-Open)"
+- Never write a future date like "May 8, 2026" -- that implies the agent skips sessions.
+
+OVERNIGHT WATCH rules:
+- Every line must be a concrete IF -> THEN trigger. "If oracle fires BULLISH -> enter at next morning open" is correct. "Reassess", "monitor", "evaluate", or "check back" without a specific condition are banned.
+- Never write a specific calendar date (no "May 09", "May 13", "next Thursday") -- reference session labels only ("next morning session", "by tomorrow's pre-open"). Specific dates imply skipped sessions and create fabricated timelines.
+
+CONGRESSIONAL BLOCKED: If buy_ecosystem_intel fails due to gas or balance error, write in SIGNALS:
+  "Congressional: BLOCKED -- OWNER ACTION NEEDED: fund ~$2 ETH to [address] on Base for gas"
+This is not a minor status -- it is the primary trade signal source. Losing it means the main trigger is offline.
 
 YOUR TEAM (buy from these, pitch TokenBot services to them):
 - Octodamus: The oracle. Primary signal source.
 - NYSE_StockOracle: Congressional signals. Best confirmation layer.
 - NYSE_MacroMind: Macro regime. RISK-OFF from macro = no new longs.
-- X_Sentiment_Agent: Crowd positioning. High crowd bullish + oracle bullish = strong setup.
+- NYSE_EarningsEdge: Earnings catalysts. Check before entering if ticker reports this week -- earnings week = elevated vol risk.
 - NYSE_Tech_Agent: Tokenization/regulatory news. Know what's coming on-chain.
 - Order_ChainFlow: On-chain whale flows. Useful for NVDA/COIN/MSTR (crypto-adjacent stocks).
 - Agent_Ben: Profit agent. Coordinates the ecosystem.
@@ -842,13 +1001,60 @@ When live: real USDC flows into Aerodrome DEX swaps. Same signal stack. Same rul
 The paper record IS the product. Build it cleanly.
 
 WHAT NOT TO DO:
-- Do NOT trade on 1 signal alone -- ever. Need 2+ from the SIGNAL GATE list.
+- Do NOT trade on 1 signal alone in live mode. In paper mode, macro RISK-ON alone is valid per the SIGNAL GATE.
 - Do NOT open positions when macro is RISK-OFF.
 - Do NOT require oracle BULLISH to trade -- oracle NEUTRAL is not a blocker.
 - Do NOT exceed $100/position or 5 positions.
 - Do NOT close profitable positions early just to lock in gains -- let targets work.
 - Do NOT force trades when signals are mixed or absent. Cash is a position.
 """
+
+
+def _microcompact(msgs: list, keep_last: int = 3, trigger_at: int = 9) -> list:
+    """Collapse old tool results so the context stays bounded.
+
+    Pruning rewrites a message in the MIDDLE of the history, which invalidates the
+    prompt cache from that point to the end. Running it every turn therefore paid
+    to re-write the whole tail on every single turn: measured on profit-agent
+    session #566 at 63% cache hit and $0.65 for 13 turns, with cache reads
+    collapsing from 80,654 back to the bare system prefix the moment pruning
+    started.
+
+    Batching fixes that without changing the context ceiling. Nothing is pruned
+    until `trigger_at` live tool results have accumulated, then everything older
+    than `keep_last` is pruned at once -- one cold miss every few turns instead of
+    one per turn. Between batches the message array stays byte-identical, which is
+    the whole reason the cache can hit at all.
+    """
+    def _is_live(m) -> bool:
+        return any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and b.get("content") != "[pruned]"
+            for b in m["content"]
+        )
+
+    tr_indices = [
+        i for i, m in enumerate(msgs)
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])
+    ]
+    live = [i for i in tr_indices if _is_live(msgs[i])]
+    if len(live) < trigger_at:
+        return msgs            # below the batch threshold: leave the bytes alone
+    to_prune = live[:-keep_last] if keep_last else live
+    if not to_prune:
+        return msgs
+    pruned = list(msgs)
+    for i in to_prune:
+        pruned[i] = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": b["tool_use_id"], "content": "[pruned]"}
+                if isinstance(b, dict) and b.get("type") == "tool_result" else b
+                for b in pruned[i]["content"]
+            ],
+        }
+    return pruned
 
 
 def run_session(dry_run: bool = False, session_type: str = ""):
@@ -868,51 +1074,56 @@ def run_session(dry_run: bool = False, session_type: str = ""):
     key    = _secrets().get("ANTHROPIC_API_KEY", "")
     client = anthropic.Anthropic(api_key=key)
     sess_context = f" This is the {session_type} session." if session_type else ""
+    loop_ctx = _get_loop().get_context()
+    loop_prefix = (loop_ctx + "\n\n") if loop_ctx else ""
     messages = [{
         "role": "user",
         "content": (
-            f"TokenBot_NYSE_Base session #{session_num}. Date: {now}.{sess_context} "
+            f"{loop_prefix}TokenBot_NYSE_Base session #{session_num}. Date: {now}.{sess_context} "
             f"Run your full session protocol. Paper trade the tokenized NYSE thesis."
         )
     }]
 
-    for turn in range(MAX_TURNS):
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2000,
-            system=SYSTEM,
-            tools=TOOLS,
-            messages=messages,
-        )
+    try:
+        for turn in range(MAX_TURNS):
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2000,
+                system=octo_llm.cache_system(SYSTEM),
+                tools=TOOLS,
+                messages=octo_llm.rolling_cache(messages),
+            )
 
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
-        texts     = [b for b in resp.content if b.type == "text"]
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            texts     = [b for b in resp.content if b.type == "text"]
 
-        for t in texts:
-            if t.text.strip():
-                print(f"[Turn {turn+1}] {t.text[:200]}")
+            for t in texts:
+                if t.text.strip():
+                    print(f"[Turn {turn+1}] {t.text[:200]}".encode("ascii", "replace").decode("ascii"))
 
-        if resp.stop_reason == "end_turn" or not tool_uses:
-            print(f"[TokenBot] Session complete at turn {turn+1}")
-            break
+            if resp.stop_reason == "end_turn" or not tool_uses:
+                print(f"[TokenBot] Session complete at turn {turn+1}")
+                break
 
-        messages.append({"role": "assistant", "content": resp.content})
-        results = []
-        for tu in tool_uses:
-            print(f"[Tool:{tu.name}]", end=" ")
-            try:
-                result = TOOL_HANDLERS[tu.name](tu.input)
-                print(str(result)[:100])
-            except Exception as e:
-                result = f"Error in {tu.name}: {e}"
-                print(result)
-            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
-        messages.append({"role": "user", "content": results})
-        time.sleep(0.3)
-
-    state["sessions"] = session_num
-    state["last_run"] = now
-    _save_state(state)
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for tu in tool_uses:
+                print(f"[Tool:{tu.name}]", end=" ")
+                try:
+                    result = TOOL_HANDLERS[tu.name](tu.input)
+                    print(str(result)[:100])
+                except Exception as e:
+                    result = f"Error in {tu.name}: {e}"
+                    print(result)
+                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": octo_llm.clip_tool_result(result)})
+            messages.append({"role": "user", "content": results})
+            messages = _microcompact(messages)
+            time.sleep(0.3)
+    finally:
+        fresh_state = _load_state()
+        fresh_state["sessions"] = session_num
+        fresh_state["last_run"] = now
+        _save_state(fresh_state)
 
 
 if __name__ == "__main__":
