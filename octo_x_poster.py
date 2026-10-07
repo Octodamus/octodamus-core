@@ -346,8 +346,8 @@ def ensure_cashtag(text: str) -> str:
     import re
     text_lower = text.lower()
 
-    # Strip duplicate cashtags — X allows max 1 per post.
-    # Keep the first occurrence, remove all subsequent ones.
+    # X allows max 1 cashtag per post. Keep the first; later ones lose the $ but keep
+    # the ticker -- deleting them outright left "because $NVDA, , capture".
     all_tags = re.findall(r'\$[A-Z]{2,6}\b', text)
     if len(all_tags) > 1:
         _first_done = [False]
@@ -355,7 +355,7 @@ def ensure_cashtag(text: str) -> str:
             if not _first_done[0]:
                 _first_done[0] = True
                 return m.group()
-            return ''
+            return m.group()[1:]
         text = re.sub(r'\$[A-Z]{2,6}\b', _keep_first, text)
         text = re.sub(r'  +', ' ', text).strip()
         text_lower = text.lower()
