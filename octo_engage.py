@@ -17,6 +17,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import anthropic
 import httpx
@@ -188,6 +189,7 @@ def fetch_headlines(query: str, count: int = 3) -> list:
         "title": a.get("title", ""),
         "description": a.get("description", "") or "",
         "url": a.get("url", ""),
+        "outlet": (a.get("source") or {}).get("name", ""),
         "published": a.get("publishedAt", ""),
       }
       for a in articles
@@ -570,9 +572,11 @@ def run(count: int = DEFAULT_COUNT):
       trimmed = take.rstrip()
       if cashtag and cashtag not in trimmed:
         trimmed = f"{trimmed} {cashtag}"
-      # The source URL goes in a self-reply (X ranks posts with external links down),
-      # so the main post gets the full limit.
-      _char_limit = 265
+      # No URL anywhere: X ranks link posts down, and a link in a self-reply renders a
+      # card that repeats the branded article image. Credit the outlet by name instead.
+      outlet = article.get("outlet") or urlparse(url).netloc.removeprefix("www.")
+      credit = f" (via {outlet})" if outlet and "x.com" not in outlet and "twitter.com" not in outlet else ""
+      _char_limit = 265 - len(credit)
 
       def _sentence_trim(text: str, limit: int) -> str:
           if len(text) <= limit:
@@ -591,7 +595,7 @@ def run(count: int = DEFAULT_COUNT):
         trimmed = _sentence_trim(trimmed, _char_limit)
       except Exception:
         pass
-      tweet_text = trimmed
+      tweet_text = trimmed + credit
 
       # Fetch + brand the article image
       media_id = None
@@ -608,13 +612,6 @@ def run(count: int = DEFAULT_COUNT):
       from octo_x_poster import _post_single
       result = _post_single(tweet_text, media_ids=[media_id] if media_id else None)
       tweet_url = result.get("url", "")
-      if url and result.get("id"):
-        try:
-          from octo_x_poster import post_reply
-          time.sleep(2)
-          post_reply(f"Source: {url}", result["id"])
-        except Exception as src_e:
-          print(f"[Engage] Source self-reply failed: {src_e}")
       posted += 1
       posted_titles.append(article["title"])
       print(f"[Engage] OK [{article['ticker']}] {trimmed[:80]}...")
