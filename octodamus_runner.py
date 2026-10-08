@@ -455,7 +455,7 @@ def _check_smart_call():
             _fetch_coinglass_compact, fetch_technicals_mtf,
         )
         from octo_calls import (
-            record_call, _load,
+            record_call, _load, round_price,
             get_recent_win_rate, get_direction_concentration, time_quality_score,
         )
         try:
@@ -948,7 +948,7 @@ def _check_smart_call():
 
                 # Adjust target based on vol regime
                 target_pct = max(win_threshold / 100, 0.01)
-                target = round(price * (1 + target_pct), 0) if direction == "UP" else round(price * (1 - target_pct), 0)
+                target = round_price(price * (1 + target_pct)) if direction == "UP" else round_price(price * (1 - target_pct))
 
                 print(f"[SmartCall] STRONG {asset} {direction} @ ${price:,.2f} | edge={edge_score:+.2f} | mtf={mtf.get('alignment','?')} | vol={regime}")
                 rec = record_call(

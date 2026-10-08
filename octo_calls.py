@@ -11,6 +11,7 @@ CLI:
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -345,8 +346,40 @@ def _timeframe_hours(tf: str) -> Optional[float]:
     return None
 
 
-def call_policy_check(asset: str, direction: str, timeframe: str) -> tuple[bool, str]:
+def round_price(p: float) -> float:
+    """Round to ~4 significant figures, never fewer than 2 decimals. round(x, 2) turned
+    DOGE's $0.0863 DOWN target into $0.09 -- above entry (call #67)."""
+    if not p:
+        return p
+    return round(p, max(2, 3 - math.floor(math.log10(abs(p)))))
+
+
+def fmt_usd(p: float) -> str:
+    """'$87,123.45' / '$0.08627' -- ',.0f' printed DOGE as '$0'."""
+    if not p:
+        return "$0"
+    return f"${p:,.{max(2, 3 - math.floor(math.log10(abs(p))))}f}"
+
+
+def target_side_problem(direction: str, entry: Optional[float], target: Optional[float]) -> str:
+    """'' if the target sits on the called side of entry, else the reason it doesn't."""
+    if not target or not entry:
+        return ""
+    d = (direction or "").upper()
+    if d == "UP" and target <= entry:
+        return f"UP target {fmt_usd(target)} is not above entry {fmt_usd(entry)}"
+    if d == "DOWN" and target >= entry:
+        return f"DOWN target {fmt_usd(target)} is not below entry {fmt_usd(entry)}"
+    return ""
+
+
+def call_policy_check(asset: str, direction: str, timeframe: str,
+                      entry_price: Optional[float] = None,
+                      target_price: Optional[float] = None) -> tuple[bool, str]:
     """(ok, reason). Fails closed: no trend data means no call."""
+    side = target_side_problem(direction, entry_price, target_price)
+    if side:
+        return (False, side)
     hours = _timeframe_hours(timeframe)
     if hours is not None and hours < MIN_CALL_HOURS:
         return (False, f"timeframe {timeframe!r} is under the {MIN_CALL_HOURS}h minimum (24h re-simulated 12W-20L, 48h 15W-17L)")
@@ -402,7 +435,7 @@ def record_call(
                 print(f"[OctoCalls] Skipped -- already have open {direction.upper()} call on {asset.upper()} (#{c['id']})")
             return c
 
-    ok, why = call_policy_check(asset, direction, timeframe)
+    ok, why = call_policy_check(asset, direction, timeframe, entry_price, target_price)
     if not ok:
         _reject_call(f"{asset.upper()} {direction.upper()} [{timeframe}]", why)
         return None
@@ -646,6 +679,11 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     except Exception:
         return None
     tgt = float(tgt)
+    # A target on the wrong side of entry (#67: DOWN, entry $0.0889, target $0.09) is "touched"
+    # at once and settles at the target -- a guaranteed LOSS whatever price does. Ignore it
+    # and let the >=1% expiry rule decide.
+    if target_side_problem(direction, call.get("entry_price"), tgt):
+        return None
     if direction == "UP" and max(prices) >= tgt:
         return tgt
     if direction == "DOWN" and min(prices) <= tgt:
@@ -978,7 +1016,8 @@ def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
     """
     from octo_oracle_registry import publish_prediction
     label = f"{call.get('call_type','?')} {call.get('asset','?')} {call.get('direction','?')} [{call.get('timeframe','?')}]"
-    ok, why = call_policy_check(call.get("asset", ""), call.get("direction", ""), call.get("timeframe", ""))
+    ok, why = call_policy_check(call.get("asset", ""), call.get("direction", ""), call.get("timeframe", ""),
+                                call.get("entry_price"), call.get("target_price"))
     if not ok:
         _reject_call(label, why)
         return None

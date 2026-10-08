@@ -140,6 +140,7 @@ def _fetch_funding(asset: str) -> dict:
 
 
 def score_asset(asset: str) -> dict:
+    from octo_calls import round_price
     price = _get_price(asset)
     if price == 0:
         return {"asset": asset, "fire": False, "reason": "Price unavailable"}
@@ -198,7 +199,7 @@ def score_asset(asset: str) -> dict:
         "fire":        True,
         "direction":   direction,
         "price":       price,
-        "target_price": round(target, 2),
+        "target_price": round_price(target),
         "timeframe":   TIMEFRAME,
         "note":        note,
         "fng":         fng,
@@ -218,6 +219,7 @@ def score_asset(asset: str) -> dict:
 
 
 def _post_text(r: dict) -> str:
+    from octo_calls import fmt_usd
     arrow = "^" if r["direction"] == "UP" else "v"
     bias  = "LONG" if r["direction"] == "UP" else "SHORT"
     count = r["neg_count"] if r["direction"] == "UP" else r["pos_count"]
@@ -229,13 +231,15 @@ def _post_text(r: dict) -> str:
     return (
         f"{r['asset']} {arrow} {bias} -- Funding Extreme signal.\n\n"
         f"Avg funding: {r['avg']*100:+.3f}%/8h ({count}/{total} exchanges {label})\n"
-        f"Entry: ${r['price']:,.0f} | Target: ${r['target_price']:,.0f} (+{TARGET_PCT:.0f}% / {TIMEFRAME})\n\n"
+        f"Entry: {fmt_usd(r['price'])} | Target: {fmt_usd(r['target_price'])} "
+        f"({'+' if r['direction'] == 'UP' else '-'}{TARGET_PCT:.0f}% / {TIMEFRAME})\n\n"
         f"F&G: {r['fng']}\n\n"
         f"{tag}"
     )
 
 
 def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
+    from octo_calls import fmt_usd
     assets = [a.upper() for a in (assets or _ASSETS)]
     fired  = []
     print(f"\n[FundingExtreme] Scan | {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
@@ -269,7 +273,7 @@ def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
 
         print(
             f"[FundingExtreme] {asset}: FIRE {result['direction']} | "
-            f"avg={result['avg']*100:+.3f}%/8h | target=${result['target_price']:,.0f}"
+            f"avg={result['avg']*100:+.3f}%/8h | target={fmt_usd(result['target_price'])}"
         )
 
         if dry:

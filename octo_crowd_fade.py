@@ -163,6 +163,7 @@ def _fetch_avg_funding(asset: str) -> float | None:
 
 
 def score_asset(asset: str) -> dict:
+    from octo_calls import round_price
     price = _get_price(asset)
     if price == 0:
         return {"asset": asset, "fire": False, "reason": "Price unavailable"}
@@ -266,7 +267,7 @@ def score_asset(asset: str) -> dict:
         "fire":         True,
         "direction":    direction,
         "price":        price,
-        "target_price": round(target, 2),
+        "target_price": round_price(target),
         "target_pct":   pct,
         "timeframe":    tf,
         "conviction":   conviction,
