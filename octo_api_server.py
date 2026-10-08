@@ -3430,13 +3430,21 @@ def get_full(target_date: Optional[str] = None, key=Depends(require_key)):
 
 # â"€â"€ Admin â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-ADMIN_SECRET = os.environ.get("OCTODATA_ADMIN_SECRET", "change-me-in-bitwarden")
+# No default: a hard-coded fallback was the live admin password while the variable was unset
+# on the OctoDataAPI service. Unset now means every admin route refuses, never "matches".
+ADMIN_SECRET = os.environ.get("OCTODATA_ADMIN_SECRET", "")
+
+
+def _require_admin(admin_secret: str) -> None:
+    if not ADMIN_SECRET:
+        raise HTTPException(status_code=503, detail="Admin disabled: OCTODATA_ADMIN_SECRET not set")
+    if not secrets.compare_digest(admin_secret.encode(), ADMIN_SECRET.encode()):
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
 
 
 @app.post("/admin/keys/create", tags=["Admin"])
 def create_key(label: str, tier: str = "basic", days: int = 30, admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     if tier not in ("basic", "pro", "premium", "admin"):
         raise HTTPException(status_code=400, detail="tier must be basic|pro|admin")
     new_key = "octo_" + secrets.token_urlsafe(24)
@@ -3453,16 +3461,14 @@ def create_key(label: str, tier: str = "basic", days: int = 30, admin_secret: st
 
 @app.get("/admin/keys/list", tags=["Admin"])
 def list_keys(admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     keys = load_keys()
     return {k[:12] + "â€¦": v for k, v in keys.items()}
 
 
 @app.delete("/admin/keys/revoke", tags=["Admin"])
 def revoke_key(api_key: str, admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     keys = load_keys()
     if api_key not in keys:
         raise HTTPException(status_code=404, detail="Key not found")
