@@ -53,7 +53,7 @@ the old asymmetry changed.
 ## Strategy status
 | strategy        | record  | task            | notes |
 |-----------------|---------|-----------------|-------|
-| funding_extreme | 3W-1L   | every 4h        | keep; gated; 48h |
+| funding_extreme | 7W-4L   | every 4h        | **UP only** -- DOWN paused 2026-10-09 (0W-4L). All 7 wins were UP in uptrends; every fired call's mean was pulled over the threshold by one venue at 9-37x baseline while the median sat near zero, so the edge is trend, not funding. Every scan is logged to `data/funding_scan_log.jsonl` for a real backtest. Public wording: "funding tilt, trend-gated", never "extreme". |
 | stock_extreme   | 0W-1L   | every 2h        | trend-aligned by design; gated again at record time; 48h |
 | oracle (13-sig) | 5W-7L   | monitor 7am/4pm | STRONG threshold + MTF; gated at record time |
 | range_scout     | 1W-8L   | **Disabled**    | 48h/2% + gate now; re-enable only after a fresh look |
