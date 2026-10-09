@@ -217,7 +217,7 @@ def score_asset(asset: str) -> dict:
             conviction = 3
         note = (
             f"L/S ratio {long_pct:.1f}% long -- crowd packed one side. "
-            f"Funding {avg_funding*100:+.3f}%/8h confirms longs paying. "
+            f"Funding {avg_funding:+.4f}%/8h confirms longs paying. "
             f"7d trend {change_7d:+.1f}%. "
             f"F&G={fng}{'  Greed trap confirmed.' if fng >= FNG_GREED else ''}. "
             f"Pain trade: DOWN."
@@ -240,7 +240,7 @@ def score_asset(asset: str) -> dict:
             conviction = 3
         note = (
             f"L/S ratio {long_pct:.1f}% long -- crowd massively short. "
-            f"Funding {avg_funding*100:+.3f}%/8h confirms shorts paying. "
+            f"Funding {avg_funding:+.4f}%/8h confirms shorts paying. "
             f"F&G={fng}{'  Fear trap confirmed.' if fng <= FNG_FEAR else ''}. "
             f"Pain trade: UP."
         )
@@ -249,7 +249,7 @@ def score_asset(asset: str) -> dict:
         return {
             "asset":       asset,
             "fire":        False,
-            "reason":      f"L/S={long_pct:.1f}% long | funding={avg_funding*100:+.3f}%/8h | 7d={change_7d:+.1f}% -- no crowd extreme",
+            "reason":      f"L/S={long_pct:.1f}% long | funding={avg_funding:+.4f}%/8h | 7d={change_7d:+.1f}% -- no crowd extreme",
             "long_pct":    long_pct,
             "avg_funding": avg_funding,
             "fng":         fng,
@@ -303,7 +303,7 @@ def _post_text(r: dict) -> str:
     return (
         f"{r['asset']} {arrow} {bias} -- Crowd Fade signal {stars}\n\n"
         f"{crowd_pct:.1f}% of traders are {crowd}. "
-        f"Funding {r['avg_funding']*100:+.3f}%/8h. Crowd is paying for it.\n\n"
+        f"Funding {r['avg_funding']:+.4f}%/8h. Crowd is paying for it.\n\n"
         f"Entry: ${r['price']:,.0f} | Target: ${r['target_price']:,.0f} "
         f"(+{r['target_pct']:.0f}% / {r['timeframe']})\n"
         f"{fng_line}\n\n"
@@ -400,7 +400,7 @@ def run_crowd_fade(assets: list = None, dry: bool = False) -> list:
         print(
             f"[CrowdFade] {asset}: FIRE {result['direction']} | "
             f"L/S={result['long_pct']:.1f}%long | "
-            f"funding={result['avg_funding']*100:+.3f}%/8h | "
+            f"funding={result['avg_funding']:+.4f}%/8h | "
             f"conviction={result['conviction']}/3"
         )
 
@@ -467,7 +467,7 @@ def print_scores(assets: list = None):
         fire   = "FIRE" if r.get("fire") else "PASS"
         detail = r.get("reason") or (
             f"{r['direction']} | L/S={r['long_pct']:.1f}% | "
-            f"funding={r['avg_funding']*100:+.3f}%/8h | conviction={r['conviction']}/3"
+            f"funding={r['avg_funding']:+.4f}%/8h | conviction={r['conviction']}/3"
         )
         print(f"  {asset}: {fire} -- {detail}")
     print()

@@ -169,7 +169,10 @@ def fetch_derivatives(ticker="BTC") -> dict:
         t = next((x for x in r.json().get("tickers", []) if x.get("symbol") == sym), None)
         if not t:
             return {}
-        fr = float(t.get("fundingRate", 0) or 0)
+        # fundingRate is an ABSOLUTE USD amount per contract (BTC ~0.64 = rel x price), which
+        # x100 turned into "63.65%". relativeFundingRate x 100 = percent per hourly period,
+        # the same figure Coinglass lists for Kraken.
+        fr = float(t.get("relativeFundingRate", 0) or 0)
         oi = float(t.get("openInterest", 0) or 0)
         px = float(t.get("markPrice", 71000) or 71000)
         return {
@@ -213,12 +216,12 @@ def _fetch_coinglass_compact(ticker: str) -> dict:
                 try:
                     r = float(ex.get("funding_rate", 0) or 0)
                     rates.append(r)
-                    exchanges.append({"name": ex.get("exchange", "?"), "rate": round(r * 100, 4)})
+                    exchanges.append({"name": ex.get("exchange", "?"), "rate": round(r, 4)})  # already %
                 except (ValueError, TypeError):
                     pass
             if rates:
                 avg = sum(rates) / len(rates)
-                result["funding_avg"] = round(avg * 100, 4)
+                result["funding_avg"] = round(avg, 4)  # Coinglass rates are already percent
                 result["funding_dir"] = "LONGS PAY" if avg > 0 else "SHORTS PAY"
                 result["funding_exchanges"] = exchanges[:5]
     except Exception:

@@ -100,7 +100,7 @@ def _fetch_market_snapshot(asset: str, price: float) -> dict:
             from octo_funding_extreme import _fetch_funding
             fd = _fetch_funding(asset.upper())
             if fd.get("ok"):
-                snap["funding_rate_pct"] = round(fd["avg"] * 100, 4)
+                snap["funding_rate_pct"] = round(fd["avg"], 4)  # Coinglass rates are already percent
         except Exception:
             pass
         try:
