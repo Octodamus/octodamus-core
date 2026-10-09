@@ -328,29 +328,50 @@ def signal_composite(asset: str = "BTC") -> dict:
 
 def funding_extremes() -> dict:
     """Current funding rate extremes across major assets. Email capture for alerts."""
+    # Rates are percent per 8h (0.01 = the 0.01% baseline). "Extreme" is judged on the MEDIAN
+    # venue: one outlier exchange used to drag the mean over any threshold. This tool called
+    # .get() on the list funding_rate_exchange returns and errored for every visitor until
+    # 2026-10-09; it now shares the strategy's parser.
     try:
-        from octo_coinglass import funding_rate_exchange
-        extremes = []
+        import statistics
+        from octo_funding_extreme import _fetch_funding
+        extremes, readings = [], []
         for sym in ["BTC", "ETH", "SOL"]:
-            result = funding_rate_exchange(sym)
-            rates = [v for v in (result.get("data") or {}).values() if isinstance(v, (int, float))]
-            if not rates:
+            fd = _fetch_funding(sym)
+            if not fd.get("ok"):
+                readings.append({"asset": sym, "error": fd.get("reason")})
                 continue
-            avg = sum(rates) / len(rates)
-            if abs(avg) >= 0.05:
+            rates = [e["rate"] for e in fd["exchanges"]]
+            med = statistics.median(rates)
+            top = max(fd["exchanges"], key=lambda e: abs(e["rate"]))
+            reading = {
+                "asset": sym,
+                "median_rate_pct": round(med, 4),
+                "mean_rate_pct": round(fd["avg"], 4),
+                "venues": fd["total"],
+                "negative_venues": fd["neg_count"],
+                "positive_venues": fd["pos_count"],
+                "largest_venue": {"exchange": top["exchange"], "rate_pct": round(top["rate"], 4)},
+            }
+            readings.append(reading)
+            if abs(med) >= 0.05:
                 extremes.append({
                     "asset": sym,
-                    "avg_rate": round(avg, 4),
-                    "label": "EXTREME LONG" if avg > 0 else "EXTREME SHORT",
-                    "risk": "crowded long -- fade risk" if avg > 0 else "crowded short -- squeeze risk",
+                    "median_rate_pct": round(med, 4),
+                    "label": "EXTREME LONG" if med > 0 else "EXTREME SHORT",
+                    "risk": "crowded long -- fade risk" if med > 0 else "crowded short -- squeeze risk",
                 })
 
         return {
             "tool": "funding_extremes",
             "title": "Funding Rate Extremes",
+            "units": "percent per 8h; 0.01 = the standard 0.01% baseline",
+            "readings": readings,
             "extremes": extremes,
             "alert_threshold_pct": 0.05,
+            "alert_basis": "median venue (5x baseline)",
             "count": len(extremes),
+            "note": "Research, not a trade instruction.",
             "cta": "Get alerted when funding hits extremes. Subscribe at octodamus.com",
             "gate": True,
         }
