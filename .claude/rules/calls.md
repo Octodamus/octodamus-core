@@ -18,6 +18,14 @@ Both run in `octo_calls.call_policy_check()`, called by `record_call()` AND
 `commit_call_onchain()`. Every strategy also calls the gate early (before Coinglass/gas).
 A rejected call prints `REJECTED by call policy` and emails via octo_notify.
 
+## Target touch: same rule for crypto and stocks (2026-10-09)
+`_target_hit_during_window()` credits a target touched anywhere in the call window: crypto via
+the CoinGecko range, stocks via Yahoo hourly high/low (regular session only, so an overnight-only
+touch is missed -- conservative). Until 2026-10-09 stocks were judged at expiry only, so #66 TSLA
+DOWN traded through 349.43 (low 345.88) and settled a LOSS at 355.13. It stays a LOSS: published
+outcomes are never re-scored. Of the 8 resolved stock calls with a target, #66 is the only one
+the old asymmetry changed.
+
 ## What the backtest showed (in-sample, small N — treat as direction, not precision)
 - Actual: 10W-22L (31%). Trend-opposed calls: 0W-7L. Removing them: 10W-15L (40%).
 - DOWN outside a confirmed downtrend: 2W-13L. Strict gate survivors: 8W-9L (47%).

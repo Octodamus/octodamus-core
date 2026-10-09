@@ -645,17 +645,21 @@ def _is_expired(call: dict) -> bool:
 
 
 def _target_hit_during_window(call: dict) -> Optional[float]:
-    """If a crypto call's target was TOUCHED at any point during [made_at, expiry], return the
-    target price; else None. This fixes the point-in-time blind spot: a call that spiked to its
-    target intraday then retraced is a WIN, but autoresolve's single current-price check misses it.
+    """If a call's target was TOUCHED at any point during [made_at, expiry], return the target
+    price; else None. This fixes the point-in-time blind spot: a call that spiked to its target
+    intraday then retraced is a WIN, but autoresolve's single current-price check misses it.
 
-    Crypto only (CoinGecko historical range). Returns None for stocks, missing target, unparseable
-    dates, or any fetch failure -- callers then fall back to the current-price settle path.
+    Crypto: CoinGecko historical range. Stocks (since 2026-10-09): Yahoo hourly high/low bars.
+    Before that, stocks were judged at expiry only -- #66 TSLA DOWN traded through its 349.43
+    target (hour low 345.88) and still settled a LOSS at 355.13, while a crypto call doing the
+    same would have won. Published outcomes are not re-scored; this applies to calls resolved
+    from now on. Returns None for a missing target, unparseable dates, or any fetch failure --
+    callers then fall back to the current-price settle path.
     """
     asset = call.get("asset", "").upper()
     tgt = call.get("target_price")
     direction = call.get("direction", "").upper()
-    if asset not in _CG_IDS or not tgt or direction not in ("UP", "DOWN"):
+    if not tgt or direction not in ("UP", "DOWN"):
         return None
     try:
         made_dt = datetime.strptime(call.get("made_at", ""), "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
@@ -664,19 +668,36 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     end_dt = _expiry_dt(call)
     if not end_dt:
         return None
-    try:
-        import requests
-        r = requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{_CG_IDS[asset]}/market_chart/range",
-            params={"vs_currency": "usd", "from": int(made_dt.timestamp()), "to": int(end_dt.timestamp())},
-            headers=_cg_headers(), timeout=15,
-        )
-        if r.status_code != 200:
+    if asset in _CG_IDS:
+        try:
+            import requests
+            r = requests.get(
+                f"https://api.coingecko.com/api/v3/coins/{_CG_IDS[asset]}/market_chart/range",
+                params={"vs_currency": "usd", "from": int(made_dt.timestamp()), "to": int(end_dt.timestamp())},
+                headers=_cg_headers(), timeout=15,
+            )
+            if r.status_code != 200:
+                return None
+            prices = [p[1] for p in (r.json().get("prices") or []) if p and p[1]]
+            lows = highs = prices
+        except Exception:
             return None
-        prices = [p[1] for p in (r.json().get("prices") or []) if p and p[1]]
-        if not prices:
+    else:
+        # Stocks: regular-session hourly bars. Off-hours tokenized trading is not covered, so a
+        # touch that only happened overnight is missed -- conservative, never a false WIN.
+        try:
+            import yfinance as yf
+            df = yf.Ticker(asset).history(start=made_dt.strftime("%Y-%m-%d"),
+                                          end=(end_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+                                          interval="1h")
+            if df is None or df.empty:
+                return None
+            idx = df.index.tz_convert("UTC") if df.index.tz is not None else df.index.tz_localize("UTC")
+            w = df[(idx >= made_dt) & (idx <= end_dt)]
+            lows, highs = [float(x) for x in w["Low"].dropna()], [float(x) for x in w["High"].dropna()]
+        except Exception:
             return None
-    except Exception:
+    if not lows or not highs:
         return None
     tgt = float(tgt)
     # A target on the wrong side of entry (#67: DOWN, entry $0.0889, target $0.09) is "touched"
@@ -684,9 +705,9 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     # and let the >=1% expiry rule decide.
     if target_side_problem(direction, call.get("entry_price"), tgt):
         return None
-    if direction == "UP" and max(prices) >= tgt:
+    if direction == "UP" and max(highs) >= tgt:
         return tgt
-    if direction == "DOWN" and min(prices) <= tgt:
+    if direction == "DOWN" and min(lows) <= tgt:
         return tgt
     return None
 
@@ -759,7 +780,7 @@ def autoresolve() -> list:
         if not _is_expired(c):
             continue
         asset = c["asset"].upper()
-        # Target-hit takes precedence: a crypto call whose target was touched anywhere in its
+        # Target-hit takes precedence: a call (crypto or stock) whose target was touched anywhere in its
         # window is a WIN, even if price later retraced below the target by the time we check.
         # resolve at the target price (which is by construction a >=1% move, so resolve_call
         # marks it WIN). None -> target not hit / not crypto / no historical data -> settle below.
