@@ -144,7 +144,7 @@ def funding_rate_chart(symbol="BTC"):
     # coins-markets needs a Coinglass tier above Hobbyist -- use the price client instead
     from financial_data_client import get_current_crypto_price
     price = get_current_crypto_price(symbol) or 0
-    valid = [(ex.get("exchange","?"), float(ex.get("funding_rate",0) or 0)*100) for ex in ml if ex.get("funding_rate",0)]
+    valid = [(ex.get("exchange","?"), float(ex.get("funding_rate",0) or 0)) for ex in ml if ex.get("funding_rate",0)]  # already %
     valid.sort(key=lambda x: x[1]); names=[v[0] for v in valid]; rates=[v[1] for v in valid]
 
     fig, ax = plt.subplots(figsize=(11, 7)); fig.subplots_adjust(top=0.87, left=0.20, bottom=0.08)
@@ -393,7 +393,7 @@ def market_dashboard(symbol="BTC"):
         ml = coin_fr.get("stablecoin_margin_list", [])
         top_ex = sorted(ml, key=lambda x: abs(x.get("funding_rate",0) or 0), reverse=True)[:10]
         names=[ex.get("exchange","?")[:10] for ex in top_ex]
-        rates=[float(ex.get("funding_rate",0) or 0)*100 for ex in top_ex]
+        rates=[float(ex.get("funding_rate",0) or 0) for ex in top_ex]  # already %
         colors=[C["bear"] if r>0 else C["bull"] for r in rates]
         ax.barh(names, rates, color=colors, height=0.5, alpha=0.85)
         ax.axvline(x=0, color=C["text_dim"], linewidth=0.5)

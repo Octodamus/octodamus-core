@@ -30,9 +30,23 @@ _CALLS_FILE = ROOT / "data" / "octo_calls.json"
 
 BUY_THRESHOLD  = -0.005   # avg 8h rate below -> BUY
 SELL_THRESHOLD = +0.010   # avg 8h rate above -> SELL
+# Units: Coinglass exchange-list rates are already in PERCENT per 8h (0.01 = 0.01%, the
+# standard baseline). Displays before 2026-10-09 multiplied by 100 and overstated them 100x.
 MIN_EXCHANGES  = 3        # min exchanges confirming direction
 TARGET_PCT     = 3.0      # % target
 TIMEFRAME      = "48h"
+
+# DOWN side paused 2026-10-09. Its record is 0W-4L (#53, #58, #59, #60), and in every fired
+# call the "extreme" mean was pulled over the line by one venue at 9-37x baseline funding while
+# the median venue sat near zero. Pausing tightens the rule, so it needs no new backtest.
+# Unpause only after the scan log below shows DOWN setups with a real median extreme.
+DOWN_PAUSED = True
+
+# Every scan of every asset is appended here, fired or not, so a later backtest can see the
+# setups this rule did NOT take. Before this, only fired calls were saved, and no test could
+# tell an edge from survivorship.
+SCAN_LOG = ROOT / "data" / "funding_scan_log.jsonl"
+RULE_VERSION = "2026-10-09 mean>=thr, DOWN paused"
 
 
 def _load_calls() -> list:
@@ -139,14 +153,65 @@ def _fetch_funding(asset: str) -> dict:
     }
 
 
+def _log_scan(asset: str, price: float, fd, fng, result: dict, would_be=None):
+    """Append one scan record. Never raises: logging must not break a scan."""
+    try:
+        import statistics
+        rates = [e["rate"] for e in (fd or {}).get("exchanges", [])]
+        trimmed = sorted(rates)[1:-1] if len(rates) >= 5 else rates
+        try:
+            from octo_regime import get_regime
+            reg = get_regime(asset) or {}
+            regime = {k: reg.get(k) for k in ("chg_7d", "chg_3d", "vs_sma20_pct", "bias", "asof") if k in reg} or None
+        except Exception as e:
+            regime = {"error": type(e).__name__}
+        rec = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "rule_version": RULE_VERSION,
+            "asset": asset,
+            "price": price or None,
+            "fng": fng,
+            "funding_ok": bool(fd and fd.get("ok")),
+            "n_exchanges": len(rates),
+            "mean": statistics.mean(rates) if rates else None,
+            "median": statistics.median(rates) if rates else None,
+            "trimmed_mean": statistics.mean(trimmed) if trimmed else None,
+            "max_abs": max(map(abs, rates)) if rates else None,
+            "neg_count": (fd or {}).get("neg_count"),
+            "pos_count": (fd or {}).get("pos_count"),
+            "exchanges": (fd or {}).get("exchanges"),
+            "regime": regime,
+            "would_be_direction": would_be,
+            "fire": bool(result.get("fire")),
+            "direction": result.get("direction"),
+            "reason": result.get("reason"),
+        }
+        SCAN_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with SCAN_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+    except Exception as e:
+        print(f"[FundingExtreme] scan log write failed (scan unaffected): {e}")
+
+
+def _median(fd: dict) -> float:
+    import statistics
+    rates = [e["rate"] for e in fd.get("exchanges", [])]
+    return statistics.median(rates) if rates else 0.0
+
+
 def score_asset(asset: str) -> dict:
+    from octo_calls import round_price
     price = _get_price(asset)
     if price == 0:
-        return {"asset": asset, "fire": False, "reason": "Price unavailable"}
+        r = {"asset": asset, "fire": False, "reason": "Price unavailable"}
+        _log_scan(asset, price, None, None, r)
+        return r
 
     fd = _fetch_funding(asset)
     if not fd["ok"]:
-        return {"asset": asset, "fire": False, "reason": fd["reason"]}
+        r = {"asset": asset, "fire": False, "reason": fd["reason"]}
+        _log_scan(asset, price, fd, None, r)
+        return r
 
     avg  = fd["avg"]
     fng  = _get_fng()
@@ -154,25 +219,37 @@ def score_asset(asset: str) -> dict:
     if avg <= BUY_THRESHOLD and fd["neg_count"] >= MIN_EXCHANGES:
         direction = "UP"
         note = (
-            f"Funding avg {avg*100:+.3f}%/8h ({fd['neg_count']}/{fd['total']} exchanges negative). "
-            f"Shorts paying longs -- short squeeze loading. F&G={fng}."
+            f"Funding mean {avg:+.4f}% / median {_median(fd):+.4f}% per 8h "
+            f"({fd['neg_count']}/{fd['total']} venues negative). Shorts paying longs; "
+            f"trend gate passed. F&G={fng}."
         )
     elif avg >= SELL_THRESHOLD and fd["pos_count"] >= MIN_EXCHANGES:
         direction = "DOWN"
         note = (
-            f"Funding avg {avg*100:+.3f}%/8h ({fd['pos_count']}/{fd['total']} exchanges positive). "
+            f"Funding avg {avg:+.4f}%/8h ({fd['pos_count']}/{fd['total']} exchanges positive). "
             f"Longs overextended -- flush incoming. F&G={fng}."
         )
     else:
-        return {
+        r = {
             "asset":     asset,
             "fire":      False,
-            "reason":    f"avg {avg*100:+.3f}%/8h | neg:{fd['neg_count']} pos:{fd['pos_count']} -- no extreme",
+            "reason":    f"avg {avg:+.4f}%/8h | neg:{fd['neg_count']} pos:{fd['pos_count']} -- no extreme",
             "avg":       avg,
             "neg_count": fd["neg_count"],
             "pos_count": fd["pos_count"],
             "fng":       fng,
         }
+        _log_scan(asset, price, fd, fng, r)
+        return r
+
+    if direction == "DOWN" and DOWN_PAUSED:
+        r = {
+            "asset": asset, "fire": False,
+            "reason": "DOWN paused 2026-10-09 (0W-4L; every fired DOWN was one-venue outlier funding)",
+            "avg": avg, "neg_count": fd["neg_count"], "pos_count": fd["pos_count"], "fng": fng,
+        }
+        _log_scan(asset, price, fd, fng, r, would_be="DOWN")
+        return r
 
     # Trend gate (octo_regime). This strategy is 3W-1L and the three wins were all
     # UP squeezes on red days inside a 7d uptrend -- the gate keeps those. The one
@@ -184,21 +261,23 @@ def score_asset(asset: str) -> dict:
     except Exception as _e:
         _ok, _why = False, f"trend gate error: {_e}"
     if not _ok:
-        return {
+        r = {
             "asset": asset, "fire": False, "reason": f"TREND GATE: {_why}",
             "avg": avg, "neg_count": fd["neg_count"], "pos_count": fd["pos_count"], "fng": fng,
         }
+        _log_scan(asset, price, fd, fng, r, would_be=direction)
+        return r
 
     mult   = 1 + TARGET_PCT / 100
     target = price * mult if direction == "UP" else price / mult
     edge   = abs(avg) / SELL_THRESHOLD  # normalized conviction
 
-    return {
+    r = {
         "asset":       asset,
         "fire":        True,
         "direction":   direction,
         "price":       price,
-        "target_price": round(target, 2),
+        "target_price": round_price(target),
         "timeframe":   TIMEFRAME,
         "note":        note,
         "fng":         fng,
@@ -215,27 +294,33 @@ def score_asset(asset: str) -> dict:
             "exchanges":       fd["exchanges"],
         },
     }
+    _log_scan(asset, price, fd, fng, r, would_be=direction)
+    return r
 
 
 def _post_text(r: dict) -> str:
+    from octo_calls import fmt_usd
     arrow = "^" if r["direction"] == "UP" else "v"
     bias  = "LONG" if r["direction"] == "UP" else "SHORT"
     count = r["neg_count"] if r["direction"] == "UP" else r["pos_count"]
     total = r["signals"]["total_exchanges"]
     label = "negative" if r["direction"] == "UP" else "positive"
-    tag   = "Shorts paying to stay short. Squeeze loading." if r["direction"] == "UP" \
-            else "Longs paying to stay long. Flush incoming."
+    tag   = ("Shorts paying to stay short, inside an uptrend. Research, not a trade instruction."
+             if r["direction"] == "UP" else "Research, not a trade instruction.")
 
     return (
-        f"{r['asset']} {arrow} {bias} -- Funding Extreme signal.\n\n"
-        f"Avg funding: {r['avg']*100:+.3f}%/8h ({count}/{total} exchanges {label})\n"
-        f"Entry: ${r['price']:,.0f} | Target: ${r['target_price']:,.0f} (+{TARGET_PCT:.0f}% / {TIMEFRAME})\n\n"
+        f"{r['asset']} {arrow} {bias} -- funding tilt, trend-gated.\n\n"
+        f"Funding: mean {r['avg']:+.4f}% / median {_median(r['signals']):+.4f}% per 8h "
+        f"({count}/{total} venues {label})\n"
+        f"Entry: {fmt_usd(r['price'])} | Target: {fmt_usd(r['target_price'])} "
+        f"({'+' if r['direction'] == 'UP' else '-'}{TARGET_PCT:.0f}% / {TIMEFRAME})\n\n"
         f"F&G: {r['fng']}\n\n"
         f"{tag}"
     )
 
 
 def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
+    from octo_calls import fmt_usd
     assets = [a.upper() for a in (assets or _ASSETS)]
     fired  = []
     print(f"\n[FundingExtreme] Scan | {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
@@ -258,6 +343,8 @@ def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
 
     for asset in assets:
         if _has_open_call(asset):
+            # Still score it so the scan log has every asset on every scan; just never fire.
+            score_asset(asset)
             print(f"[FundingExtreme] {asset}: open call exists -- skip")
             continue
 
@@ -269,7 +356,7 @@ def run_funding_extreme(assets: list = None, dry: bool = False) -> list:
 
         print(
             f"[FundingExtreme] {asset}: FIRE {result['direction']} | "
-            f"avg={result['avg']*100:+.3f}%/8h | target=${result['target_price']:,.0f}"
+            f"avg={result['avg']:+.4f}%/8h | target={fmt_usd(result['target_price'])}"
         )
 
         if dry:
@@ -325,7 +412,7 @@ def print_scores(assets: list = None):
     for asset in assets:
         r = score_asset(asset)
         fire = "FIRE" if r.get("fire") else "PASS"
-        detail = r.get("reason") or f"{r['direction']} | avg={r['avg']*100:+.3f}%/8h"
+        detail = r.get("reason") or f"{r['direction']} | avg={r['avg']:+.4f}%/8h"
         print(f"  {asset}: {fire} -- {detail}")
     print()
 

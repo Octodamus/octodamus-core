@@ -203,6 +203,12 @@ def run_check() -> dict:
         name   = proc["name"]
         script = proc["script"]
 
+        # Owner pause switch: data/pause_<name>.flag present -> leave it stopped (delete to resume).
+        if (PROJECT_DIR / "data" / f"pause_{name}.flag").exists():
+            results[name] = "paused"
+            log.info(f"[Watchdog] {name}: PAUSED by owner (data/pause_{name}.flag) -- not restarting")
+            continue
+
         pid = _find_pid(script)
         running = _is_running(pid)
 

@@ -420,7 +420,7 @@ def build_oracle_context(symbol: str = "BTC") -> str:
                 name = ex.get("exchange", "?")
                 rate = ex.get("funding_rate", 0) or 0
                 try:
-                    rate_pct = float(rate) * 100
+                    rate_pct = float(rate)  # Coinglass rates are already percent
                     direction = "LONGS PAY" if rate_pct > 0 else "SHORTS PAY"
                     lines.append(f"  {name}: {rate_pct:+.4f}% ({direction})")
                 except (ValueError, TypeError):
@@ -593,12 +593,13 @@ def get_stock_perp_signal(ticker: str) -> dict:
     if isinstance(fr, list) and fr:
         c = next((x for x in fr if x.get("symbol") == ticker), fr[0])
         ml = c.get("stablecoin_margin_list", []) if isinstance(c, dict) else []
-        tier1 = {e.get("exchange"): round(float(e.get("funding_rate", 0) or 0) * 100, 3)
+        # Coinglass rates are already percent per 8h; the old x100 overstated them 100x.
+        tier1 = {e.get("exchange"): round(float(e.get("funding_rate", 0) or 0), 4)
                  for e in ml if e.get("exchange") in ("Binance", "OKX", "Bybit")
                  and e.get("funding_rate") is not None}
         if tier1:
             out["funding_tier1_pct"] = tier1
-            out["funding_tier1_avg_pct"] = round(sum(tier1.values()) / len(tier1), 3)
+            out["funding_tier1_avg_pct"] = round(sum(tier1.values()) / len(tier1), 4)
 
     oi = open_interest_exchange(ticker)
     if isinstance(oi, list) and oi:
@@ -634,8 +635,8 @@ def get_stock_perp_context(ticker: str) -> str:
     t = s["ticker"]
     lines = [f"=== {t} PERP DERIVATIVES (Coinglass, verified) ==="]
     if "funding_tier1_pct" in s:
-        fr = ", ".join(f"{k} {v:+.2f}%" for k, v in s["funding_tier1_pct"].items())
-        lines.append(f"Funding (tier-1, current): {fr} | avg {s['funding_tier1_avg_pct']:+.2f}%")
+        fr = ", ".join(f"{k} {v:+.4f}%" for k, v in s["funding_tier1_pct"].items())
+        lines.append(f"Funding (tier-1, current, % per 8h): {fr} | avg {s['funding_tier1_avg_pct']:+.4f}%")
     if "oi_usd" in s:
         oi_str = f"${s['oi_usd']/1e9:.2f}B" if s["oi_usd"] >= 1e9 else f"${s['oi_usd']/1e6:.0f}M"
         line = f"Open interest: {oi_str} total"
@@ -666,7 +667,8 @@ def get_stock_perp_digest(max_tickers: int = 3) -> str:
         if not s:
             continue
         crowd = abs(s.get("long_pct", 50) - 50)                 # 0..50, higher = more one-sided
-        fund = abs(s.get("funding_tier1_avg_pct", 0))           # funding extremity
+        fund = abs(s.get("funding_tier1_avg_pct", 0)) * 100     # funding extremity (x100 keeps the
+                                                                 # weight it was tuned on; units fixed 2026-10-09)
         score = crowd + fund * 2
         scored.append((score, tk, s))
     scored.sort(reverse=True)
@@ -738,12 +740,13 @@ class AlertEngine:
                     pass
             if rates:
                 avg_rate = sum(rates) / len(rates)
-                if abs(avg_rate) > 0.0005:  # >0.05% per 8h = extreme
+                if abs(avg_rate) > 0.05:  # >0.05% per 8h = extreme (rates are already percent;
+                                          # 0.0005 fired on almost any funding until 2026-10-09)
                     direction = "LONGS OVERHEATED" if avg_rate > 0 else "SHORTS OVERHEATED"
                     alerts.append({
                         "type": "funding_extreme",
                         "severity": 2,
-                        "message": f"{symbol} funding extreme: avg {avg_rate*100:+.4f}% — {direction}",
+                        "message": f"{symbol} funding extreme: avg {avg_rate:+.4f}% per 8h — {direction}",
                         "data": {"avg_rate": avg_rate},
                     })
 

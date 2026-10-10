@@ -100,15 +100,18 @@ def fetch_hype_coinglass() -> dict:
         oi_data = glass.open_interest("HYPE", interval="4h")
         fr_data = glass.funding_rate("HYPE", interval="8h")
 
-        oi_list = oi_data.get("data", [])
-        fr_list = fr_data.get("data", [])
+        # Both come back as OHLC bar lists (oldest first), not {"data": [...]} -- the old
+        # .get("data") raised on every call, so HYPE never had OI or funding. Funding bars are
+        # already in percent per 8h.
+        oi_list = oi_data if isinstance(oi_data, list) else (oi_data or {}).get("data", [])
+        fr_list = fr_data if isinstance(fr_data, list) else (fr_data or {}).get("data", [])
 
-        oi_usd  = oi_list[-1].get("openInterest", 0) if oi_list else 0
-        fr_val  = fr_list[-1].get("fundingRate", 0)  if fr_list else 0
+        oi_usd = oi_list[-1].get("close", oi_list[-1].get("openInterest", 0)) if oi_list else 0
+        fr_val = fr_list[-1].get("close", fr_list[-1].get("fundingRate", 0)) if fr_list else 0
 
         return {
             "oi_usd":       round(float(oi_usd), 0),
-            "funding_rate": round(float(fr_val) * 100, 4),  # as %
+            "funding_rate": round(float(fr_val), 4),  # percent per 8h
         }
     except Exception as e:
         log.debug(f"[HYPE] CoinGlass fetch failed (may not be in plan): {e}")

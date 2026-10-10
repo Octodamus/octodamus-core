@@ -11,6 +11,7 @@ CLI:
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -99,7 +100,7 @@ def _fetch_market_snapshot(asset: str, price: float) -> dict:
             from octo_funding_extreme import _fetch_funding
             fd = _fetch_funding(asset.upper())
             if fd.get("ok"):
-                snap["funding_rate_pct"] = round(fd["avg"] * 100, 4)
+                snap["funding_rate_pct"] = round(fd["avg"], 4)  # Coinglass rates are already percent
         except Exception:
             pass
         try:
@@ -345,8 +346,40 @@ def _timeframe_hours(tf: str) -> Optional[float]:
     return None
 
 
-def call_policy_check(asset: str, direction: str, timeframe: str) -> tuple[bool, str]:
+def round_price(p: float) -> float:
+    """Round to ~4 significant figures, never fewer than 2 decimals. round(x, 2) turned
+    DOGE's $0.0863 DOWN target into $0.09 -- above entry (call #67)."""
+    if not p:
+        return p
+    return round(p, max(2, 3 - math.floor(math.log10(abs(p)))))
+
+
+def fmt_usd(p: float) -> str:
+    """'$87,123.45' / '$0.08627' -- ',.0f' printed DOGE as '$0'."""
+    if not p:
+        return "$0"
+    return f"${p:,.{max(2, 3 - math.floor(math.log10(abs(p))))}f}"
+
+
+def target_side_problem(direction: str, entry: Optional[float], target: Optional[float]) -> str:
+    """'' if the target sits on the called side of entry, else the reason it doesn't."""
+    if not target or not entry:
+        return ""
+    d = (direction or "").upper()
+    if d == "UP" and target <= entry:
+        return f"UP target {fmt_usd(target)} is not above entry {fmt_usd(entry)}"
+    if d == "DOWN" and target >= entry:
+        return f"DOWN target {fmt_usd(target)} is not below entry {fmt_usd(entry)}"
+    return ""
+
+
+def call_policy_check(asset: str, direction: str, timeframe: str,
+                      entry_price: Optional[float] = None,
+                      target_price: Optional[float] = None) -> tuple[bool, str]:
     """(ok, reason). Fails closed: no trend data means no call."""
+    side = target_side_problem(direction, entry_price, target_price)
+    if side:
+        return (False, side)
     hours = _timeframe_hours(timeframe)
     if hours is not None and hours < MIN_CALL_HOURS:
         return (False, f"timeframe {timeframe!r} is under the {MIN_CALL_HOURS}h minimum (24h re-simulated 12W-20L, 48h 15W-17L)")
@@ -402,7 +435,7 @@ def record_call(
                 print(f"[OctoCalls] Skipped -- already have open {direction.upper()} call on {asset.upper()} (#{c['id']})")
             return c
 
-    ok, why = call_policy_check(asset, direction, timeframe)
+    ok, why = call_policy_check(asset, direction, timeframe, entry_price, target_price)
     if not ok:
         _reject_call(f"{asset.upper()} {direction.upper()} [{timeframe}]", why)
         return None
@@ -612,17 +645,21 @@ def _is_expired(call: dict) -> bool:
 
 
 def _target_hit_during_window(call: dict) -> Optional[float]:
-    """If a crypto call's target was TOUCHED at any point during [made_at, expiry], return the
-    target price; else None. This fixes the point-in-time blind spot: a call that spiked to its
-    target intraday then retraced is a WIN, but autoresolve's single current-price check misses it.
+    """If a call's target was TOUCHED at any point during [made_at, expiry], return the target
+    price; else None. This fixes the point-in-time blind spot: a call that spiked to its target
+    intraday then retraced is a WIN, but autoresolve's single current-price check misses it.
 
-    Crypto only (CoinGecko historical range). Returns None for stocks, missing target, unparseable
-    dates, or any fetch failure -- callers then fall back to the current-price settle path.
+    Crypto: CoinGecko historical range. Stocks (since 2026-10-09): Yahoo hourly high/low bars.
+    Before that, stocks were judged at expiry only -- #66 TSLA DOWN traded through its 349.43
+    target (hour low 345.88) and still settled a LOSS at 355.13, while a crypto call doing the
+    same would have won. Published outcomes are not re-scored; this applies to calls resolved
+    from now on. Returns None for a missing target, unparseable dates, or any fetch failure --
+    callers then fall back to the current-price settle path.
     """
     asset = call.get("asset", "").upper()
     tgt = call.get("target_price")
     direction = call.get("direction", "").upper()
-    if asset not in _CG_IDS or not tgt or direction not in ("UP", "DOWN"):
+    if not tgt or direction not in ("UP", "DOWN"):
         return None
     try:
         made_dt = datetime.strptime(call.get("made_at", ""), "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
@@ -631,24 +668,46 @@ def _target_hit_during_window(call: dict) -> Optional[float]:
     end_dt = _expiry_dt(call)
     if not end_dt:
         return None
-    try:
-        import requests
-        r = requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{_CG_IDS[asset]}/market_chart/range",
-            params={"vs_currency": "usd", "from": int(made_dt.timestamp()), "to": int(end_dt.timestamp())},
-            headers=_cg_headers(), timeout=15,
-        )
-        if r.status_code != 200:
+    if asset in _CG_IDS:
+        try:
+            import requests
+            r = requests.get(
+                f"https://api.coingecko.com/api/v3/coins/{_CG_IDS[asset]}/market_chart/range",
+                params={"vs_currency": "usd", "from": int(made_dt.timestamp()), "to": int(end_dt.timestamp())},
+                headers=_cg_headers(), timeout=15,
+            )
+            if r.status_code != 200:
+                return None
+            prices = [p[1] for p in (r.json().get("prices") or []) if p and p[1]]
+            lows = highs = prices
+        except Exception:
             return None
-        prices = [p[1] for p in (r.json().get("prices") or []) if p and p[1]]
-        if not prices:
+    else:
+        # Stocks: regular-session hourly bars. Off-hours tokenized trading is not covered, so a
+        # touch that only happened overnight is missed -- conservative, never a false WIN.
+        try:
+            import yfinance as yf
+            df = yf.Ticker(asset).history(start=made_dt.strftime("%Y-%m-%d"),
+                                          end=(end_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+                                          interval="1h")
+            if df is None or df.empty:
+                return None
+            idx = df.index.tz_convert("UTC") if df.index.tz is not None else df.index.tz_localize("UTC")
+            w = df[(idx >= made_dt) & (idx <= end_dt)]
+            lows, highs = [float(x) for x in w["Low"].dropna()], [float(x) for x in w["High"].dropna()]
+        except Exception:
             return None
-    except Exception:
+    if not lows or not highs:
         return None
     tgt = float(tgt)
-    if direction == "UP" and max(prices) >= tgt:
+    # A target on the wrong side of entry (#67: DOWN, entry $0.0889, target $0.09) is "touched"
+    # at once and settles at the target -- a guaranteed LOSS whatever price does. Ignore it
+    # and let the >=1% expiry rule decide.
+    if target_side_problem(direction, call.get("entry_price"), tgt):
+        return None
+    if direction == "UP" and max(highs) >= tgt:
         return tgt
-    if direction == "DOWN" and min(prices) <= tgt:
+    if direction == "DOWN" and min(lows) <= tgt:
         return tgt
     return None
 
@@ -721,7 +780,7 @@ def autoresolve() -> list:
         if not _is_expired(c):
             continue
         asset = c["asset"].upper()
-        # Target-hit takes precedence: a crypto call whose target was touched anywhere in its
+        # Target-hit takes precedence: a call (crypto or stock) whose target was touched anywhere in its
         # window is a WIN, even if price later retraced below the target by the time we check.
         # resolve at the target price (which is by construction a >=1% move, so resolve_call
         # marks it WIN). None -> target not hit / not crypto / no historical data -> settle below.
@@ -978,7 +1037,8 @@ def commit_call_onchain(call: dict, post_fn=None) -> Optional[str]:
     """
     from octo_oracle_registry import publish_prediction
     label = f"{call.get('call_type','?')} {call.get('asset','?')} {call.get('direction','?')} [{call.get('timeframe','?')}]"
-    ok, why = call_policy_check(call.get("asset", ""), call.get("direction", ""), call.get("timeframe", ""))
+    ok, why = call_policy_check(call.get("asset", ""), call.get("direction", ""), call.get("timeframe", ""),
+                                call.get("entry_price"), call.get("target_price"))
     if not ok:
         _reject_call(label, why)
         return None

@@ -455,7 +455,7 @@ def _check_smart_call():
             _fetch_coinglass_compact, fetch_technicals_mtf,
         )
         from octo_calls import (
-            record_call, _load,
+            record_call, _load, round_price,
             get_recent_win_rate, get_direction_concentration, time_quality_score,
         )
         try:
@@ -599,9 +599,31 @@ def _check_smart_call():
 
         import re as _re
 
+        # Every oracle evaluation of BTC/ETH/SOL is appended to data/oracle_eval_log.jsonl -- called,
+        # skipped, rejected or errored -- with the raw inputs to directional_call and the skip reason,
+        # so a shadow brain and any backtest can see the setups the oracle did NOT take. Logging only:
+        # a write failure never changes the call path.
+        _ev = None
+        def _flush_ev(ev):
+            if not ev:
+                return
+            try:
+                import json as _ej
+                from pathlib import Path as _eP
+                _lp = _eP(__file__).parent / "data" / "oracle_eval_log.jsonl"
+                with _lp.open("a", encoding="utf-8") as _lf:
+                    _lf.write(_ej.dumps(ev, default=str) + "\n")
+            except Exception as _le:
+                print(f"[SmartCall] eval log write failed (call path unaffected): {_le}")
+
+        from datetime import timezone as _etz
         for asset in ("BTC", "ETH", "SOL"):
+            _flush_ev(_ev)
+            _ev = {"ts": datetime.now(_etz.utc).isoformat(timespec="seconds"),
+                   "log_version": 1, "asset": asset, "decision": "SKIP", "skip": None}
             if asset in open_oracle:
                 print(f"[SmartCall] {asset}: open call exists — skipping.")
+                _ev["skip"] = f"[SmartCall] {asset}: open call exists — skipping."
                 continue
 
             try:
@@ -660,6 +682,12 @@ def _check_smart_call():
                             bear_count = int(_sig_m.group(1))
                             bull_count = 11 - bear_count
                 edge_score = (bull_count - bear_count) / 11.0
+                _ev.update({
+                    "price": price, "chg_24h": chg_24h, "fng": fng,
+                    "call_str": call_str, "bull": bull_count, "bear": bear_count, "edge": edge_score,
+                    "inputs": {"ta": ta, "deriv": deriv, "coinglass": cg,
+                               "binance_delta": _asset_delta, "tradingview": _asset_tv},
+                })
 
                 # Direction gate — STRONG only
                 if "STRONG UP" in call_str:
@@ -668,6 +696,7 @@ def _check_smart_call():
                     direction = "DOWN"
                 else:
                     print(f"[SmartCall] {asset}: not STRONG — no call. ({call_str[:60]})")
+                    _ev["skip"] = f"[SmartCall] {asset}: not STRONG — no call. ({call_str[:60]})"
                     continue
 
                 # Direction correlation guard (prior upgrade)
@@ -675,11 +704,13 @@ def _check_smart_call():
                 if already_same_dir >= 2:
                     if max(bull_count, bear_count) < 9:
                         print(f"[SmartCall] {asset}: {direction} correlated — requires 9+ signals. Skipping.")
+                        _ev["skip"] = f"[SmartCall] {asset}: {direction} correlated — requires 9+ signals. Skipping."
                         continue
 
                 # Weekend: raise bar to 8+
                 if tq == "weekend" and max(bull_count, bear_count) < 8:
                     print(f"[SmartCall] {asset}: weekend requires 8+ signals — skipping.")
+                    _ev["skip"] = f"[SmartCall] {asset}: weekend requires 8+ signals — skipping."
                     continue
 
                 # ── #2: Multi-timeframe alignment ────────────────────────────
@@ -691,12 +722,14 @@ def _check_smart_call():
                         # MTF disagrees — require 9+ for conviction
                         if max(bull_count, bear_count) < 9:
                             print(f"[SmartCall] {asset}: MTF mixed ({alignment}) — requires 9+. Skipping.")
+                            _ev["skip"] = f"[SmartCall] {asset}: MTF mixed ({alignment}) — requires 9+. Skipping."
                             continue
                     elif alignment in ("aligned_up", "aligned_down"):
                         # Check alignment matches direction
                         if (alignment == "aligned_up" and direction == "DOWN") or \
                            (alignment == "aligned_down" and direction == "UP"):
                             print(f"[SmartCall] {asset}: MTF {alignment} contradicts {direction} — skipping.")
+                            _ev["skip"] = f"[SmartCall] {asset}: MTF {alignment} contradicts {direction} — skipping."
                             continue
                         print(f"[SmartCall] {asset}: MTF {alignment} — confirmed.")
                 except Exception as mtf_e:
@@ -707,6 +740,7 @@ def _check_smart_call():
                 win_threshold = vol_regime.get("win_threshold_pct", 1.0)
                 if regime in ("HIGH", "EXTREME") and max(bull_count, bear_count) < 9:
                     print(f"[SmartCall] {asset}: {regime} vol regime requires 9+ signals — skipping.")
+                    _ev["skip"] = f"[SmartCall] {asset}: {regime} vol regime requires 9+ signals — skipping."
                     continue
 
                 # ── Timeframe selection (signal-driven, 48h–7d) ───────────────
@@ -746,6 +780,7 @@ def _check_smart_call():
                        (oc_sig == "bull" and direction == "DOWN"):
                         if max(bull_count, bear_count) < 9:
                             print(f"[SmartCall] {asset}: on-chain contradicts {direction} — skipping.")
+                            _ev["skip"] = f"[SmartCall] {asset}: on-chain contradicts {direction} — skipping."
                             continue
                 except Exception:
                     pass
@@ -808,6 +843,7 @@ def _check_smart_call():
                     hist_wr = pat.get("win_rate")
                     if hist_wr is not None and hist_wr < 0.50 and pat.get("similar_calls", 0) >= 5:
                         print(f"[SmartCall] {asset}: historical pattern win rate {hist_wr:.0%} on {pat['similar_calls']} calls — skipping.")
+                        _ev["skip"] = f"[SmartCall] {asset}: historical pattern win rate {hist_wr:.0%} on {pat['similar_calls']} calls — skipping."
                         continue
                 except Exception:
                     pass
@@ -901,6 +937,7 @@ def _check_smart_call():
                     if lc.get("available"):
                         if lc["diverges"] and max(bull_count, bear_count) < 9:
                             print(f"[SmartCall] {asset}: LunarCrush social diverges ({lc['signal']}) — requires 9+ signals. Skipping.")
+                            _ev["skip"] = f"[SmartCall] {asset}: LunarCrush social diverges ({lc['signal']}) — requires 9+ signals. Skipping."
                             continue
                         elif lc["diverges"]:
                             print(f"[SmartCall] {asset}: LunarCrush social diverges ({lc['signal']}) — noting, proceeding (9+ signals).")
@@ -948,7 +985,7 @@ def _check_smart_call():
 
                 # Adjust target based on vol regime
                 target_pct = max(win_threshold / 100, 0.01)
-                target = round(price * (1 + target_pct), 0) if direction == "UP" else round(price * (1 - target_pct), 0)
+                target = round_price(price * (1 + target_pct)) if direction == "UP" else round_price(price * (1 - target_pct))
 
                 print(f"[SmartCall] STRONG {asset} {direction} @ ${price:,.2f} | edge={edge_score:+.2f} | mtf={mtf.get('alignment','?')} | vol={regime}")
                 rec = record_call(
@@ -958,6 +995,9 @@ def _check_smart_call():
                     edge_score=edge_score,
                     time_quality=tq,
                 )
+                _ev.update({"direction": direction, "target": target, "timeframe": _timeframe,
+                            "decision": "CALL" if rec else "REJECTED_AT_RECORD",
+                            "call_id": (rec or {}).get("id")})
                 if rec:
                     results.append(rec)
                     # Log call onchain for verifiable reputation (#1)
@@ -978,7 +1018,10 @@ def _check_smart_call():
 
             except Exception as asset_e:
                 print(f"[SmartCall] {asset} error: {asset_e}")
+                _ev.update({"decision": "ERROR", "skip": f"error: {asset_e}"})
                 continue
+        _flush_ev(_ev)
+        _ev = None
 
         # ── WTI Crude Oil oracle ──────────────────────────────────────────────
         # 8-signal: EMA/RSI/MACD/52w + COT + term structure + DXY + news.

@@ -96,6 +96,7 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
     Run the 6-signal ranging oracle for one asset.
     Returns: {asset, direction, score, bull, bear, signals, timeframe, fire}
     """
+    from octo_calls import round_price
     from octo_report_handlers import fetch_technicals, fetch_derivatives, directional_call, _fetch_coinglass_compact
     from octo_tradingview import get_tv_signal
 
@@ -235,7 +236,7 @@ def _score_asset(asset: str, price: float, chg_24h: float, fng: int, dry: bool =
         "bull":         bull,
         "bear":         bear,
         "timeframe":    timeframe,
-        "target_price": round(target_price, 2),
+        "target_price": round_price(target_price),
         "target_pct":   target_pct,
         "edge_score":   round(edge_score, 3),
         "signals":      signals,

@@ -3430,13 +3430,21 @@ def get_full(target_date: Optional[str] = None, key=Depends(require_key)):
 
 # â"€â"€ Admin â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-ADMIN_SECRET = os.environ.get("OCTODATA_ADMIN_SECRET", "change-me-in-bitwarden")
+# No default: a hard-coded fallback was the live admin password while the variable was unset
+# on the OctoDataAPI service. Unset now means every admin route refuses, never "matches".
+ADMIN_SECRET = os.environ.get("OCTODATA_ADMIN_SECRET", "")
+
+
+def _require_admin(admin_secret: str) -> None:
+    if not ADMIN_SECRET:
+        raise HTTPException(status_code=503, detail="Admin disabled: OCTODATA_ADMIN_SECRET not set")
+    if not secrets.compare_digest(admin_secret.encode(), ADMIN_SECRET.encode()):
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
 
 
 @app.post("/admin/keys/create", tags=["Admin"])
 def create_key(label: str, tier: str = "basic", days: int = 30, admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     if tier not in ("basic", "pro", "premium", "admin"):
         raise HTTPException(status_code=400, detail="tier must be basic|pro|admin")
     new_key = "octo_" + secrets.token_urlsafe(24)
@@ -3453,16 +3461,14 @@ def create_key(label: str, tier: str = "basic", days: int = 30, admin_secret: st
 
 @app.get("/admin/keys/list", tags=["Admin"])
 def list_keys(admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     keys = load_keys()
     return {k[:12] + "â€¦": v for k, v in keys.items()}
 
 
 @app.delete("/admin/keys/revoke", tags=["Admin"])
 def revoke_key(api_key: str, admin_secret: str = ""):
-    if admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    _require_admin(admin_secret)
     keys = load_keys()
     if api_key not in keys:
         raise HTTPException(status_code=404, detail="Key not found")
@@ -6621,10 +6627,33 @@ _SUBARC_META = {
 
 _SUBARC_DRAFTS = Path(__file__).parent / ".agents" / "profit-agent" / "drafts"
 
+_SUBARC_MAX_AGE_H = 48
+
+
 def _serve_subarc_brief(agent_key: str, request: Request):
     meta = _SUBARC_META.get(agent_key)
     if not meta:
         raise HTTPException(status_code=404, detail=f"Unknown sub-agent: {agent_key}")
+
+    # Never bill for a missing or stale brief. These checks run BEFORE the 402 challenge and
+    # before settlement: previously payment settled first, so a buyer could pay and get
+    # "no_brief_yet". The sub-agents were paused 2026-10-10, so briefs now age out.
+    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
+    if not files:
+        return JSONResponse({
+            "agent": meta["display"], "status": "no_brief_yet",
+            "service_available": False, "billable": False,
+            "message": "No brief available. Nothing was charged.",
+        }, status_code=503)
+    latest = files[-1]
+    _age_h = (datetime.utcnow() - datetime.utcfromtimestamp(latest.stat().st_mtime)).total_seconds() / 3600
+    if _age_h > _SUBARC_MAX_AGE_H:
+        return JSONResponse({
+            "agent": meta["display"], "status": "stale",
+            "service_available": False, "billable": False,
+            "latest_brief_age_hours": round(_age_h, 1),
+            "message": f"Latest brief is {_age_h:.0f}h old (limit {_SUBARC_MAX_AGE_H}h). Not sold stale. Nothing was charged.",
+        }, status_code=503)
 
     x_payment = (
         request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature")
@@ -6651,15 +6680,6 @@ def _serve_subarc_brief(agent_key: str, request: Request):
 
     _x402_verify_settle(request, meta["reqs"])
 
-    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
-    if not files:
-        return JSONResponse({
-            "agent":   meta["display"],
-            "status":  "no_brief_yet",
-            "message": "Brief generates at 5:30am PST daily. Check back after next session.",
-        }, status_code=503)
-
-    latest   = files[-1]
     date_str = latest.stem[len(agent_key) + 1:]  # strip "agent_key_"
     content  = latest.read_text(encoding="utf-8")
 
@@ -6692,8 +6712,12 @@ def subarc_brief_preview(agent_key: str):
 
     files   = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
     sample  = files[-1].read_text(encoding="utf-8")[:300] + "..." if files else "No brief yet — runs at 5:30am PST."
+    _age_h  = ((datetime.utcnow() - datetime.utcfromtimestamp(files[-1].stat().st_mtime)).total_seconds() / 3600
+               if files else None)
     return {
         "agent":        meta["display"],
+        "available":    bool(files) and _age_h <= _SUBARC_MAX_AGE_H,
+        "latest_brief_age_hours": round(_age_h, 1) if _age_h is not None else None,
         "price_usdc":   meta["price"],
         "buy":          f"GET https://api.octodamus.com/v2/agents/{agent_key}/brief (x402 ${meta['price']:.2f} USDC)",
         "what_it_does": meta["desc"],
@@ -9836,6 +9860,43 @@ _LLMS_TXT = """# Octodamus Market Intelligence API
 
 > Real-time crypto market intelligence for autonomous AI agents. Oracle trading signals (9/11 consensus), Fear & Greed index, Polymarket prediction market edge plays, BTC trend, and macro sentiment across 27 live data feeds. Designed for 15-minute AI agent poll cycles. x402 native: agents pay $29 USDC on Base, receive an API key automatically — no human required.
 
+
+## AGENT QUICKSTART — read this first (updated 2026-10-10)
+
+You can buy from Octodamus per call with x402 on Base. No account, no API key, no signup.
+
+1. Start free (no payment):
+   - GET https://api.octodamus.com/tools/scorecard — the verified record: wins, losses, n, open.
+   - GET https://api.octodamus.com/api/calls — every published call with its Base tx hash.
+   - GET https://api.octodamus.com/v2/demo — signal preview.
+   - GET https://api.octodamus.com/.well-known/x402.json — every paid route and its price.
+
+2. Make a paid call (x402 v2):
+   - Network: Base mainnet (eip155:8453)
+   - Asset: USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+   - Pay to: 0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db
+   a. GET https://api.octodamus.com/v2/x402/agent-signal → HTTP 402. The payment requirements
+      are in the `payment-required` response header (base64 JSON) and in the JSON body under
+      `accepts`. Price: 10000 raw = $0.01 USDC.
+   b. Sign an EIP-3009 transferWithAuthorization for exactly that amount to the pay-to address.
+   c. Repeat the same GET with header `PAYMENT-SIGNATURE: <base64 payment payload>`
+      (`X-PAYMENT` is also accepted).
+   d. The JSON response is Ed25519-signed. Verify `.signature` with the public key published
+      in /.well-known/x402.json under `signing`.
+   Any x402 client (Coinbase x402 SDK, x402-fetch, x402-axios, the x402 Python package) does
+   steps a–c for you.
+
+3. Other ways in:
+   - MCP: https://api.octodamus.com/mcp (Streamable HTTP; tools/list is free).
+   - Agent-to-agent jobs: ACP on Virtuals (Base).
+
+4. What to expect:
+   - Every output is research, not a trade instruction.
+   - If a required data source is down or stale, a paid endpoint should answer 503 with
+     "billable": false instead of charging you.
+   - The track record is live at /tools/scorecard. Only calls with a Base tx hash count.
+   - Do not buy right now: /v2/grok/*, /v2/ben/*, /v2/x_sentiment/* (their X-sentiment source
+     is switched off) and /v2/agents/*/brief once its preview shows "available": false.
 ## Quick Start
 
 - [API Documentation](https://api.octodamus.com/docs): Interactive Swagger docs — all endpoints, schemas, and try-it-now

@@ -18,12 +18,20 @@ Both run in `octo_calls.call_policy_check()`, called by `record_call()` AND
 `commit_call_onchain()`. Every strategy also calls the gate early (before Coinglass/gas).
 A rejected call prints `REJECTED by call policy` and emails via octo_notify.
 
+## Target touch: same rule for crypto and stocks (2026-10-09)
+`_target_hit_during_window()` credits a target touched anywhere in the call window: crypto via
+the CoinGecko range, stocks via Yahoo hourly high/low (regular session only, so an overnight-only
+touch is missed -- conservative). Until 2026-10-09 stocks were judged at expiry only, so #66 TSLA
+DOWN traded through 349.43 (low 345.88) and settled a LOSS at 355.13. It stays a LOSS: published
+outcomes are never re-scored. Of the 8 resolved stock calls with a target, #66 is the only one
+the old asymmetry changed.
+
 ## What the backtest showed (in-sample, small N — treat as direction, not precision)
 - Actual: 10W-22L (31%). Trend-opposed calls: 0W-7L. Removing them: 10W-15L (40%).
 - DOWN outside a confirmed downtrend: 2W-13L. Strict gate survivors: 8W-9L (47%).
 - Same calls re-simulated at 6h: 1W-31L; 24h: 12W-20L; 48h: 15W-17L.
 - range_scout 6h book 0W-9L; the same setups at 24h 5W-4L. It now uses 24h / 2% target.
-- funding_extreme (3W-1L) is the only strategy with edge: UP squeezes on red days inside a
+- [Superseded 2026-10-09: now 7W-4L, UP 7-0 / DOWN 0-4; the edge looks like trend, not funding -- see the strategy table. DOWN paused.] funding_extreme (3W-1L) is the only strategy with edge: UP squeezes on red days inside a
   7d uptrend. The gate keeps all three wins and blocks the one loss (#53 SUI DOWN).
 - crowd_fade 2W-8L. The May losses (#32-37) fired DOWN after -8..-11% weeks: a crowd long
   AFTER a flush is capitulating, not trapped. The gate does not fix crowd_fade; the circuit
@@ -45,7 +53,7 @@ A rejected call prints `REJECTED by call policy` and emails via octo_notify.
 ## Strategy status
 | strategy        | record  | task            | notes |
 |-----------------|---------|-----------------|-------|
-| funding_extreme | 3W-1L   | every 4h        | keep; gated; 48h |
+| funding_extreme | 7W-4L   | every 4h        | **UP only** -- DOWN paused 2026-10-09 (0W-4L). All 7 wins were UP in uptrends; every fired call's mean was pulled over the threshold by one venue at 9-37x baseline while the median sat near zero, so the edge is trend, not funding. Every scan is logged to `data/funding_scan_log.jsonl` for a real backtest. Public wording: "funding tilt, trend-gated", never "extreme". |
 | stock_extreme   | 0W-1L   | every 2h        | trend-aligned by design; gated again at record time; 48h |
 | oracle (13-sig) | 5W-7L   | monitor 7am/4pm | STRONG threshold + MTF; gated at record time |
 | range_scout     | 1W-8L   | **Disabled**    | 48h/2% + gate now; re-enable only after a fresh look |
