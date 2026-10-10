@@ -31,7 +31,7 @@ the old asymmetry changed.
 - DOWN outside a confirmed downtrend: 2W-13L. Strict gate survivors: 8W-9L (47%).
 - Same calls re-simulated at 6h: 1W-31L; 24h: 12W-20L; 48h: 15W-17L.
 - range_scout 6h book 0W-9L; the same setups at 24h 5W-4L. It now uses 24h / 2% target.
-- funding_extreme (3W-1L) is the only strategy with edge: UP squeezes on red days inside a
+- [Superseded 2026-10-09: now 7W-4L, UP 7-0 / DOWN 0-4; the edge looks like trend, not funding -- see the strategy table. DOWN paused.] funding_extreme (3W-1L) is the only strategy with edge: UP squeezes on red days inside a
   7d uptrend. The gate keeps all three wins and blocks the one loss (#53 SUI DOWN).
 - crowd_fade 2W-8L. The May losses (#32-37) fired DOWN after -8..-11% weeks: a crowd long
   AFTER a flush is capitulating, not trapped. The gate does not fix crowd_fade; the circuit
