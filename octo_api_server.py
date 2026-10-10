@@ -6627,10 +6627,33 @@ _SUBARC_META = {
 
 _SUBARC_DRAFTS = Path(__file__).parent / ".agents" / "profit-agent" / "drafts"
 
+_SUBARC_MAX_AGE_H = 48
+
+
 def _serve_subarc_brief(agent_key: str, request: Request):
     meta = _SUBARC_META.get(agent_key)
     if not meta:
         raise HTTPException(status_code=404, detail=f"Unknown sub-agent: {agent_key}")
+
+    # Never bill for a missing or stale brief. These checks run BEFORE the 402 challenge and
+    # before settlement: previously payment settled first, so a buyer could pay and get
+    # "no_brief_yet". The sub-agents were paused 2026-10-10, so briefs now age out.
+    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
+    if not files:
+        return JSONResponse({
+            "agent": meta["display"], "status": "no_brief_yet",
+            "service_available": False, "billable": False,
+            "message": "No brief available. Nothing was charged.",
+        }, status_code=503)
+    latest = files[-1]
+    _age_h = (datetime.utcnow() - datetime.utcfromtimestamp(latest.stat().st_mtime)).total_seconds() / 3600
+    if _age_h > _SUBARC_MAX_AGE_H:
+        return JSONResponse({
+            "agent": meta["display"], "status": "stale",
+            "service_available": False, "billable": False,
+            "latest_brief_age_hours": round(_age_h, 1),
+            "message": f"Latest brief is {_age_h:.0f}h old (limit {_SUBARC_MAX_AGE_H}h). Not sold stale. Nothing was charged.",
+        }, status_code=503)
 
     x_payment = (
         request.headers.get("PAYMENT-SIGNATURE") or request.headers.get("Payment-Signature")
@@ -6657,15 +6680,6 @@ def _serve_subarc_brief(agent_key: str, request: Request):
 
     _x402_verify_settle(request, meta["reqs"])
 
-    files = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
-    if not files:
-        return JSONResponse({
-            "agent":   meta["display"],
-            "status":  "no_brief_yet",
-            "message": "Brief generates at 5:30am PST daily. Check back after next session.",
-        }, status_code=503)
-
-    latest   = files[-1]
     date_str = latest.stem[len(agent_key) + 1:]  # strip "agent_key_"
     content  = latest.read_text(encoding="utf-8")
 
@@ -6698,8 +6712,12 @@ def subarc_brief_preview(agent_key: str):
 
     files   = sorted(_SUBARC_DRAFTS.glob(f"{agent_key}_*.md"))
     sample  = files[-1].read_text(encoding="utf-8")[:300] + "..." if files else "No brief yet — runs at 5:30am PST."
+    _age_h  = ((datetime.utcnow() - datetime.utcfromtimestamp(files[-1].stat().st_mtime)).total_seconds() / 3600
+               if files else None)
     return {
         "agent":        meta["display"],
+        "available":    bool(files) and _age_h <= _SUBARC_MAX_AGE_H,
+        "latest_brief_age_hours": round(_age_h, 1) if _age_h is not None else None,
         "price_usdc":   meta["price"],
         "buy":          f"GET https://api.octodamus.com/v2/agents/{agent_key}/brief (x402 ${meta['price']:.2f} USDC)",
         "what_it_does": meta["desc"],
