@@ -9860,6 +9860,43 @@ _LLMS_TXT = """# Octodamus Market Intelligence API
 
 > Real-time crypto market intelligence for autonomous AI agents. Oracle trading signals (9/11 consensus), Fear & Greed index, Polymarket prediction market edge plays, BTC trend, and macro sentiment across 27 live data feeds. Designed for 15-minute AI agent poll cycles. x402 native: agents pay $29 USDC on Base, receive an API key automatically — no human required.
 
+
+## AGENT QUICKSTART — read this first (updated 2026-10-10)
+
+You can buy from Octodamus per call with x402 on Base. No account, no API key, no signup.
+
+1. Start free (no payment):
+   - GET https://api.octodamus.com/tools/scorecard — the verified record: wins, losses, n, open.
+   - GET https://api.octodamus.com/api/calls — every published call with its Base tx hash.
+   - GET https://api.octodamus.com/v2/demo — signal preview.
+   - GET https://api.octodamus.com/.well-known/x402.json — every paid route and its price.
+
+2. Make a paid call (x402 v2):
+   - Network: Base mainnet (eip155:8453)
+   - Asset: USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+   - Pay to: 0x5c6B3a3dAe296d3cef50fef96afC73410959a6Db
+   a. GET https://api.octodamus.com/v2/x402/agent-signal → HTTP 402. The payment requirements
+      are in the `payment-required` response header (base64 JSON) and in the JSON body under
+      `accepts`. Price: 10000 raw = $0.01 USDC.
+   b. Sign an EIP-3009 transferWithAuthorization for exactly that amount to the pay-to address.
+   c. Repeat the same GET with header `PAYMENT-SIGNATURE: <base64 payment payload>`
+      (`X-PAYMENT` is also accepted).
+   d. The JSON response is Ed25519-signed. Verify `.signature` with the public key published
+      in /.well-known/x402.json under `signing`.
+   Any x402 client (Coinbase x402 SDK, x402-fetch, x402-axios, the x402 Python package) does
+   steps a–c for you.
+
+3. Other ways in:
+   - MCP: https://api.octodamus.com/mcp (Streamable HTTP; tools/list is free).
+   - Agent-to-agent jobs: ACP on Virtuals (Base).
+
+4. What to expect:
+   - Every output is research, not a trade instruction.
+   - If a required data source is down or stale, a paid endpoint should answer 503 with
+     "billable": false instead of charging you.
+   - The track record is live at /tools/scorecard. Only calls with a Base tx hash count.
+   - Do not buy right now: /v2/grok/*, /v2/ben/*, /v2/x_sentiment/* (their X-sentiment source
+     is switched off) and /v2/agents/*/brief once its preview shows "available": false.
 ## Quick Start
 
 - [API Documentation](https://api.octodamus.com/docs): Interactive Swagger docs — all endpoints, schemas, and try-it-now
